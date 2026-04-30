@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Synapse — Graphe Atomique</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <header>
+    <div id="logo">SYNAPSE <span>graphe atomique</span></div>
+
+    <div id="search-wrap">
+      <input id="search" type="text" placeholder="Rechercher dans la mémoire…" autocomplete="off">
+    </div>
+
+    <div id="stats">
+      <div class="stat">
+        <div class="stat-val" id="stat-notes">—</div>
+        <div class="stat-lbl">vectorisées</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="stat-notes-total">—</div>
+        <div class="stat-lbl">total notes</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="stat-edges">—</div>
+        <div class="stat-lbl">liens</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="stat-inbox">—</div>
+        <div class="stat-lbl">inbox</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <div id="main">
+
+    <!-- Graph -->
+    <div id="graph-wrap">
+      <svg id="graph"></svg>
+
+      <!-- Empty state -->
+      <div id="empty-state" style="display:none">
+        <div class="empty-icon">🧠</div>
+        <p>Aucune note en mémoire.</p>
+        <p style="font-size:12px">Lance le Dream Cycle pour peupler le graphe.</p>
+      </div>
+    </div>
+
+    <!-- Side panel -->
+    <div id="panel">
+      <div id="panel-header">
+        <div id="panel-title"></div>
+        <button id="panel-close" title="Fermer">✕</button>
+      </div>
+      <div id="panel-meta">
+        <span id="panel-date"></span>
+        <span id="panel-sources"></span>
+      </div>
+      <div id="panel-body">
+        <div id="panel-content"></div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- Tooltip -->
+<div id="tooltip">
+  <div class="tip-title"></div>
+  <div class="tip-summary"></div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+<script src="/static/graph.js"></script>
+</body>
+</html>

@@ -1,0 +1,153 @@
+/* ── Reset & Variables ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:        #1a1a2e;
+  --surface:   #16213e;
+  --surface2:  #0f3460;
+  --accent:    #4a90e2;
+  --accent2:   #7b68ee;
+  --text:      #e2e8f0;
+  --text-dim:  #64748b;
+  --border:    rgba(255,255,255,0.08);
+  --radius:    8px;
+  --panel-w:   380px;
+}
+
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
+
+/* ── Layout ────────────────────────────────────────────────────────────────── */
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 20px; height: 52px; flex-shrink: 0;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  z-index: 10;
+}
+
+#logo { font-size: 16px; font-weight: 700; letter-spacing: 2px; color: var(--accent); flex-shrink: 0; }
+#logo span { color: var(--text-dim); font-weight: 400; font-size: 12px; margin-left: 6px; letter-spacing: 0; }
+
+#search-wrap { position: relative; flex: 1; max-width: 340px; }
+#search {
+  width: 100%; padding: 6px 12px 6px 32px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 20px;
+  color: var(--text); font-size: 13px; outline: none; transition: border-color .2s;
+}
+#search:focus { border-color: var(--accent); }
+#search-wrap::before {
+  content: "⌕"; position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--text-dim); font-size: 16px; pointer-events: none;
+}
+
+#stats { margin-left: auto; display: flex; gap: 16px; flex-shrink: 0; }
+.stat { text-align: center; }
+.stat-val { font-size: 16px; font-weight: 700; color: var(--accent); line-height: 1; }
+.stat-lbl { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+
+#main { display: flex; flex: 1; overflow: hidden; position: relative; }
+
+/* ── Graph ─────────────────────────────────────────────────────────────────── */
+#graph-wrap { flex: 1; position: relative; }
+#graph { width: 100%; height: 100%; display: block; cursor: grab; }
+#graph:active { cursor: grabbing; }
+
+.node circle {
+  stroke-width: 2; stroke: rgba(255,255,255,0.15);
+  transition: stroke .15s, stroke-width .15s, opacity .2s;
+  cursor: pointer;
+}
+.node:hover circle { stroke: white; stroke-width: 2.5; }
+.node.selected circle { stroke: white; stroke-width: 3; }
+.node.dimmed circle { opacity: 0.15; }
+.node.dimmed text { opacity: 0.1; }
+
+.node text {
+  font-size: 11px; fill: var(--text); pointer-events: none;
+  text-anchor: middle; dominant-baseline: middle;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+  transition: opacity .2s;
+}
+
+.link {
+  stroke: rgba(255,255,255,0.25); stroke-width: 1.5;
+  transition: stroke .15s, opacity .2s;
+}
+.link.highlighted { stroke: rgba(255,255,255,0.45); stroke-width: 1.5; }
+.link.dimmed { opacity: 0.04; }
+
+/* ── Tooltip ───────────────────────────────────────────────────────────────── */
+#tooltip {
+  position: absolute; pointer-events: none; opacity: 0;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px;
+  max-width: 260px; font-size: 12px; line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  transition: opacity .15s; z-index: 20;
+}
+#tooltip .tip-title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+#tooltip .tip-summary { color: var(--text-dim); }
+
+/* ── Side Panel ────────────────────────────────────────────────────────────── */
+#panel {
+  width: var(--panel-w); flex-shrink: 0;
+  background: var(--surface); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+  transform: translateX(var(--panel-w)); transition: transform .25s ease;
+}
+#panel.open { transform: translateX(0); }
+
+#panel-header {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 18px 18px 14px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+#panel-title { flex: 1; font-size: 15px; font-weight: 600; line-height: 1.4; }
+#panel-close {
+  background: none; border: none; color: var(--text-dim); font-size: 18px;
+  cursor: pointer; padding: 2px 6px; border-radius: 4px; line-height: 1;
+  flex-shrink: 0;
+}
+#panel-close:hover { background: var(--border); color: var(--text); }
+
+#panel-meta {
+  padding: 10px 18px; font-size: 11px; color: var(--text-dim);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+  display: flex; gap: 14px;
+}
+
+#panel-body { flex: 1; overflow-y: auto; padding: 18px; }
+#panel-body::-webkit-scrollbar { width: 4px; }
+#panel-body::-webkit-scrollbar-track { background: transparent; }
+#panel-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Markdown styles inside panel */
+#panel-content h1, #panel-content h2, #panel-content h3 {
+  color: var(--text); margin: 14px 0 6px; font-size: 13px; font-weight: 600;
+}
+#panel-content p { color: var(--text-dim); margin-bottom: 10px; line-height: 1.65; }
+#panel-content ul, #panel-content ol { padding-left: 18px; color: var(--text-dim); margin-bottom: 10px; }
+#panel-content li { margin-bottom: 4px; line-height: 1.6; }
+#panel-content code {
+  background: var(--bg); padding: 1px 5px; border-radius: 3px;
+  font-family: "SF Mono", monospace; font-size: 11px; color: var(--accent);
+}
+#panel-content pre {
+  background: var(--bg); padding: 12px; border-radius: var(--radius);
+  overflow-x: auto; margin-bottom: 10px;
+}
+#panel-content pre code { background: none; padding: 0; color: var(--text); }
+#panel-content strong { color: var(--text); }
+#panel-content blockquote {
+  border-left: 3px solid var(--accent2); padding-left: 12px;
+  color: var(--text-dim); margin-bottom: 10px;
+}
+
+/* ── Empty state ───────────────────────────────────────────────────────────── */
+#empty-state {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px;
+  color: var(--text-dim); pointer-events: none;
+}
+#empty-state .empty-icon { font-size: 48px; opacity: 0.3; }
+#empty-state p { font-size: 14px; opacity: 0.6; }

@@ -1,0 +1,15 @@
+# Claude API — Dream Cycle + future embedding calls
+anthropic>=0.50.0
+
+# MCP server
+mcp>=1.9.0
+
+# SQLite with extension loading (stdlib sqlite3 on macOS lacks this)
+apsw>=3.48.0.0
+
+# Vector store (sqlite extension — no external server)
+sqlite-vec>=0.1.6
+
+# Future: Dream Cycle REST API
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
