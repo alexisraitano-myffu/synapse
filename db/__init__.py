@@ -18,8 +18,21 @@ def get_connection() -> apsw.Connection:
 
 
 def cursor_to_dicts(cursor: apsw.Cursor) -> list[dict]:
-    cols = [d[0] for d in cursor.description]
+    try:
+        cols = [d[0] for d in cursor.description]
+    except apsw.ExecutionCompleteError:
+        return []
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def first_row(cursor: apsw.Cursor) -> dict | None:
+    """Return the first row as a dict, or None if the result set is empty."""
+    try:
+        cols = [d[0] for d in cursor.description]
+    except apsw.ExecutionCompleteError:
+        return None
+    row = cursor.fetchone()
+    return dict(zip(cols, row)) if row else None
 
 
 def init_db() -> None:
@@ -51,6 +64,69 @@ def init_db() -> None:
                 entity_b   TEXT NOT NULL,
                 context    TEXT,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
+            # ── Phase A+ — Entity graph ────────────────────────────────────────
+            """CREATE TABLE IF NOT EXISTS entities (
+                id                TEXT PRIMARY KEY,
+                type              TEXT,
+                canonical_name    TEXT NOT NULL,
+                aliases           TEXT DEFAULT '[]',
+                attributes        TEXT DEFAULT '{}',
+                mention_count     INTEGER DEFAULT 1,
+                last_mentioned    DATE,
+                persistence_value INTEGER DEFAULT 3,
+                summary           TEXT,
+                embedding         BLOB,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS facts (
+                id                TEXT PRIMARY KEY,
+                entity_id         TEXT REFERENCES entities(id),
+                predicate         TEXT NOT NULL,
+                value             TEXT NOT NULL,
+                confidence        REAL DEFAULT 0.5,
+                source_inbox_id   TEXT,
+                persistence_value INTEGER DEFAULT 3,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_confirmed    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS relations (
+                id          TEXT PRIMARY KEY,
+                entity_from TEXT REFERENCES entities(id),
+                predicate   TEXT NOT NULL,
+                entity_to   TEXT REFERENCES entities(id),
+                confidence  REAL DEFAULT 0.5,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS resources (
+                id                TEXT PRIMARY KEY,
+                type              TEXT,
+                source            TEXT,
+                title             TEXT,
+                summary           TEXT,
+                tags              TEXT DEFAULT '[]',
+                entities_mentioned TEXT DEFAULT '[]',
+                embedding         BLOB,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS pending_facts (
+                id                  TEXT PRIMARY KEY,
+                fact_data           TEXT NOT NULL,
+                validation_strategy TEXT DEFAULT 'passive',
+                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS review_queue (
+                id               TEXT PRIMARY KEY,
+                fact_data        TEXT NOT NULL,
+                suggested_entity TEXT,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS intentions (
+                id         TEXT PRIMARY KEY,
+                content    TEXT NOT NULL,
+                ttl_hours  INTEGER DEFAULT 48,
+                resolved   BOOLEAN DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
         ]:
             conn.execute(stmt)

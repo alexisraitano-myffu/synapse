@@ -4,14 +4,18 @@ import json
 import os
 import sys
 import traceback
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import anthropic
 from mcp.server.fastmcp import FastMCP
 
-from db import get_connection, cursor_to_dicts, init_db
+from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -118,9 +122,7 @@ def search_memory(query: str, limit: int = 5) -> str:
                     """,
                     (query_vec, limit),
                 )
-                cols = [d[0] for d in cur.description]
-                rows = cur.fetchall()
-                results = [_format_result(dict(zip(cols, r)), "vector") for r in rows]
+                results = [_format_result(r, "vector") for r in cursor_to_dicts(cur)]
             finally:
                 conn.close()
 
@@ -147,9 +149,7 @@ def search_memory(query: str, limit: int = 5) -> str:
             """,
             (pattern, pattern, pattern, limit),
         )
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
-        results = [_format_result(dict(zip(cols, r)), "text") for r in rows]
+        results = [_format_result(r, "text") for r in cursor_to_dicts(cur)]
         return json.dumps(results, ensure_ascii=False, default=str)
     finally:
         conn.close()
@@ -213,6 +213,184 @@ def run_dream_cycle() -> str:
             "message": f"{type(e).__name__}: {e}",
             "traceback": traceback.format_exc(),
         })
+
+
+# ── Phase A+ tools ────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_entity(name: str) -> str:
+    """
+    Search an entity by canonical name or alias.
+
+    Returns the entity's facts (predicates + values + confidence) and
+    outgoing relations. Useful to inspect what Synapse knows about a person,
+    place, or concept.
+
+    Args:
+        name: Canonical name or any known alias.
+
+    Returns:
+        JSON with the entity record, its facts, and its relations.
+    """
+    conn = get_connection()
+    try:
+        entity = first_row(conn.execute(
+            "SELECT * FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (name,)
+        ))
+
+        # Alias fallback
+        if not entity:
+            for candidate in cursor_to_dicts(conn.execute("SELECT * FROM entities")):
+                try:
+                    aliases = json.loads(candidate.get("aliases", "[]"))
+                except (ValueError, TypeError):
+                    aliases = []
+                if name.lower() in [a.lower() for a in aliases]:
+                    entity = candidate
+                    break
+
+        if not entity:
+            return json.dumps({"found": False, "name": name})
+
+        entity_id = entity["id"]
+
+        facts = cursor_to_dicts(conn.execute(
+            "SELECT predicate, value, confidence, persistence_value, created_at "
+            "FROM facts WHERE entity_id=? ORDER BY confidence DESC",
+            (entity_id,),
+        ))
+
+        relations = cursor_to_dicts(conn.execute(
+            """SELECT r.predicate, e.canonical_name AS entity_to, r.confidence
+               FROM relations r
+               JOIN entities e ON e.id = r.entity_to
+               WHERE r.entity_from=?""",
+            (entity_id,),
+        ))
+
+        return json.dumps(
+            {
+                "found": True,
+                "id": entity_id,
+                "canonical_name": entity["canonical_name"],
+                "type": entity.get("type"),
+                "aliases": json.loads(entity.get("aliases", "[]")),
+                "mention_count": entity.get("mention_count", 0),
+                "summary": entity.get("summary"),
+                "facts": facts,
+                "relations": relations,
+            },
+            ensure_ascii=False,
+            default=str,
+        )
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def list_pending() -> str:
+    """
+    List facts waiting for validation (pending_facts table).
+
+    These are facts extracted by the Dream Cycle with confidence between
+    0.5 and 0.85 — plausible but not yet confirmed. Use validate_fact()
+    to accept or reject individual items.
+
+    Returns:
+        JSON array of pending facts with parsed fact_data.
+    """
+    conn = get_connection()
+    try:
+        result = []
+        for item in cursor_to_dicts(conn.execute(
+            "SELECT id, fact_data, validation_strategy, created_at "
+            "FROM pending_facts ORDER BY created_at DESC"
+        )):
+            try:
+                item["fact_data"] = json.loads(item["fact_data"])
+            except (ValueError, TypeError):
+                pass
+            result.append(item)
+        return json.dumps(result, ensure_ascii=False, default=str)
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def validate_fact(fact_id: str, confirmed: bool, correction: str = None) -> str:
+    """
+    Validate or reject a pending fact.
+
+    If confirmed=True, the fact is consolidated into entities/facts with
+    confidence 0.95 (user-confirmed). If correction is provided, its value
+    overrides the extracted one. If confirmed=False, the fact is discarded.
+
+    Args:
+        fact_id:    ID from list_pending().
+        confirmed:  True to accept, False to discard.
+        correction: Optional corrected value (overrides extracted value).
+
+    Returns:
+        JSON with status and details of what was done.
+    """
+    conn = get_connection()
+    try:
+        pending = first_row(conn.execute(
+            "SELECT id, fact_data FROM pending_facts WHERE id=?", (fact_id,)
+        ))
+        if not pending:
+            return json.dumps({"status": "error", "message": f"fact_id '{fact_id}' not found"})
+        try:
+            fact_data = json.loads(pending["fact_data"])
+        except (ValueError, TypeError):
+            return json.dumps({"status": "error", "message": "invalid fact_data JSON"})
+
+        with conn:
+            if not confirmed:
+                conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
+                return json.dumps({"status": "rejected", "fact_id": fact_id})
+
+            if correction:
+                fact_data["value"] = correction
+
+            entity_name = fact_data.get("entity_canonical", "unknown")
+            row = conn.execute(
+                "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (entity_name,)
+            ).fetchone()
+            if row:
+                entity_id = row[0]
+            else:
+                entity_id = str(uuid.uuid4())
+                conn.execute(
+                    "INSERT INTO entities (id, canonical_name) VALUES (?,?)",
+                    (entity_id, entity_name),
+                )
+
+            conn.execute(
+                "INSERT INTO facts "
+                "(id, entity_id, predicate, value, confidence, source_inbox_id, persistence_value) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    str(uuid.uuid4()), entity_id,
+                    fact_data.get("predicate"), fact_data.get("value"),
+                    0.95,
+                    fact_data.get("source_inbox_id"),
+                    fact_data.get("persistence_value", 3),
+                ),
+            )
+            conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
+
+        return json.dumps(
+            {
+                "status": "confirmed",
+                "fact_id": fact_id,
+                "entity": entity_name,
+                "predicate": fact_data.get("predicate"),
+                "value": fact_data.get("value"),
+            }
+        )
+    finally:
+        conn.close()
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

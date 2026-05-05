@@ -10,6 +10,15 @@ apsw>=3.48.0.0
 # Vector store (sqlite extension — no external server)
 sqlite-vec>=0.1.6
 
+# Date parsing (relative → absolute dates in Dream Cycle)
+dateparser>=1.2.0
+
+# .env loading
+python-dotenv>=1.0.0
+
+# Tests
+pytest>=8.0.0
+
 # Future: Dream Cycle REST API
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
