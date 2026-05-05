@@ -43,6 +43,7 @@ def init_db() -> None:
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 content      TEXT NOT NULL,
                 source       TEXT NOT NULL DEFAULT 'manual',
+                raw_file     BLOB,
                 created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 processed_at TIMESTAMP
             )""",
@@ -131,10 +132,14 @@ def init_db() -> None:
         ]:
             conn.execute(stmt)
 
-        # Migration: add processed_at if DB was created before this column existed
-        try:
-            conn.execute("ALTER TABLE inbox ADD COLUMN processed_at TIMESTAMP")
-        except apsw.SQLError:
-            pass  # column already present
+        # Migrations for columns added after initial schema
+        for migration in [
+            "ALTER TABLE inbox ADD COLUMN processed_at TIMESTAMP",
+            "ALTER TABLE inbox ADD COLUMN raw_file BLOB",
+        ]:
+            try:
+                conn.execute(migration)
+            except apsw.SQLError:
+                pass  # column already present
     finally:
         conn.close()

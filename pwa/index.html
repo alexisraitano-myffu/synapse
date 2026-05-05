@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Synapse">
+<meta name="theme-color" content="#6366f1">
+<title>Synapse</title>
+<link rel="manifest" href="/manifest.json">
+<style>
+:root {
+  --bg:      #0f1117;
+  --surface: #1a1d27;
+  --border:  #2a2d3a;
+  --accent:  #6366f1;
+  --text:    #e2e8f0;
+  --muted:   #64748b;
+  --ok:      #22c55e;
+  --err:     #ef4444;
+  --r: 12px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100svh;
+  padding-bottom: 32px;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 10;
+}
+.logo { font-size: 19px; font-weight: 700; letter-spacing: -.5px; }
+.status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background .3s; }
+.dot.ok  { background: var(--ok); }
+.dot.err { background: var(--err); }
+
+/* ── Layout ── */
+main { display: flex; flex-direction: column; gap: 14px; padding: 16px 16px 0; }
+
+/* ── Config (collapsible) ── */
+details {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+summary {
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary::after { content: '▸'; margin-left: auto; transition: transform .2s; }
+details[open] summary::after { transform: rotate(90deg); }
+.cfg-body { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.conn-result { font-size: 13px; min-height: 18px; }
+.conn-result.ok  { color: var(--ok); }
+.conn-result.err { color: var(--err); }
+
+/* ── Panel ── */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.panel-title { font-size: 15px; font-weight: 600; }
+
+/* ── Inputs ── */
+input[type="text"],
+input[type="url"],
+input[type="password"] {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 15px;
+  padding: 12px 13px;
+  font-family: inherit;
+  outline: none;
+  -webkit-appearance: none;
+}
+input:focus { border-color: var(--accent); }
+label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+
+textarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 16px;
+  font-family: inherit;
+  padding: 12px 13px;
+  resize: none;
+  min-height: 120px;
+  outline: none;
+  line-height: 1.5;
+  -webkit-appearance: none;
+}
+textarea:focus { border-color: var(--accent); }
+textarea::placeholder { color: var(--muted); }
+
+/* ── Buttons ── */
+button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 18px;
+  border: none;
+  border-radius: var(--r);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform .1s, opacity .15s;
+  -webkit-appearance: none;
+  width: 100%;
+}
+button:active { transform: scale(.97); }
+button:disabled { opacity: .4; pointer-events: none; }
+.btn-p  { background: var(--accent); color: #fff; }
+.btn-s  { background: var(--bg); border: 1px solid var(--border); color: var(--text); }
+.btn-rec { background: var(--err); color: #fff; }
+.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+/* ── Recording state ── */
+.rec-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--muted);
+  min-height: 22px;
+}
+.rec-pulse {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--err);
+  animation: pulse 1s infinite;
+}
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+/* ── Image preview ── */
+.img-preview {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+  border-radius: 8px;
+  display: none;
+}
+
+/* ── Audio preview ── */
+audio { width: 100%; display: none; }
+
+/* ── Feedback ── */
+.feedback {
+  font-size: 13px;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.feedback.ok  { color: var(--ok); }
+.feedback.err { color: var(--err); }
+
+/* ── Spinner ── */
+.spinner {
+  display: inline-block;
+  width: 16px; height: 16px;
+  border: 2px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡ Synapse</div>
+  <div class="status">
+    <div class="dot" id="dot"></div>
+    <span id="status-txt">—</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Config ── -->
+  <details id="cfg-details">
+    <summary>⚙️ Configuration</summary>
+    <div class="cfg-body">
+      <div>
+        <label>URL du serveur</label>
+        <input type="url" id="cfg-url" placeholder="https://xxx.trycloudflare.com">
+      </div>
+      <div>
+        <label>Token API</label>
+        <input type="password" id="cfg-tok" placeholder="synapse_…" autocomplete="off">
+      </div>
+      <div class="btn-row">
+        <button class="btn-s" onclick="saveConfig()">💾 Sauvegarder</button>
+        <button class="btn-s" onclick="testConn()">🔌 Tester</button>
+      </div>
+      <div class="conn-result" id="conn-result"></div>
+    </div>
+  </details>
+
+  <!-- ── Note texte ── -->
+  <div class="panel">
+    <div class="panel-title">📝 Note texte</div>
+    <textarea id="note-txt" placeholder="Votre note…"></textarea>
+    <button class="btn-p" id="btn-note" onclick="sendNote()">Envoyer</button>
+    <div class="feedback" id="fb-note"></div>
+  </div>
+
+  <!-- ── Note vocale ── -->
+  <div class="panel">
+    <div class="panel-title">🎤 Note vocale</div>
+    <div class="rec-info" id="rec-info">
+      <span id="rec-label">Prêt à enregistrer</span>
+      <span id="rec-dur"></span>
+    </div>
+    <audio id="audio-preview" controls></audio>
+    <div class="btn-row">
+      <button class="btn-p"   id="btn-rec"  onclick="startRec()">🎤 Enregistrer</button>
+      <button class="btn-rec" id="btn-stop" onclick="stopRec()" disabled>⏹ Stop</button>
+    </div>
+    <button class="btn-s" id="btn-send-audio" onclick="sendAudio()" disabled>Envoyer l'audio</button>
+    <div class="feedback" id="fb-audio"></div>
+  </div>
+
+  <!-- ── Photo ── -->
+  <div class="panel">
+    <div class="panel-title">📸 Photo</div>
+    <input type="file" id="photo-input" accept="image/*" capture="environment">
+    <img class="img-preview" id="img-preview" alt="Aperçu">
+    <button class="btn-s" onclick="document.getElementById('photo-input').click()">📷 Prendre / Choisir une photo</button>
+    <button class="btn-p" id="btn-send-photo" onclick="sendPhoto()" disabled>Envoyer la photo</button>
+    <div class="feedback" id="fb-photo"></div>
+  </div>
+
+</main>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+
+const LS_URL = 'syn_url', LS_TOK = 'syn_tok';
+
+function cfgUrl()   { return localStorage.getItem(LS_URL) || window.location.origin; }
+function cfgToken() { return localStorage.getItem(LS_TOK) || ''; }
+
+function loadConfig() {
+  document.getElementById('cfg-url').value = cfgUrl();
+  document.getElementById('cfg-tok').value = cfgToken();
+}
+
+function saveConfig() {
+  const url = document.getElementById('cfg-url').value.trim().replace(/\/$/, '');
+  const tok = document.getElementById('cfg-tok').value.trim();
+  if (url) localStorage.setItem(LS_URL, url);
+  if (tok) localStorage.setItem(LS_TOK, tok);
+  document.getElementById('conn-result').textContent = '✅ Sauvegardé';
+  document.getElementById('conn-result').className = 'conn-result ok';
+  setTimeout(() => {
+    document.getElementById('conn-result').textContent = '';
+    document.getElementById('cfg-details').removeAttribute('open');
+  }, 1200);
+  checkHealth();
+}
+
+async function testConn() {
+  const el = document.getElementById('conn-result');
+  el.textContent = 'Test en cours…';
+  el.className = 'conn-result';
+  try {
+    const d = await fetch(cfgUrl() + '/health').then(r => r.json());
+    el.textContent = `✅ Connecté — ${d.inbox_count} en attente, ${d.entities_count} entités`;
+    el.className = 'conn-result ok';
+  } catch(e) {
+    el.textContent = '❌ Impossible de joindre le serveur';
+    el.className = 'conn-result err';
+  }
+}
+
+// ── Health ────────────────────────────────────────────────────────────────────
+
+async function checkHealth() {
+  const dot = document.getElementById('dot');
+  const txt = document.getElementById('status-txt');
+  try {
+    const d = await fetch(cfgUrl() + '/health').then(r => r.json());
+    dot.className = 'dot ok';
+    txt.textContent = `${d.inbox_count} en attente`;
+  } catch {
+    dot.className = 'dot err';
+    txt.textContent = 'hors ligne';
+  }
+}
+
+// ── API helper ────────────────────────────────────────────────────────────────
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Authorization': 'Bearer ' + cfgToken() } };
+  if (body instanceof FormData) {
+    opts.body = body;
+  } else if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(cfgUrl() + path, opts);
+  if (!r.ok) {
+    let msg = r.status + ' ' + r.statusText;
+    try { const j = await r.json(); msg = j.detail || msg; } catch {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+// ── Feedback helpers ──────────────────────────────────────────────────────────
+
+function setFb(id, msg, type) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.className = 'feedback' + (type ? ' ' + type : '');
+}
+
+function setBusy(btnId, fbId, busy) {
+  const btn = document.getElementById(btnId);
+  if (busy) {
+    btn._txt = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span>';
+    btn.disabled = true;
+  } else {
+    btn.innerHTML = btn._txt || btn.innerHTML;
+    btn.disabled = false;
+  }
+}
+
+// ── Note texte ────────────────────────────────────────────────────────────────
+
+async function sendNote() {
+  const text = document.getElementById('note-txt').value.trim();
+  if (!text) return setFb('fb-note', '⚠️ Note vide', 'err');
+  setBusy('btn-note', 'fb-note', true);
+  setFb('fb-note', '', '');
+  try {
+    const d = await api('POST', '/inbox', { content: text, type: 'text', source: 'pwa' });
+    document.getElementById('note-txt').value = '';
+    setFb('fb-note', `✅ Enregistrée (id ${d.id})`, 'ok');
+    checkHealth();
+  } catch(e) { setFb('fb-note', '❌ ' + e.message, 'err'); }
+  setBusy('btn-note', 'fb-note', false);
+}
+
+// ── Note vocale ───────────────────────────────────────────────────────────────
+
+let recorder = null, audioBlob = null, recTimer = null, recSecs = 0;
+
+async function startRec() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      audioBlob = new Blob(chunks, { type: 'audio/webm' });
+      const url = URL.createObjectURL(audioBlob);
+      const preview = document.getElementById('audio-preview');
+      preview.src = url;
+      preview.style.display = 'block';
+      document.getElementById('btn-send-audio').disabled = false;
+      document.getElementById('rec-label').textContent = 'Enregistrement terminé';
+    };
+    recorder.start();
+
+    // Duration counter
+    recSecs = 0;
+    clearInterval(recTimer);
+    recTimer = setInterval(() => {
+      recSecs++;
+      const m = String(Math.floor(recSecs / 60)).padStart(2, '0');
+      const s = String(recSecs % 60).padStart(2, '0');
+      document.getElementById('rec-dur').textContent = `${m}:${s}`;
+    }, 1000);
+
+    document.getElementById('rec-info').innerHTML =
+      '<div class="rec-pulse"></div><span id="rec-label">Enregistrement…</span><span id="rec-dur">00:00</span>';
+    document.getElementById('btn-rec').disabled = true;
+    document.getElementById('btn-stop').disabled = false;
+    document.getElementById('btn-send-audio').disabled = true;
+    document.getElementById('audio-preview').style.display = 'none';
+    setFb('fb-audio', '', '');
+  } catch {
+    setFb('fb-audio', '❌ Micro inaccessible', 'err');
+  }
+}
+
+function stopRec() {
+  if (recorder && recorder.state === 'recording') recorder.stop();
+  clearInterval(recTimer);
+  document.getElementById('btn-rec').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+}
+
+async function sendAudio() {
+  if (!audioBlob) return;
+  setBusy('btn-send-audio', 'fb-audio', true);
+  setFb('fb-audio', '', '');
+  const fd = new FormData();
+  fd.append('file', audioBlob, 'note.webm');
+  try {
+    const d = await api('POST', '/inbox/audio', fd);
+    setFb('fb-audio', `✅ Audio enregistré (id ${d.id})`, 'ok');
+    audioBlob = null;
+    document.getElementById('audio-preview').style.display = 'none';
+    document.getElementById('btn-send-audio').disabled = true;
+    document.getElementById('rec-info').innerHTML =
+      '<span id="rec-label">Prêt à enregistrer</span><span id="rec-dur"></span>';
+    checkHealth();
+  } catch(e) { setFb('fb-audio', '❌ ' + e.message, 'err'); }
+  setBusy('btn-send-audio', 'fb-audio', false);
+}
+
+// ── Photo ─────────────────────────────────────────────────────────────────────
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('photo-input').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const preview = document.getElementById('img-preview');
+    preview.src = URL.createObjectURL(file);
+    preview.style.display = 'block';
+    document.getElementById('btn-send-photo').disabled = false;
+    setFb('fb-photo', '', '');
+  });
+});
+
+async function sendPhoto() {
+  const input = document.getElementById('photo-input');
+  const file = input.files[0];
+  if (!file) return;
+  setBusy('btn-send-photo', 'fb-photo', true);
+  setFb('fb-photo', '', '');
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  try {
+    const d = await api('POST', '/inbox/image', fd);
+    setFb('fb-photo', `✅ Photo enregistrée (id ${d.id})`, 'ok');
+    document.getElementById('img-preview').style.display = 'none';
+    document.getElementById('btn-send-photo').disabled = true;
+    input.value = '';
+    checkHealth();
+  } catch(e) { setFb('fb-photo', '❌ ' + e.message, 'err'); }
+  setBusy('btn-send-photo', 'fb-photo', false);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+loadConfig();
+checkHealth();
+setInterval(checkHealth, 30000);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+// Cmd/Ctrl+Enter envoie la note texte
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') sendNote();
+});
+</script>
+</body>
+</html>
