@@ -1,6 +1,6 @@
 # Synapse — Spec technique actuelle (prod)
 
-> État réel du système au **2026-05-27**, après unification du Dream Cycle (Chantier A) et passage aux embeddings locaux (Chantier B). Ce document décrit **ce qui tourne**, pas la cible aspirationnelle (voir la spec Notion pour la vision complète). Les écarts connus sont listés en §10.
+> Architecture réelle du système : ce qui tourne aujourd'hui. Les pistes restantes sont listées en §9–§10.
 
 Philosophie : **« capture passive, traitement actif »**, **100 % local-first, 0 % cloud**. On capture tout (texte), une IA (Claude Haiku) nettoie/relie/structure, une base locale rend le tout consultable et mémorisable durablement.
 
@@ -138,7 +138,7 @@ flowchart TD
 
 ## 7. API HTTP (implémentée — `api/app.py`, `python -m api`)
 
-Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; auth désactivée si non défini = dev), LAN/Tailscale. Formes de réponse **figées sur la cible** (champs présents même si pas encore remplis : `memory_strength`, `confidence`, `summary`). ✅ Les 10 endpoints existent (PR2). Reste à brancher PR3 (statut capture détaillé, déclenchement auto-debounce).
+Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; auth désactivée si non défini = dev), LAN/Tailscale. Les 10 endpoints sont implémentés ; les formes de réponse incluent des champs réservés non encore remplis (`memory_strength`, etc.). Contrat machine : [`openapi.json`](../openapi.json).
 
 | Endpoint | Rôle |
 |---|---|
@@ -182,36 +182,29 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 
 ## 9. État d'implémentation
 
-**Fait** : Dream Cycle unifié (fact/episodic/ephemeral) · embeddings locaux · `search_memory` notes+entités · schéma épisodique · tests NR hors-ligne (`test_embeddings.py`, `test_cycle.py`).
+**Implémenté** : Dream Cycle unifié (fact / episodic / ephemeral) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités · schéma épisodique · API HTTP + modèle de sync (UUID, idempotence, validations-événements, `/changes`) · résilience par entrée + statut de capture · tests hors-ligne (`test_embeddings.py`, `test_cycle.py`, `test_api.py`).
 
-**Manque / écarts** (détail des priorités ci-dessous) :
+**Pistes restantes** :
 
-| # | Écart | Catégorie | Priorité |
-|---|---|---|---|
-| 1 | ~~Pas de consolidation à la 1ʳᵉ mention~~ → entité créée sur mention | Entités | ✅ fait (PR1) |
-| 2 | ~~Entités sans fait fort / en relation seule jamais créées~~ | Entités | ✅ fait (PR1) |
-| 3 | ~~`summary`/`attributes` d'entité~~ remplis (classify + upsert) | Entités | ✅ fait (PR1) |
-| 4 | ~~`persistence_value` d'entité~~ dérivé des faits | Entités | ✅ fait (PR1) |
-| 5 | Pas de coréférence (fenêtre 24-48h) | Traitement | 🟠 |
-| 6 | `resource` non traité (fetch+résumé) | Traitement | 🟡 |
-| 7 | Multi-format (image/vision) | Traitement | ⏸ différé (texte-only v1) |
-| 8 | TTL inbox 7j | Mémoire | 🟢 |
-| 9 | `memory_strength` decay (Ebbinghaus) | Mémoire | Phase C |
-| 10 | Compression atomic_notes 6 mois | Mémoire | Phase C |
-| 11 | Weekly digest review_queue | Mémoire | 🟡 |
-| — | ~~API HTTP + auth + sync (UUID, idempotence, validations-événements, cycle_runs, /changes)~~ | Plateforme | ✅ fait (PR2) |
-| — | ~~Suivi statut capture (failed) + déclenchement auto-debounce + résilience par entrée~~ | Plateforme | ✅ fait (PR3) |
+| Domaine | Piste |
+|---|---|
+| Traitement | résolution de coréférence (fenêtre de contexte récent) |
+| Traitement | `resource` : fetch + résumé d'URL |
+| Traitement | multi-format (image / vision) |
+| Mémoire | TTL inbox |
+| Mémoire | `memory_strength` (décroissance d'Ebbinghaus / oubli gracieux) |
+| Mémoire | compression des `atomic_notes` anciennes |
+| Mémoire | digest périodique de la `review_queue` |
 
 ---
 
-## 10. Roadmap immédiate
+## 10. Roadmap
 
-**Décisions actées :** texte-only en v1 (vision plus tard) · pas de cloud (LAN + Tailscale optionnel) · Mini = cerveau unique · répliques lecture + outbox.
+Directions backend (sans dates) :
+- **Oubli gracieux** — calculer `memory_strength` (décroissance d'Ebbinghaus), compresser/archiver les notes épisodiques anciennes.
+- **Ressources** — fetch + résumé d'URL dans `resources`.
+- **Coréférence** — résoudre pronoms/références via une fenêtre de contexte récent.
+- **Digest** — remonter les éléments faible-confiance de `review_queue`.
+- **Découverte LAN** — mDNS/Bonjour pour que les clients trouvent le serveur sans URL manuelle.
 
-**Lot backend « avant l'app » :**
-1. ✅ **PR1 — Création d'entités fiable (#1/#2/#3/#4)** : entité sur mention + garde-fou `MIN_ENTITY_PERSISTENCE` + `summary`/`attributes`/`persistence`. Testé offline.
-2. ✅ **PR2 — API HTTP (FastAPI)** : 10 endpoints, auth bearer, capture idempotent (UUID), validations-événements, `cycle_runs`, lock mono-instance, `/changes`. Tests offline (`test_api.py`).
-3. ✅ **PR3 — Résilience par entrée + statut `failed` + auto-trigger debouncé** (`SYNAPSE_AUTO_CYCLE`). Une erreur API interrompt le run (entrées laissées en file) ; une erreur de contenu marque l'entrée `failed` et le run continue.
-4. ✅ **PR4 — `GET /pending` enrichi** (citation source + question) — livré dans PR2. Aligner l'outil MCP `list_pending` reste optionnel.
-
-**Puis :** app mobile **Kotlin + Jetpack Compose** (capture texte + transcription native/Whispr côté téléphone, graphe ego, pending swipe, réglages serveurs). 8 écrans → 7 (pas d'écran vocal dédié).
+Les clients (mobile/desktop) vivent dans un projet séparé et consomment cette API HTTP.
