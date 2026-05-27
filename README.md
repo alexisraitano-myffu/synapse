@@ -1,117 +1,77 @@
-# Synapse — Phase B : MCP Server
+# Synapse
 
-Serveur MCP local qui expose la mémoire sémantique de Synapse directement dans Claude Code et Claude Desktop.
+**A local-first personal semantic memory system.** Capture raw notes; an AI cleans, links and structures them into a queryable knowledge graph + episodic memory — all on your own machine. **No cloud: your data never leaves your devices.**
 
-## Stack
+Synapse runs on a Mac (the "brain"), exposes its memory to AI agents over **MCP** (Claude Desktop / Claude Code) and to apps over a small **HTTP API**. Processing is done by a nightly/event-driven "Dream Cycle" using Claude Haiku; embeddings are **fully local** (no API call).
 
-| Composant | Choix | Raison |
-|-----------|-------|--------|
-| Stockage | SQLite + `sqlite-vec` | Local-first, zéro serveur, vecteurs inclus |
-| Embeddings | `fastembed` (ONNX) | 130 MB, pas de PyTorch, ~30 ms/requête |
-| Protocole | MCP (stdio) | Natif Claude Code/Desktop |
+> Philosophy: *capture passively, process actively.* Open source (Apache-2.0). The optional mobile app is a separate project.
 
-> **Note :** `sqlite-vec` est le successeur officiel de `sqlite-vss`, plus léger et activement maintenu.
+## How it works
 
----
+```
+Capture → inbox → Dream Cycle ─┬─ fact      → entities / facts / relations  (semantic memory)
+                               ├─ episodic  → atomic_notes (vectorized)      (episodic memory)
+                               └─ ephemeral → intentions (48h TTL)
+                                        ↓
+                         MCP tools  ·  HTTP API  ·  web visualizer
+```
 
-## Installation
+- **Entities** are created on mention; **facts** are confidence-scored and either consolidated, queued for validation, or sent to a review queue.
+- **Embeddings**: local `fastembed` (ONNX, multilingual, 384-d) → SQLite + `sqlite-vec`. No PyTorch, no embedding server, no network.
+- Full design + diagrams: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## Quick start
 
 ```bash
-cd ~/Synapse
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+export ANTHROPIC_API_KEY=sk-ant-...     # used only by the Dream Cycle (reasoning), not for embeddings
 ```
 
-Le modèle d'embedding (~130 MB) se télécharge automatiquement au premier appel `search_memory`.
-
----
-
-## Lancer le serveur (test manuel)
-
+**Process the inbox** (the Dream Cycle):
 ```bash
-source .venv/bin/activate
+python -m dream_cycle               # --dry-run / --verbose available
+```
+
+**HTTP API** (backend for apps; FastAPI on `0.0.0.0:8000`):
+```bash
+python -m api                       # auth via SYNAPSE_API_TOKEN; SYNAPSE_AUTO_CYCLE=1 for debounced auto-runs
+```
+
+**MCP server** (Claude Desktop / Claude Code, over stdio):
+```bash
 python mcp_server/server.py
 ```
 
-Le serveur écoute sur **stdio** — c'est le transport attendu par Claude.
-
----
-
-## Intégration Claude Desktop
-
-Ajouter dans `~/Library/Application Support/Claude/claude_desktop_config.json` :
-
-```json
-{
-  "mcpServers": {
-    "synapse": {
-      "command": "/Users/alexisraitano/Synapse/.venv/bin/python",
-      "args": ["/Users/alexisraitano/Synapse/mcp_server/server.py"]
-    }
-  }
-}
+**Web visualizer** (D3 knowledge graph at http://127.0.0.1:8080):
+```bash
+python visualizer/app.py
 ```
 
-Redémarrer Claude Desktop. L'icône outil apparaît dans la barre de composition.
+## HTTP API
 
-## Intégration Claude Code
+Bearer auth (`SYNAPSE_API_TOKEN`; disabled if unset = dev). Contract: [`openapi.json`](openapi.json).
+
+`GET /health` · `POST /capture` (idempotent on a client UUID) · `GET /feed` · `GET /graph` (`?mode=ego&entity=`) · `GET /entity/{id}` · `GET /pending` · `POST /pending/{id}/validate` · `POST /dream-cycle/run` · `GET /dream-cycle/last` · `GET /changes` (pull-replication).
+
+Designed for LAN / private mesh (Tailscale). Captures carry a client UUID + device id (idempotent, offline-safe); validations are recorded as append-only events; derived state is rebuildable → multi-device replication without a multi-master database.
+
+## MCP tools
+
+`add_to_inbox` · `search_memory` (local vector over notes + entities, text fallback) · `list_recent` · `run_dream_cycle` · `get_entity` · `list_pending` · `validate_fact`.
+
+## Configuration
+
+`config.py`: `SYNAPSE_HOME` (DB location, default `~/.synapse`), `EMBEDDING_MODEL` (local), `CLAUDE_MODEL` (Dream Cycle reasoning). The API also reads `SYNAPSE_API_TOKEN`, `SYNAPSE_API_PORT`, `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CYCLE_DEBOUNCE_SECONDS`.
+
+## Tests
 
 ```bash
-claude mcp add synapse \
-  /Users/alexisraitano/Synapse/.venv/bin/python \
-  /Users/alexisraitano/Synapse/mcp_server/server.py
+pytest                              # offline suites run without an API key
 ```
+`test_embeddings.py`, `test_cycle.py`, `test_api.py` are fully offline; `test_dream_cycle.py` exercises the live classify→route pipeline and is skipped unless `ANTHROPIC_API_KEY` is set.
 
----
+## License
 
-## Outils MCP exposés
-
-| Outil | Description |
-|-------|-------------|
-| `add_to_inbox` | Capture rapide (texte brut → inbox) |
-| `search_memory` | Recherche sémantique dans les notes traitées |
-| `list_recent` | Affiche les dernières entrées inbox non traitées |
-
-### Exemple d'usage dans Claude
-
-```
-Souviens-toi que notre réunion du 24 avril a décidé d'utiliser sqlite-vec.
-→ add_to_inbox("Décision archi : sqlite-vec retenu le 2026-04-24", source="meeting")
-
-Qu'avons-nous décidé sur la base de données ?
-→ search_memory("décision base de données vectorielle")
-```
-
----
-
-## Tester sans Claude (script Python)
-
-```python
-from db import init_db, get_connection
-import sqlite_vec
-
-init_db()
-conn = get_connection()
-
-# Ajouter une note directement dans atomic_notes + vecteur (bypass Dream Cycle)
-from fastembed import TextEmbedding
-model = TextEmbedding("BAAI/bge-small-en-v1.5")
-vec = list(next(model.embed(["Test note on sqlite-vec architecture"])))
-blob = sqlite_vec.serialize_float32(vec)
-
-conn.execute("INSERT INTO atomic_notes (title, content) VALUES (?, ?)",
-             ("Test", "sqlite-vec est le moteur vectoriel de Synapse"))
-note_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-conn.execute("INSERT INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)", (note_id, blob))
-conn.commit()
-print("Note insérée, id =", note_id)
-```
-
----
-
-## Roadmap — Phases suivantes
-
-- **Phase C** : Dream Cycle — agent nocturne (FastAPI + Claude Haiku) qui dépile l'inbox
-- **Phase D** : Graphe atomique — visualisation D3.js des nœuds de connaissance
-- **Phase E** : Captures — extension Chrome + app mobile (bouton vocal → Whisper)
+Apache-2.0. See [LICENSE](LICENSE).
