@@ -1,4 +1,4 @@
-# Claude API — Dream Cycle + future embedding calls
+# Claude API — Dream Cycle classification/extraction (not embeddings; those are local)
 anthropic>=0.50.0
 
 # MCP server
@@ -10,6 +10,9 @@ apsw>=3.48.0.0
 # Vector store (sqlite extension — no external server)
 sqlite-vec>=0.1.6
 
+# Local embeddings (ONNX runtime, no PyTorch — runs fully offline)
+fastembed>=0.8.0
+
 # Date parsing (relative → absolute dates in Dream Cycle)
 dateparser>=1.2.0
 
@@ -18,6 +21,7 @@ python-dotenv>=1.0.0
 
 # Tests
 pytest>=8.0.0
+httpx>=0.27.0          # FastAPI TestClient
 
 # Future: Dream Cycle REST API
 fastapi>=0.115.0

@@ -128,6 +128,30 @@ def init_db() -> None:
                 resolved   BOOLEAN DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
+            # Append-only log of user validations (survives a rebuild, replicates).
+            """CREATE TABLE IF NOT EXISTS validation_events (
+                id               TEXT PRIMARY KEY,
+                fact_id          TEXT,
+                entity_canonical TEXT,
+                predicate        TEXT,
+                value            TEXT,
+                confirmed        INTEGER NOT NULL,
+                correction       TEXT,
+                device_id        TEXT,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            # One row per Dream Cycle run (stats for the app's "last/next cycle").
+            """CREATE TABLE IF NOT EXISTS cycle_runs (
+                id                TEXT PRIMARY KEY,
+                started_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                finished_at       TIMESTAMP,
+                notes_processed   INTEGER DEFAULT 0,
+                entities_total    INTEGER DEFAULT 0,
+                pending_total     INTEGER DEFAULT 0,
+                status            TEXT DEFAULT 'running',
+                trigger           TEXT DEFAULT 'manual',
+                error             TEXT
+            )""",
         ]:
             conn.execute(stmt)
 
@@ -136,5 +160,38 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox ADD COLUMN processed_at TIMESTAMP")
         except apsw.SQLError:
             pass  # column already present
+
+        # Migration: episodic-memory columns on atomic_notes (spec §3.1 / §7).
+        # entities_mentioned links a note to graph entities; memory_strength is
+        # the Ebbinghaus retention score (decay logic is Phase C — defaults to 1.0).
+        for col, ddl in [
+            ("summary", "ALTER TABLE atomic_notes ADD COLUMN summary TEXT"),
+            ("entities_mentioned",
+             "ALTER TABLE atomic_notes ADD COLUMN entities_mentioned TEXT DEFAULT '[]'"),
+            ("memory_strength",
+             "ALTER TABLE atomic_notes ADD COLUMN memory_strength REAL DEFAULT 1.0"),
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
+
+        # Migration: sync columns on inbox (client_id enables idempotent capture).
+        for ddl in [
+            "ALTER TABLE inbox ADD COLUMN client_id TEXT",
+            "ALTER TABLE inbox ADD COLUMN device_id TEXT",
+            "ALTER TABLE inbox ADD COLUMN captured_at TIMESTAMP",
+            "ALTER TABLE inbox ADD COLUMN status TEXT DEFAULT 'queued'",
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
+
+        # Idempotency: at most one inbox row per client-generated capture id.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_client_id "
+            "ON inbox(client_id) WHERE client_id IS NOT NULL"
+        )
     finally:
         conn.close()

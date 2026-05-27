@@ -112,9 +112,10 @@ def _build_edges(conn) -> list[dict]:
 
     seen: set[tuple] = set()
     edges = []
-    # Cosine distance [0,2]. With hash-based vectors, similar notes land ~1.3.
-    # Lower this value when real embeddings replace the hash approach.
-    DISTANCE_THRESHOLD = 1.5
+    # L2 distance on unit vectors, range [0,2]. With the local fastembed model,
+    # related notes land ~0.9 and unrelated ~1.4, so 1.1 separates them well.
+    # Tune up for a denser graph, down for a sparser one.
+    DISTANCE_THRESHOLD = 1.1
     K = 4  # k-1 real neighbours + self
 
     for nid in note_ids:

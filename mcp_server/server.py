@@ -1,10 +1,9 @@
 import contextlib
 import io
 import json
-import os
+import struct
 import sys
 import traceback
-import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -12,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-import anthropic
 from mcp.server.fastmcp import FastMCP
 
 from db import get_connection, cursor_to_dicts, first_row, init_db
@@ -21,13 +19,6 @@ from embeddings import embed_text
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 init_db()
-
-
-def _get_client() -> anthropic.Anthropic | None:
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        return None
-    return anthropic.Anthropic(api_key=key)
 
 
 def _format_result(row: dict, search_type: str) -> dict:
@@ -47,6 +38,45 @@ def _format_result(row: dict, search_type: str) -> dict:
         except (ValueError, TypeError):
             pass
     return result
+
+
+def _deserialize_vec(blob: bytes) -> tuple[float, ...]:
+    """Decode a sqlite-vec serialized float32 blob into floats."""
+    return struct.unpack(f"<{len(blob) // 4}f", blob)
+
+
+def _search_entities(query_vec: bytes, limit: int, conn) -> list[dict]:
+    """
+    Semantic search over the entity graph.
+
+    Entity embeddings live as raw BLOBs (entity ids are UUIDs, so they can't
+    share the int-rowid vec0 table), so we score them with a manual L2 distance
+    on the unit vectors — fine for a personal-scale graph.
+    """
+    q = _deserialize_vec(query_vec)
+    scored: list[tuple[float, dict]] = []
+    for row in cursor_to_dicts(conn.execute(
+        "SELECT id, canonical_name, type, summary, embedding FROM entities "
+        "WHERE embedding IS NOT NULL"
+    )):
+        v = _deserialize_vec(row["embedding"])
+        if len(v) != len(q):
+            continue
+        dist = sum((a - b) ** 2 for a, b in zip(q, v)) ** 0.5
+        scored.append((dist, row))
+
+    scored.sort(key=lambda x: x[0])
+    results = []
+    for dist, row in scored[:limit]:
+        results.append({
+            "id": row["id"],
+            "title": row["canonical_name"],
+            "content": row.get("summary") or "",
+            "type": row.get("type"),
+            "score": round(max(0.0, 1 - dist / 2), 4),
+            "search_type": "entity",
+        })
+    return results
 
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
@@ -90,9 +120,10 @@ def search_memory(query: str, limit: int = 5) -> str:
     """
     Search the knowledge base using hybrid search (vector + keyword fallback).
 
-    Step 1 — Vector search: embeds the query via Claude Haiku, finds the closest
-    atomic notes using cosine similarity in sqlite-vec.
-    Step 2 — Text fallback: if no vector results (empty index or no API key),
+    Step 1 — Vector search (fully local, no API key needed): embeds the query
+    locally and ranks both episodic notes (atomic_notes) and graph entities by
+    similarity, merged into one score-sorted list.
+    Step 2 — Text fallback: if the vector path yields nothing (empty index),
     falls back to LIKE keyword search across atomic_notes and inbox.
 
     Args:
@@ -100,36 +131,38 @@ def search_memory(query: str, limit: int = 5) -> str:
         limit: Maximum number of results (default 5, max 20).
 
     Returns:
-        JSON array of results with title, content, date, score, sources, search_type.
+        JSON array of results with title, content, score, search_type
+        ('vector' for notes, 'entity' for graph entities, 'text' for fallback).
     """
     limit = min(max(1, limit), 20)
 
-    # ── Step 1: vector search
-    client = _get_client()
-    if client:
+    # ── Step 1: vector search over notes + entities (local, no API key required)
+    try:
+        query_vec = embed_text(query)
+        conn = get_connection()
         try:
-            query_vec = embed_text(query, client)
-            conn = get_connection()
-            try:
-                cur = conn.execute(
-                    """
-                    SELECT n.id, n.title, n.content, n.source_ids, n.created_at, v.distance
-                    FROM   atomic_notes_vec v
-                    JOIN   atomic_notes n ON n.id = v.rowid
-                    WHERE  v.embedding MATCH ?
-                    AND    k = ?
-                    ORDER  BY v.distance
-                    """,
-                    (query_vec, limit),
-                )
-                results = [_format_result(r, "vector") for r in cursor_to_dicts(cur)]
-            finally:
-                conn.close()
+            cur = conn.execute(
+                """
+                SELECT n.id, n.title, n.content, n.source_ids, n.created_at, v.distance
+                FROM   atomic_notes_vec v
+                JOIN   atomic_notes n ON n.id = v.rowid
+                WHERE  v.embedding MATCH ?
+                AND    k = ?
+                ORDER  BY v.distance
+                """,
+                (query_vec, limit),
+            )
+            note_results = [_format_result(r, "vector") for r in cursor_to_dicts(cur)]
+            entity_results = _search_entities(query_vec, limit, conn)
+        finally:
+            conn.close()
 
-            if results:
-                return json.dumps(results, ensure_ascii=False, default=str)
-        except Exception:
-            pass  # fall through to text search
+        merged = note_results + entity_results
+        merged.sort(key=lambda r: r.get("score", 0.0), reverse=True)
+        if merged:
+            return json.dumps(merged[:limit], ensure_ascii=False, default=str)
+    except Exception:
+        pass  # fall through to text search
 
     # ── Step 2: text fallback
     pattern = f"%{query}%"
@@ -184,26 +217,25 @@ def list_recent(limit: int = 10) -> str:
 @mcp.tool()
 def run_dream_cycle() -> str:
     """
-    Trigger the Dream Cycle directly from Claude Desktop.
+    Trigger the Dream Cycle directly (handy for testing — normally cron-driven).
 
-    Processes all unprocessed inbox entries through 3 phases:
-    1. Filtering — Claude Haiku extracts key facts and removes noise
-    2. Synthesis — cleaned notes are written to atomic_notes
-    3. Vectorization — embeddings generated and stored in sqlite-vec
+    Processes all unprocessed inbox entries: Claude classifies each one and
+    routes it to the entity graph (facts), atomic_notes (episodic memory) or
+    intentions (ephemeral), scoring confidence and vectorizing as it goes.
 
-    Requires ANTHROPIC_API_KEY to be set in the environment.
+    Requires ANTHROPIC_API_KEY for the classification/extraction step.
     Add it to the MCP server config in claude_desktop_config.json:
       "env": { "ANTHROPIC_API_KEY": "sk-ant-..." }
 
     Returns:
         JSON with status and the full cycle output log.
     """
-    from dream_cycle.cycle import run_cycle
+    from dream_cycle import run_dream_cycle as _run_cycle
 
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
-            run_cycle()
+            _run_cycle()
         return json.dumps({"status": "success", "output": buf.getvalue()})
     except EnvironmentError as e:
         return json.dumps({"status": "error", "message": str(e)})
@@ -333,62 +365,13 @@ def validate_fact(fact_id: str, confirmed: bool, correction: str = None) -> str:
     Returns:
         JSON with status and details of what was done.
     """
+    from dream_cycle.validation import record_and_apply_validation
+
     conn = get_connection()
     try:
-        pending = first_row(conn.execute(
-            "SELECT id, fact_data FROM pending_facts WHERE id=?", (fact_id,)
-        ))
-        if not pending:
-            return json.dumps({"status": "error", "message": f"fact_id '{fact_id}' not found"})
-        try:
-            fact_data = json.loads(pending["fact_data"])
-        except (ValueError, TypeError):
-            return json.dumps({"status": "error", "message": "invalid fact_data JSON"})
-
         with conn:
-            if not confirmed:
-                conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
-                return json.dumps({"status": "rejected", "fact_id": fact_id})
-
-            if correction:
-                fact_data["value"] = correction
-
-            entity_name = fact_data.get("entity_canonical", "unknown")
-            row = conn.execute(
-                "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (entity_name,)
-            ).fetchone()
-            if row:
-                entity_id = row[0]
-            else:
-                entity_id = str(uuid.uuid4())
-                conn.execute(
-                    "INSERT INTO entities (id, canonical_name) VALUES (?,?)",
-                    (entity_id, entity_name),
-                )
-
-            conn.execute(
-                "INSERT INTO facts "
-                "(id, entity_id, predicate, value, confidence, source_inbox_id, persistence_value) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (
-                    str(uuid.uuid4()), entity_id,
-                    fact_data.get("predicate"), fact_data.get("value"),
-                    0.95,
-                    fact_data.get("source_inbox_id"),
-                    fact_data.get("persistence_value", 3),
-                ),
-            )
-            conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
-
-        return json.dumps(
-            {
-                "status": "confirmed",
-                "fact_id": fact_id,
-                "entity": entity_name,
-                "predicate": fact_data.get("predicate"),
-                "value": fact_data.get("value"),
-            }
-        )
+            result = record_and_apply_validation(conn, fact_id, confirmed, correction)
+        return json.dumps(result, ensure_ascii=False, default=str)
     finally:
         conn.close()
 

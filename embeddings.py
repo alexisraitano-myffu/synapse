@@ -1,57 +1,57 @@
 """
 Shared embedding logic used by both the Dream Cycle and the MCP server.
 
-Strategy: ask Claude Haiku to extract semantic concepts, then project them
-into a 384-dim hash vector. Both query and notes use the same projection,
-so cosine similarity is meaningful within this space.
+Strategy: a local fastembed (ONNX) sentence-transformer model. Runs fully
+offline after a one-time model download (~220 MB) — no API call, no PyTorch.
+Vectors are L2-normalized so the sqlite-vec `vec0` L2 distance stays in [0, 2]
+and is monotonic with cosine similarity, which keeps the downstream
+`score = 1 - distance/2` mapping valid.
 """
 
-import hashlib
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import anthropic
 import sqlite_vec
 
-from config import CLAUDE_MODEL, EMBEDDING_DIM
+from config import EMBEDDING_DIM, EMBEDDING_MODEL
+
+# Lazy singleton — loading the model is expensive, do it once per process.
+_model = None
 
 
-def concepts_to_vector(concepts: list[str]) -> bytes:
-    """Project a list of semantic concepts into a normalised 384-dim float vector."""
-    vec = [0.0] * EMBEDDING_DIM
-    for concept in concepts:
-        digest = hashlib.md5(concept.lower().strip().encode()).hexdigest()
-        for offset in (0, 8):
-            idx = int(digest[offset: offset + 8], 16) % EMBEDDING_DIM
-            vec[idx] += 1.0
+def _get_model():
+    global _model
+    if _model is None:
+        import warnings
+        from fastembed import TextEmbedding  # imported lazily to keep startup cheap
+        # This model uses mean pooling (the correct modern default); silence the
+        # one-time migration warning so it doesn't pollute the MCP server logs.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*mean pooling.*")
+            _model = TextEmbedding(EMBEDDING_MODEL)
+    return _model
+
+
+def embed_text(text: str, client=None) -> bytes:
+    """
+    Embed text into a serialized, L2-normalized 384-dim float vector.
+
+    `client` is accepted for backward compatibility with the previous
+    API-based implementation but is ignored — embedding is now fully local.
+    """
+    model = _get_model()
+    vec = list(next(model.embed([text])))
 
     magnitude = sum(x * x for x in vec) ** 0.5
     if magnitude > 0:
         vec = [x / magnitude for x in vec]
+
+    if len(vec) != EMBEDDING_DIM:
+        raise ValueError(
+            f"Embedding model returned {len(vec)} dims, expected {EMBEDDING_DIM}. "
+            f"Check EMBEDDING_MODEL ({EMBEDDING_MODEL}) matches EMBEDDING_DIM."
+        )
+
     return sqlite_vec.serialize_float32(vec)
-
-
-def embed_text(text: str, client: anthropic.Anthropic) -> bytes:
-    """Call Claude Haiku to extract concepts from text, return serialised vector."""
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=150,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Extract 12 lowercase single-word semantic concepts from this text. "
-                    "Return only a JSON array of strings, no other text.\n\n"
-                    f"{text[:600]}"
-                ),
-            }
-        ],
-    )
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    concepts: list[str] = json.loads(raw)
-    return concepts_to_vector(concepts)
