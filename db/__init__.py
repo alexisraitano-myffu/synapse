@@ -180,6 +180,24 @@ def init_db() -> None:
                 updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 entry_count_at_sync INTEGER DEFAULT 0
             )""",
+            # ── SYN-39 — Entity merge proposals ─────────────────────────────────
+            # Detected duplicates surface as pending proposals the user accepts,
+            # rejects, or postpones. Acceptance reroutes facts/relations/notes
+            # from the absorbed entity to the canonical one; the absorbed entity
+            # stays in DB with merged_into_id pointing to the survivor (soft
+            # link, no DELETE, so a future unmerge stays possible).
+            """CREATE TABLE IF NOT EXISTS entity_merge_proposals (
+                id                    TEXT PRIMARY KEY,
+                candidate_entity_id   TEXT NOT NULL REFERENCES entities(id),
+                existing_entity_id    TEXT NOT NULL REFERENCES entities(id),
+                similarity_score      REAL NOT NULL,
+                similarity_reason     TEXT,
+                evidence_capture_id   INTEGER REFERENCES inbox(id),
+                status                TEXT NOT NULL DEFAULT 'pending',
+                created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at           TIMESTAMP,
+                resolved_canonical_id TEXT REFERENCES entities(id)
+            )""",
         ]:
             conn.execute(stmt)
 
@@ -251,5 +269,23 @@ def init_db() -> None:
             )
         except apsw.SQLError:
             pass  # column already present
+
+        # Migration: SYN-39 — soft-link a merged entity to its absorber. Queries
+        # filter on `merged_into_id IS NULL` to hide the absorbed row, but the
+        # data stays so we can rebuild lineage and (eventually) unmerge.
+        for ddl in [
+            "ALTER TABLE entities ADD COLUMN merged_into_id TEXT REFERENCES entities(id)",
+            "ALTER TABLE entities ADD COLUMN merged_at TIMESTAMP",
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
+
+        # Quick lookups for the merge-proposals queue.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "
+            "ON entity_merge_proposals(status, created_at DESC)"
+        )
     finally:
         conn.close()

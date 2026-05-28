@@ -177,6 +177,11 @@ class ProjectEntryFactIn(BaseModel):
     persistence_value: int = 3
 
 
+# SYN-39 — merge proposal acceptance body
+class MergeAcceptIn(BaseModel):
+    canonical_id: str  # which of the two entities survives as canonical
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -283,11 +288,12 @@ def graph(entity: str | None = None, mode: str = "full"):
     conn = get_connection()
     try:
         nodes = []
+        # SYN-39: hide soft-merged rows; their data already lives on the canonical one.
         for e in cursor_to_dicts(conn.execute(
             "SELECT e.id, e.canonical_name, e.type, e.mention_count, e.persistence_value, "
             "       e.summary, e.last_mentioned, "
             "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id) AS facts_count "
-            "FROM entities e"
+            "FROM entities e WHERE e.merged_into_id IS NULL"
         )):
             nodes.append({
                 "id": e["id"],
@@ -322,6 +328,13 @@ def entity_detail(entity_id: str):
         e = first_row(conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)))
         if not e:
             raise HTTPException(status_code=404, detail="entity not found")
+        # SYN-39: an absorbed entity redirects to its canonical so clients that
+        # held the old id don't 404 silently — they get pointed at the survivor.
+        if e.get("merged_into_id"):
+            raise HTTPException(
+                status_code=410,
+                detail={"reason": "merged", "merged_into_id": e["merged_into_id"]},
+            )
         # SYN-54: surface provenance_capture_id on every projection so the client
         # can render a "source" chip pointing back to the immutable inbox row.
         facts = cursor_to_dicts(conn.execute(
@@ -374,7 +387,7 @@ def projects_list():
             "FROM entities e "
             "LEFT JOIN project_state ps ON ps.project_id = e.id "
             "LEFT JOIN project_state_versions psv ON psv.id = ps.current_version_id "
-            "WHERE e.type = 'project' "
+            "WHERE e.type = 'project' AND e.merged_into_id IS NULL "
             "ORDER BY COALESCE(e.last_mentioned, e.created_at) DESC"
         ))
         return rows
@@ -422,6 +435,183 @@ def atomic_notes_list(
             except (ValueError, TypeError):
                 r["entities_mentioned"] = []
         return rows
+    finally:
+        conn.close()
+
+
+@app.get("/merge-proposals", dependencies=[Depends(require_auth)])
+def merge_proposals_list(status: str = "pending"):
+    """List entity merge proposals filtered by status (SYN-39).
+
+    Joins the two side entities + their fact previews so the client can render
+    a side-by-side card without follow-up requests.
+    """
+    if status not in {"pending", "accepted", "rejected"}:
+        raise HTTPException(status_code=400, detail="invalid status filter")
+    conn = get_connection()
+    try:
+        rows = cursor_to_dicts(conn.execute(
+            "SELECT p.id, p.candidate_entity_id, p.existing_entity_id, "
+            "       p.similarity_score, p.similarity_reason, p.evidence_capture_id, "
+            "       p.status, p.created_at, p.resolved_at, p.resolved_canonical_id, "
+            "       ec.canonical_name AS candidate_name, ec.type AS candidate_type, "
+            "       ec.mention_count   AS candidate_mention_count, "
+            "       ee.canonical_name AS existing_name,  ee.type AS existing_type, "
+            "       ee.mention_count   AS existing_mention_count "
+            "FROM entity_merge_proposals p "
+            "JOIN entities ec ON ec.id = p.candidate_entity_id "
+            "JOIN entities ee ON ee.id = p.existing_entity_id "
+            "WHERE p.status = ? "
+            "ORDER BY p.created_at DESC",
+            (status,),
+        ))
+        for r in rows:
+            for side, eid in (("candidate", r["candidate_entity_id"]),
+                              ("existing",  r["existing_entity_id"])):
+                facts = cursor_to_dicts(conn.execute(
+                    "SELECT predicate, value, confidence FROM facts "
+                    "WHERE entity_id = ? ORDER BY confidence DESC LIMIT 5",
+                    (eid,),
+                ))
+                r[f"{side}_facts"] = facts
+        return rows
+    finally:
+        conn.close()
+
+
+def _reroute_to_canonical(conn, absorbed_id: str, canonical_id: str) -> None:
+    """Move every projection that points at `absorbed_id` over to `canonical_id`.
+
+    Touches facts.entity_id, relations.entity_from / entity_to, and the JSON
+    `entities_mentioned` array on atomic_notes (canonical_name swap, since the
+    list stores names not ids — see SYN-42). Caller owns the transaction.
+    """
+    import json as _json
+    absorbed = first_row(conn.execute(
+        "SELECT canonical_name FROM entities WHERE id = ?", (absorbed_id,)
+    ))
+    canonical = first_row(conn.execute(
+        "SELECT canonical_name FROM entities WHERE id = ?", (canonical_id,)
+    ))
+    if not absorbed or not canonical:
+        raise HTTPException(status_code=404, detail="entity not found during reroute")
+
+    conn.execute("UPDATE facts SET entity_id = ? WHERE entity_id = ?",
+                 (canonical_id, absorbed_id))
+    conn.execute("UPDATE relations SET entity_from = ? WHERE entity_from = ?",
+                 (canonical_id, absorbed_id))
+    conn.execute("UPDATE relations SET entity_to = ? WHERE entity_to = ?",
+                 (canonical_id, absorbed_id))
+
+    # atomic_notes.entities_mentioned stores canonical names, not ids — swap by name.
+    notes = cursor_to_dicts(conn.execute(
+        "SELECT id, entities_mentioned FROM atomic_notes "
+        "WHERE entities_mentioned LIKE ?",
+        (f'%"{absorbed["canonical_name"]}"%',),
+    ))
+    for n in notes:
+        try:
+            arr = _json.loads(n.get("entities_mentioned") or "[]")
+        except (ValueError, TypeError):
+            continue
+        if absorbed["canonical_name"] not in arr:
+            continue
+        new_arr = [canonical["canonical_name"] if x == absorbed["canonical_name"] else x
+                   for x in arr]
+        # Dedup while keeping order
+        seen = set()
+        new_arr = [x for x in new_arr if not (x in seen or seen.add(x))]
+        conn.execute(
+            "UPDATE atomic_notes SET entities_mentioned = ? WHERE id = ?",
+            (_json.dumps(new_arr, ensure_ascii=False), n["id"]),
+        )
+
+
+@app.post("/merge-proposals/{proposal_id}/accept", dependencies=[Depends(require_auth)])
+def merge_proposal_accept(proposal_id: str, body: MergeAcceptIn):
+    """Accept a merge proposal: reroute everything to the chosen canonical and
+    soft-mark the absorbed entity (no DELETE, lineage preserved).
+    """
+    conn = get_connection()
+    try:
+        p = first_row(conn.execute(
+            "SELECT id, candidate_entity_id, existing_entity_id, status "
+            "FROM entity_merge_proposals WHERE id = ?",
+            (proposal_id,),
+        ))
+        if not p:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
+
+        sides = {p["candidate_entity_id"], p["existing_entity_id"]}
+        if body.canonical_id not in sides:
+            raise HTTPException(status_code=400,
+                                detail="canonical_id must be one of the proposal sides")
+        absorbed_id = (sides - {body.canonical_id}).pop()
+
+        canonical = first_row(conn.execute(
+            "SELECT id, canonical_name, aliases FROM entities WHERE id = ?",
+            (body.canonical_id,),
+        ))
+        absorbed = first_row(conn.execute(
+            "SELECT id, canonical_name FROM entities WHERE id = ?",
+            (absorbed_id,),
+        ))
+        if not canonical or not absorbed:
+            raise HTTPException(status_code=404, detail="entity not found")
+
+        import json as _json
+        try:
+            aliases = _json.loads(canonical.get("aliases") or "[]")
+        except (ValueError, TypeError):
+            aliases = []
+        if absorbed["canonical_name"] not in aliases:
+            aliases.append(absorbed["canonical_name"])
+
+        with conn:
+            _reroute_to_canonical(conn, absorbed_id, body.canonical_id)
+            conn.execute(
+                "UPDATE entities SET aliases = ? WHERE id = ?",
+                (_json.dumps(aliases, ensure_ascii=False), body.canonical_id),
+            )
+            conn.execute(
+                "UPDATE entities SET merged_into_id = ?, merged_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (body.canonical_id, absorbed_id),
+            )
+            conn.execute(
+                "UPDATE entity_merge_proposals SET status = 'accepted', "
+                "resolved_at = CURRENT_TIMESTAMP, resolved_canonical_id = ? "
+                "WHERE id = ?",
+                (body.canonical_id, proposal_id),
+            )
+        return {"status": "accepted", "proposal_id": proposal_id,
+                "canonical_id": body.canonical_id, "absorbed_id": absorbed_id}
+    finally:
+        conn.close()
+
+
+@app.post("/merge-proposals/{proposal_id}/reject", dependencies=[Depends(require_auth)])
+def merge_proposal_reject(proposal_id: str):
+    """Mark the proposal rejected (status terminal, won't be re-proposed)."""
+    conn = get_connection()
+    try:
+        p = first_row(conn.execute(
+            "SELECT id, status FROM entity_merge_proposals WHERE id = ?",
+            (proposal_id,),
+        ))
+        if not p:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
+        with conn:
+            conn.execute(
+                "UPDATE entity_merge_proposals SET status = 'rejected', "
+                "resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (proposal_id,),
+            )
+        return {"status": "rejected", "proposal_id": proposal_id}
     finally:
         conn.close()
 

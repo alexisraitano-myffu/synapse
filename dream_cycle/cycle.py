@@ -164,7 +164,8 @@ def _load_active_projects_block(conn) -> str:
     """
     rows = cursor_to_dicts(conn.execute(
         "SELECT canonical_name, summary, aliases FROM entities "
-        "WHERE type='project' ORDER BY mention_count DESC, last_mentioned DESC LIMIT 50"
+        "WHERE type='project' AND merged_into_id IS NULL "
+        "ORDER BY mention_count DESC, last_mentioned DESC LIMIT 50"
     ))
     if not rows:
         return "[PROJETS EXISTANTS]\n(aucun pour l'instant — toute mention de 'nouveau projet : X' doit créer l'entité)"
@@ -227,14 +228,19 @@ def _resolve_date(value: str) -> str:
 
 
 def _find_existing_entity(canonical_name: str, aliases: list[str], conn) -> dict | None:
+    # SYN-39: ignore soft-merged rows so a resolved match never points at a
+    # row that's been absorbed into another canonical entity.
     row = first_row(conn.execute(
-        "SELECT * FROM entities WHERE LOWER(canonical_name) = LOWER(?)", (canonical_name,)
+        "SELECT * FROM entities WHERE LOWER(canonical_name) = LOWER(?) "
+        "AND merged_into_id IS NULL", (canonical_name,)
     ))
     if row:
         return row
 
     search_names = {n.lower() for n in [canonical_name] + aliases}
-    for entity in cursor_to_dicts(conn.execute("SELECT * FROM entities")):
+    for entity in cursor_to_dicts(conn.execute(
+        "SELECT * FROM entities WHERE merged_into_id IS NULL"
+    )):
         try:
             entity_aliases = json.loads(entity.get("aliases", "[]"))
         except (ValueError, TypeError):
@@ -243,6 +249,65 @@ def _find_existing_entity(canonical_name: str, aliases: list[str], conn) -> dict
         if search_names & existing_names:
             return entity
     return None
+
+
+def _propose_merge_if_similar(
+    new_id: str,
+    new_name: str,
+    new_type: str,
+    capture_id: int | None,
+    conn,
+    verbose: bool = False,
+) -> None:
+    """SYN-39: raise a pending proposal when a freshly created entity looks
+    like a duplicate of an existing same-type one (e.g. 'Martin' alongside
+    'Martin Bari'). V1 heuristic = name substring match (one name fully
+    contained in the other) plus a shared-token check to avoid 'Pi'⊂'Pierre'
+    false positives. Embedding-based similarity stays out of scope for now.
+    """
+    if not new_name:
+        return
+    needle = new_name.lower().strip()
+    needle_tokens = set(needle.split())
+    candidates = cursor_to_dicts(conn.execute(
+        "SELECT id, canonical_name FROM entities "
+        "WHERE id != ? AND type = ? AND merged_into_id IS NULL",
+        (new_id, new_type),
+    ))
+    for c in candidates:
+        ex_name = (c["canonical_name"] or "").strip()
+        ex_lower = ex_name.lower()
+        if ex_lower == needle:
+            continue  # exact match should have been resolved earlier
+        contains = needle in ex_lower or ex_lower in needle
+        if not contains:
+            continue
+        # Token check: require at least one full word in common to dodge
+        # spurious substring hits ("Pi" ⊂ "Pierre", "Al" ⊂ "Alice").
+        ex_tokens = set(ex_lower.split())
+        if not (needle_tokens & ex_tokens):
+            continue
+        # Skip if a proposal already exists for this pair (any status — we
+        # don't want to re-prompt the user every cycle).
+        already = first_row(conn.execute(
+            "SELECT id FROM entity_merge_proposals "
+            "WHERE (candidate_entity_id=? AND existing_entity_id=?) "
+            "   OR (candidate_entity_id=? AND existing_entity_id=?)",
+            (new_id, c["id"], c["id"], new_id),
+        ))
+        if already:
+            continue
+        prop_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO entity_merge_proposals "
+            "(id, candidate_entity_id, existing_entity_id, similarity_score, "
+            " similarity_reason, evidence_capture_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (prop_id, new_id, c["id"], 0.9, "name_substring", capture_id),
+        )
+        if verbose:
+            print(f"    [merge?] '{new_name}' ↔ '{ex_name}' → proposal {prop_id}")
+        return  # one proposal per new entity is enough; user picks
 
 
 def step2_resolve(classified: dict, conn, verbose: bool = False) -> dict:
@@ -434,6 +499,17 @@ def step4_route(
             entity_id = _upsert_entity(entity_data, conn, capture_id=source_inbox_id)
             if entity_id not in entity_ids:
                 entity_ids.append(entity_id)
+            # SYN-39: only INSERT path (existing is None) is worth scanning —
+            # an UPDATE means we already merged into the canonical entity.
+            if not existing:
+                _propose_merge_if_similar(
+                    new_id=entity_id,
+                    new_name=canonical,
+                    new_type=entity_data.get("type", "concept"),
+                    capture_id=source_inbox_id,
+                    conn=conn,
+                    verbose=verbose,
+                )
         elif verbose and not should_create:
             print(f"    [route] entity '{canonical}' skipped — noise, no relation")
 
