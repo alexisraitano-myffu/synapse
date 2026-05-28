@@ -465,7 +465,7 @@ def project_state(project_id: str):
             raise HTTPException(status_code=404, detail="project not found")
         state = first_row(conn.execute(
             "SELECT psv.id AS version_id, psv.summary_md, psv.entry_count, "
-            "       psv.trigger, psv.created_at, ps.updated_at "
+            "       psv.trigger, psv.kind, psv.created_at, ps.updated_at "
             "FROM project_state ps "
             "JOIN project_state_versions psv ON psv.id = ps.current_version_id "
             "WHERE ps.project_id = ?", (project_id,)
