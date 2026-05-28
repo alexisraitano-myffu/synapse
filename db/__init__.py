@@ -152,6 +152,34 @@ def init_db() -> None:
                 trigger           TEXT DEFAULT 'manual',
                 error             TEXT
             )""",
+            # ── SYN-41 — Projects as aggregate entities ─────────────────────────
+            # A project is an entity (type='project') that receives a timeline of
+            # entries plus a versioned synthesis. Captures stay in inbox (the
+            # immutable source of truth); projections (entries, summaries, facts,
+            # atomic_notes, entities, relations) carry a provenance_capture_id
+            # back to the inbox row so we never lose lineage.
+            """CREATE TABLE IF NOT EXISTS project_entries (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES entities(id),
+                capture_id        INTEGER NOT NULL REFERENCES inbox(id),
+                content           TEXT NOT NULL,
+                kind              TEXT NOT NULL DEFAULT 'note',
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS project_state_versions (
+                id                TEXT PRIMARY KEY,
+                project_id        TEXT NOT NULL REFERENCES entities(id),
+                summary_md        TEXT NOT NULL,
+                entry_count       INTEGER NOT NULL,
+                trigger           TEXT NOT NULL,  -- 'passive' | 'mcp' | 'manual'
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS project_state (
+                project_id          TEXT PRIMARY KEY REFERENCES entities(id),
+                current_version_id  TEXT REFERENCES project_state_versions(id),
+                updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                entry_count_at_sync INTEGER DEFAULT 0
+            )""",
         ]:
             conn.execute(stmt)
 
@@ -192,6 +220,25 @@ def init_db() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_client_id "
             "ON inbox(client_id) WHERE client_id IS NOT NULL"
+        )
+
+        # Migration: SYN-41 — provenance back-link to the immutable inbox row.
+        # Existing rows keep NULL (we only commit to the invariant going forward).
+        for ddl in [
+            "ALTER TABLE entities     ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
+            "ALTER TABLE facts        ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
+            "ALTER TABLE atomic_notes ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
+            "ALTER TABLE relations    ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
+
+        # Timeline access: fetch a project's entries in reverse-chrono order.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_entries_project "
+            "ON project_entries(project_id, created_at DESC)"
         )
     finally:
         conn.close()
