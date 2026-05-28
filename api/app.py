@@ -353,6 +353,35 @@ def entity_detail(entity_id: str):
         conn.close()
 
 
+@app.get("/projects", dependencies=[Depends(require_auth)])
+def projects_list():
+    """List entities of type=project with synthesis preview (SYN-53).
+
+    One row per project, joined to its current_state (if any) and counted
+    against project_entries. Single trip — avoids the N+1 /entity/{id} +
+    /project/{id}/state walk a client would otherwise do.
+    """
+    conn = get_connection()
+    try:
+        rows = cursor_to_dicts(conn.execute(
+            "SELECT e.id, e.canonical_name, e.mention_count, e.persistence_value, "
+            "       e.last_mentioned, e.summary, "
+            "       psv.summary_md AS current_summary_md, "
+            "       psv.kind        AS current_kind, "
+            "       psv.created_at  AS current_synthesized_at, "
+            "       (SELECT COUNT(*) FROM project_entries pe WHERE pe.project_id = e.id) "
+            "         AS entries_total "
+            "FROM entities e "
+            "LEFT JOIN project_state ps ON ps.project_id = e.id "
+            "LEFT JOIN project_state_versions psv ON psv.id = ps.current_version_id "
+            "WHERE e.type = 'project' "
+            "ORDER BY COALESCE(e.last_mentioned, e.created_at) DESC"
+        ))
+        return rows
+    finally:
+        conn.close()
+
+
 @app.get("/atomic-notes", dependencies=[Depends(require_auth)])
 def atomic_notes_list(
     limit: int = 50,
