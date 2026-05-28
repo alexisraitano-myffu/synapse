@@ -353,6 +353,50 @@ def entity_detail(entity_id: str):
         conn.close()
 
 
+@app.get("/atomic-notes", dependencies=[Depends(require_auth)])
+def atomic_notes_list(
+    limit: int = 50,
+    q: str | None = None,
+    entity: str | None = None,
+):
+    """List atomic_notes for the Notes view (SYN-52).
+
+    Filters are AND-combined and best-effort:
+    - q: substring match on title or content (case-insensitive)
+    - entity: matches any note whose entities_mentioned JSON array contains
+      the canonical name (LIKE on the serialized list — cheap, no JSON1)
+    """
+    limit = min(max(1, limit), 200)
+    conn = get_connection()
+    try:
+        clauses = []
+        params: list = []
+        if q:
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ?)")
+            needle = f"%{q.lower()}%"
+            params.extend([needle, needle])
+        if entity:
+            clauses.append("entities_mentioned LIKE ?")
+            params.append(f'%"{entity}"%')
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        rows = cursor_to_dicts(conn.execute(
+            f"SELECT id, title, content, summary, entities_mentioned, memory_strength, "
+            f"       provenance_capture_id, created_at, updated_at "
+            f"FROM atomic_notes {where} ORDER BY created_at DESC LIMIT ?",
+            tuple(params),
+        ))
+        import json as _json
+        for r in rows:
+            try:
+                r["entities_mentioned"] = _json.loads(r.get("entities_mentioned") or "[]")
+            except (ValueError, TypeError):
+                r["entities_mentioned"] = []
+        return rows
+    finally:
+        conn.close()
+
+
 @app.get("/capture/{capture_id}", dependencies=[Depends(require_auth)])
 def capture_detail(capture_id: int):
     """Return the raw inbox row by id. Powers the 'source' chip — anything
