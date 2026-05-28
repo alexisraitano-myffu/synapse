@@ -745,6 +745,101 @@ Retourne UNIQUEMENT le markdown mis à jour, sans préambule.\
 """
 
 
+_PROJECT_REFINEMENT_SYSTEM = """\
+Tu es le "garbage collector" d'une synthèse de projet personnel. On te donne TOUTES
+les entrées du projet dans l'ordre chronologique. Reconstruis from-scratch une
+synthèse propre :
+- déduplique les infos répétées entre entrées,
+- résous les contradictions quand c'est possible (la plus récente fait foi sauf si
+  une entrée explicite le contraire),
+- élague le périmé (anciennes intentions remplacées, idées abandonnées),
+- préserve l'historique des décisions importantes (avec dates si pertinent),
+- markdown propre, hiérarchie claire, ~500-800 mots max.
+
+Retourne UNIQUEMENT le markdown, sans préambule.\
+"""
+
+
+# After how many *new* entries since the last refinement do we trigger another one ?
+# Configurable via env so tests can use a small value.
+def _refinement_threshold() -> int:
+    try:
+        return max(1, int(os.environ.get("SYNAPSE_REFINEMENT_THRESHOLD", "20")))
+    except ValueError:
+        return 20
+
+
+def _refine_project_summary(
+    project_id: str,
+    project_name: str,
+    conn,
+    client: "anthropic.Anthropic",
+    verbose: bool = False,
+) -> str | None:
+    """Rebuild a project's synthesis from-scratch from all its entries.
+
+    SYN-44: triggered by `_append_project_summary` once a threshold of new
+    entries has accumulated since the last refinement. ~5-10× the cost of an
+    append, but rare. INSERT version with `kind='refinement'` so the caller
+    can know what the latest snapshot represents.
+    """
+    entries = cursor_to_dicts(conn.execute(
+        "SELECT content, created_at FROM project_entries "
+        "WHERE project_id = ? ORDER BY created_at ASC LIMIT 200",
+        (project_id,),
+    ))
+    if not entries:
+        return None
+
+    timeline = "\n\n".join(
+        f"[{e['created_at']}] {e['content']}" for e in entries
+    )
+    user_msg = (
+        f"Projet : {project_name}\n\n"
+        f"Toutes les entrées dans l'ordre chronologique :\n---\n{timeline}\n---\n\n"
+        f"Reconstruis from-scratch la synthèse du projet."
+    )
+
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=2048,
+            system=[{"type": "text", "text": _PROJECT_REFINEMENT_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:
+        if verbose:
+            print(f"    [refinement] Claude error: {exc}")
+        return None
+
+    summary_md = response.content[0].text.strip()
+    if summary_md.startswith("```"):
+        summary_md = summary_md.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    entry_count = len(entries)
+    version_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO project_state_versions "
+        "(id, project_id, summary_md, entry_count, trigger, kind) "
+        "VALUES (?,?,?,?,'passive','refinement')",
+        (version_id, project_id, summary_md, entry_count),
+    )
+    conn.execute(
+        "UPDATE project_state SET current_version_id=?, updated_at=CURRENT_TIMESTAMP, "
+        "entry_count_at_sync=? WHERE project_id=?",
+        (version_id, entry_count, project_id),
+    )
+
+    if verbose:
+        u = response.usage
+        cache_read = getattr(u, "cache_read_input_tokens", 0)
+        print(f"    [refinement] from-scratch v{entry_count} for '{project_name}' "
+              f"({len(entries)} entries) tokens={u.input_tokens}/{u.output_tokens}"
+              + (f" cache_hit={cache_read}" if cache_read else ""))
+    return summary_md
+
+
 def _append_project_summary(
     project_id: str,
     project_name: str,
@@ -805,8 +900,8 @@ def _append_project_summary(
     version_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO project_state_versions "
-        "(id, project_id, summary_md, entry_count, trigger) "
-        "VALUES (?,?,?,?,'passive')",
+        "(id, project_id, summary_md, entry_count, trigger, kind) "
+        "VALUES (?,?,?,?,'passive','append')",
         (version_id, project_id, summary_md, new_entry_count),
     )
     existing_state = first_row(conn.execute(
@@ -828,9 +923,26 @@ def _append_project_summary(
     if verbose:
         u = response.usage
         cache_read = getattr(u, "cache_read_input_tokens", 0)
-        print(f"    [project_summary] v{new_entry_count} for '{project_name}' "
+        print(f"    [project_summary] append v{new_entry_count} for '{project_name}' "
               f"tokens={u.input_tokens}/{u.output_tokens}"
               + (f" cache_hit={cache_read}" if cache_read else ""))
+
+    # SYN-44: trigger from-scratch refinement once enough new entries have
+    # accumulated since the last refinement.
+    last_refinement = first_row(conn.execute(
+        "SELECT MAX(entry_count) AS last_count FROM project_state_versions "
+        "WHERE project_id = ? AND kind = 'refinement'", (project_id,)
+    ))
+    last_count = (last_refinement or {}).get("last_count") or 0
+    if new_entry_count - last_count >= _refinement_threshold():
+        _refine_project_summary(
+            project_id=project_id,
+            project_name=project_name,
+            conn=conn,
+            client=client,
+            verbose=verbose,
+        )
+
     return summary_md
 
 

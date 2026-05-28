@@ -240,5 +240,16 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_project_entries_project "
             "ON project_entries(project_id, created_at DESC)"
         )
+
+        # Migration: SYN-44 — distinguish append (incremental) from refinement
+        # (from-scratch rebuild) on project_state_versions. Both stay
+        # trigger='passive' or 'mcp' or 'manual' — kind is orthogonal.
+        try:
+            conn.execute(
+                "ALTER TABLE project_state_versions "
+                "ADD COLUMN kind TEXT NOT NULL DEFAULT 'append'"
+            )
+        except apsw.SQLError:
+            pass  # column already present
     finally:
         conn.close()
