@@ -234,7 +234,10 @@ def graph(entity: str | None = None, mode: str = "full"):
     try:
         nodes = []
         for e in cursor_to_dicts(conn.execute(
-            "SELECT id, canonical_name, type, mention_count, persistence_value, summary FROM entities"
+            "SELECT e.id, e.canonical_name, e.type, e.mention_count, e.persistence_value, "
+            "       e.summary, e.last_mentioned, "
+            "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id) AS facts_count "
+            "FROM entities e"
         )):
             nodes.append({
                 "id": e["id"],
@@ -243,6 +246,8 @@ def graph(entity: str | None = None, mode: str = "full"):
                 "mention_count": e.get("mention_count", 1),
                 "persistence_value": e.get("persistence_value", 3),
                 "summary": e.get("summary"),
+                "last_mentioned": e.get("last_mentioned"),
+                "facts_count": e.get("facts_count", 0),
                 "memory_strength": None,  # reserved (Phase C)
             })
         edges = [
@@ -285,6 +290,8 @@ def entity_detail(entity_id: str):
             "aliases": aliases, "summary": e.get("summary"),
             "mention_count": e.get("mention_count", 1),
             "persistence_value": e.get("persistence_value", 3),
+            "last_mentioned": e.get("last_mentioned"),
+            "facts_count": len(facts),
             "facts": facts, "relations": relations,
         }
     finally:
