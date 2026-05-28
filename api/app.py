@@ -30,6 +30,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import config_store
 from config import BASE_DIR
 from db import cursor_to_dicts, first_row, get_connection, init_db
 
@@ -81,13 +82,19 @@ def _scheduler_loop() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
-    from api.discovery import start_advertising, stop_advertising
     threading.Thread(target=_scheduler_loop, daemon=True).start()
-    azc = await start_advertising()
+    # Loopback-only builds (bundled tester binary) set SYNAPSE_DISABLE_MDNS=1
+    # to skip zeroconf — mobile clients on the LAN won't reach this instance.
+    azc = None
+    if not os.environ.get("SYNAPSE_DISABLE_MDNS"):
+        from api.discovery import start_advertising, stop_advertising
+        azc = await start_advertising()
     try:
         yield
     finally:
-        await stop_advertising(azc)
+        if azc is not None:
+            from api.discovery import stop_advertising
+            await stop_advertising(azc)
 
 
 app = FastAPI(title="Synapse API", lifespan=lifespan)
@@ -154,6 +161,10 @@ class EntityUpdate(BaseModel):
     type: EntityType
 
 
+class AnthropicKeyIn(BaseModel):
+    key: str
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -168,6 +179,24 @@ def health():
         return {"status": "ok", "entities": entities, "pending": pending, "inbox_queued": queued}
     finally:
         conn.close()
+
+
+@app.get("/config", dependencies=[Depends(require_auth)])
+def get_config():
+    """Status only — never echoes the key back. Used by the wizard to know
+    whether to prompt for one."""
+    return {"anthropic_key_set": config_store.has_anthropic_key()}
+
+
+@app.put("/config/anthropic-key", dependencies=[Depends(require_auth)])
+def put_anthropic_key(body: AnthropicKeyIn):
+    """Stores the key in ~/.synapse/config.json (0600). Lets the desktop app
+    push the key without touching .env files."""
+    key = body.key.strip()
+    if not key.startswith("sk-"):
+        raise HTTPException(status_code=400, detail="invalid key format (expected sk-...)")
+    config_store.set_anthropic_key(key)
+    return {"status": "ok"}
 
 
 @app.post("/capture", dependencies=[Depends(require_auth)])
