@@ -322,12 +322,16 @@ def entity_detail(entity_id: str):
         e = first_row(conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)))
         if not e:
             raise HTTPException(status_code=404, detail="entity not found")
+        # SYN-54: surface provenance_capture_id on every projection so the client
+        # can render a "source" chip pointing back to the immutable inbox row.
         facts = cursor_to_dicts(conn.execute(
-            "SELECT predicate, value, confidence, persistence_value, created_at "
+            "SELECT predicate, value, confidence, persistence_value, created_at, "
+            "       provenance_capture_id "
             "FROM facts WHERE entity_id=? ORDER BY confidence DESC", (entity_id,),
         ))
         relations = cursor_to_dicts(conn.execute(
-            "SELECT r.predicate, e.canonical_name AS entity_to, r.confidence "
+            "SELECT r.predicate, e.canonical_name AS entity_to, r.confidence, "
+            "       r.provenance_capture_id "
             "FROM relations r JOIN entities e ON e.id=r.entity_to WHERE r.entity_from=?",
             (entity_id,),
         ))
@@ -343,7 +347,27 @@ def entity_detail(entity_id: str):
             "last_mentioned": e.get("last_mentioned"),
             "facts_count": len(facts),
             "facts": facts, "relations": relations,
+            "provenance_capture_id": e.get("provenance_capture_id"),
         }
+    finally:
+        conn.close()
+
+
+@app.get("/capture/{capture_id}", dependencies=[Depends(require_auth)])
+def capture_detail(capture_id: int):
+    """Return the raw inbox row by id. Powers the 'source' chip — anything
+    elsewhere with a provenance_capture_id can resolve to a full capture
+    payload here without leaking SQL details to the client."""
+    conn = get_connection()
+    try:
+        row = first_row(conn.execute(
+            "SELECT id, content, source, device_id, captured_at, created_at, "
+            "       processed_at, status, client_id "
+            "FROM inbox WHERE id = ?", (capture_id,)
+        ))
+        if not row:
+            raise HTTPException(status_code=404, detail="capture not found")
+        return row
     finally:
         conn.close()
 
