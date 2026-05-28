@@ -63,18 +63,21 @@ _SYSTEM_CLASSIFIER = """\
 Tu es un extracteur de mémoire pour un second cerveau personnel.
 
 Une même capture peut produire PLUSIEURS sorties simultanément (routing non-exclusif).
-Une réflexion dense sur un projet, qui mentionne une personne et énonce un fait, doit
-produire à la fois project_entry + atomic_note + entities + facts dans le même JSON.
+Une réflexion dense qui mentionne plusieurs projets, des personnes et énonce des faits,
+doit produire à la fois project_entries (N items) + atomic_note + entities + facts dans
+le même JSON.
 
 Retourne UNIQUEMENT un JSON valide (sans markdown) :
 {{
   "input_type": "fact|episodic|ephemeral|resource",
   "atomic_note": "string ou null (réflexion libre / pensée non-factuelle ; on la garde comme nœud à part qui MENTIONNE des entités sans en devenir une)",
-  "project_entry": null ou {{
-    "project_canonical": "string (nom du projet auquel rattacher ; si 'nouveau projet : X', mets X)",
-    "content": "string (l'extrait de la capture pertinent pour ce projet)",
-    "is_new": true|false (true si l'utilisateur déclare un nouveau projet)"
-  }},
+  "project_entries": [
+    {{
+      "project_canonical": "string (nom du projet auquel rattacher ; si 'nouveau projet : X', mets X)",
+      "content": "string (l'extrait de la capture pertinent pour CE projet précis)",
+      "is_new": true|false
+    }}
+  ],
   "entities": [
     {{
       "canonical_name": "string",
@@ -109,11 +112,13 @@ Règles atomic_note :
   PAS une entité fourre-tout. Les concepts mentionnés deviennent des entities reliées séparément.
 - Si la capture est purement factuelle (ex: "anniversaire de maman = 26 mars"), atomic_note = null.
 
-Règles project_entry :
-- Si la capture est explicitement liée à un projet (déclaré ou nommé dans la capture), produire un project_entry.
-- "nouveau projet : X" → is_new=true, project_canonical=X.
-- La liste des projets existants te sera fournie en contexte ci-dessous.
-- Si aucun projet identifiable → project_entry = null.
+Règles project_entries :
+- Si la capture est explicitement liée à un OU PLUSIEURS projets (déclarés ou nommés), produire UNE entrée par projet dans le tableau project_entries.
+- Une même capture peut mentionner plusieurs projets ("j'ai avancé Synapse et Atlas aujourd'hui") → 2 items, un pour chaque projet, avec un `content` propre qui reprend uniquement l'extrait pertinent à ce projet.
+- "nouveau projet : X" → is_new=true, project_canonical=X (et toujours dans le tableau, même s'il n'y a qu'un seul item).
+- La liste des projets existants te sera fournie en contexte ci-dessous — préfère un nom existant à une variante orthographique.
+- Si aucun projet identifiable → project_entries = [] (tableau vide).
+- Ne jamais émettre deux items pour le même project_canonical dans une même capture — fusionne le contenu dans un seul item.
 
 Règles persistence_value :
 5 = permanent (date naissance, lien familial, prénom)
@@ -1031,10 +1036,10 @@ def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False) -> 
 def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str], list[dict]]:
     """Process one inbox entry; mark it processed. Returns (entity_ids, new_facts).
 
-    SYN-42: routing is now NON-EXCLUSIVE. A single capture can simultaneously
-    produce a project_entry, an atomic_note, entities, facts and relations.
-    Each sub-routing is gated by what Haiku put in the JSON, not by an exclusive
-    if/elif chain.
+    SYN-42 + SYN-57: routing is NON-EXCLUSIVE and N-per-projection. A single
+    capture can simultaneously produce N project_entries (one per mentioned
+    project), an atomic_note, entities, facts and relations. Each sub-routing
+    is gated by what Haiku put in the JSON, not by an exclusive if/elif chain.
 
     Raises anthropic.APIError on infrastructure failure (caller aborts the run and
     leaves the entry queued); other exceptions are content errors the caller marks
@@ -1058,8 +1063,9 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     if dry_run:
         if verbose:
             outs = []
-            if classified.get("project_entry"):
-                outs.append(f"project_entry→{classified['project_entry'].get('project_canonical')}")
+            for pe in classified.get("project_entries") or []:
+                if pe and pe.get("project_canonical"):
+                    outs.append(f"project_entry→{pe['project_canonical']}")
             if classified.get("atomic_note"):
                 outs.append("atomic_note")
             if classified.get("entities"):
@@ -1101,9 +1107,19 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
             # still get persisted as a vectorized note from the raw capture content.
             write_episodic_note(classified, entry, conn, dry_run=False, verbose=verbose)
 
-        # 3. Project entry — timeline contribution to a durable project entity.
-        proj = classified.get("project_entry")
-        if proj and proj.get("project_canonical"):
+        # 3. Project entries — N rattachements possibles (SYN-57). Une même
+        # capture peut alimenter la timeline de plusieurs projets en parallèle ;
+        # chaque projet reçoit son extrait (`content`) et déclenche sa propre
+        # mise à jour de synthèse. Dedup par nom canonique au cas où le LLM
+        # émettrait des doublons (premier extrait gagne).
+        seen_projects: set[str] = set()
+        for proj in classified.get("project_entries") or []:
+            if not proj or not proj.get("project_canonical"):
+                continue
+            key = proj["project_canonical"].strip().lower()
+            if not key or key in seen_projects:
+                continue
+            seen_projects.add(key)
             _persist_project_entry(
                 project_canonical=proj["project_canonical"],
                 content=(proj.get("content") or entry["content"]).strip(),
@@ -1111,7 +1127,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 conn=conn,
                 is_new_project=bool(proj.get("is_new")),
                 verbose=verbose,
-                client=client,  # SYN-43: triggers live synthesis append
+                client=client,  # SYN-43: triggers live synthesis append per project
             )
 
         handle_intentions(classified, conn, dry_run=False, verbose=verbose)
