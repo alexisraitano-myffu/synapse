@@ -108,9 +108,30 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
 }}
 
 Règles atomic_note :
-- Une "réflexion libre" ("j'ai pensé à…", "j'ai eu une idée sur…", journal personnel) → atomic_note,
-  PAS une entité fourre-tout. Les concepts mentionnés deviennent des entities reliées séparément.
-- Si la capture est purement factuelle (ex: "anniversaire de maman = 26 mars"), atomic_note = null.
+Un atomic_note est une PENSÉE de l'auteur qui doit pouvoir resurgir plus tard (insight,
+idée, citation marquante, décision). Ce N'EST PAS un compte-rendu d'événement courant ni
+une affirmation factuelle sur des tiers.
+
+Émettre atomic_note SEULEMENT si AU MOINS UN critère positif est rempli :
+ (a) Première personne réflexive : "je pense que…", "j'ai réalisé que…", "je me demande si…",
+     "il faut que je…", "je vais essayer de…", "je veux arrêter de…".
+ (b) Citation ou référence à une œuvre / un auteur / une idée externe sur laquelle l'auteur
+     se positionne ("Schopenhauer dit X, mais je trouve que Y").
+ (c) Observation contemplative non-actionnable : "c'est marrant comme…", "j'ai remarqué que…",
+     une intuition générale qui ne se réduit pas à un fait sur une personne.
+
+Sinon atomic_note = null. En particulier, atomic_note = null pour TOUS ces cas :
+ - "X a/est/fait Y" → fact sur X (ex : "Karim a un projet appelé Atlas", "Marie a un chat Gipsy",
+   "Léa a probablement adopté un chien", "ma mère a un nouveau chat").
+ - "j'ai fait/mangé/vu/travaillé sur …" → événement courant, va dans inbox + entities/facts,
+   pas en atomic_note (sauf si l'auteur en tire explicitement une réflexion, cf. (a)).
+ - Compte-rendu projet ("j'ai avancé sur X aujourd'hui, j'ai testé Y") → project_entries, pas
+   atomic_note (sauf réflexion explicite en plus).
+ - Énoncé d'intention ("RDV dentiste mardi", "il faut que j'achète du pain") → intention.
+
+Fail-safe SVO : si la capture peut intégralement se reformuler en (sujet, prédicat, objet) ou
+en liste de tels triplets, c'est un fact, pas une note. Une note contient toujours un
+mouvement réflexif qui ne tient pas dans un triplet.
 
 Règles project_entries :
 - Si la capture est explicitement liée à un OU PLUSIEURS projets (déclarés ou nommés), produire UNE entrée par projet dans le tableau project_entries.
@@ -1087,6 +1108,9 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
             entity_ids = step4_route(resolved, capture_id, conn, dry_run=False, verbose=verbose)
 
         # 2. Atomic note — free-form thought that mentions entities without being one.
+        # SYN-56: no fallback on input_type=='episodic'. We trust the classifier's
+        # atomic_note decision; otherwise the Notes view fills up with non-reflective
+        # diary entries / fact restatements ("X a Y") that bypass the explicit rules.
         atomic = classified.get("atomic_note")
         if atomic and atomic.strip():
             mentioned = [
@@ -1102,10 +1126,6 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 conn=conn,
                 verbose=verbose,
             )
-        elif classified.get("input_type") == "episodic" and not atomic:
-            # Backward compat: legacy 'episodic' captures with no explicit atomic_note
-            # still get persisted as a vectorized note from the raw capture content.
-            write_episodic_note(classified, entry, conn, dry_run=False, verbose=verbose)
 
         # 3. Project entries — N rattachements possibles (SYN-57). Une même
         # capture peut alimenter la timeline de plusieurs projets en parallèle ;
