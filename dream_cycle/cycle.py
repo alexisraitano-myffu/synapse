@@ -61,13 +61,24 @@ def _get_client() -> anthropic.Anthropic:
 
 _SYSTEM_CLASSIFIER = """\
 Tu es un extracteur de mémoire pour un second cerveau personnel.
-Analyse l'entrée et retourne UNIQUEMENT un JSON valide (sans markdown) :
+
+Une même capture peut produire PLUSIEURS sorties simultanément (routing non-exclusif).
+Une réflexion dense sur un projet, qui mentionne une personne et énonce un fait, doit
+produire à la fois project_entry + atomic_note + entities + facts dans le même JSON.
+
+Retourne UNIQUEMENT un JSON valide (sans markdown) :
 {{
   "input_type": "fact|episodic|ephemeral|resource",
+  "atomic_note": "string ou null (réflexion libre / pensée non-factuelle ; on la garde comme nœud à part qui MENTIONNE des entités sans en devenir une)",
+  "project_entry": null ou {{
+    "project_canonical": "string (nom du projet auquel rattacher ; si 'nouveau projet : X', mets X)",
+    "content": "string (l'extrait de la capture pertinent pour ce projet)",
+    "is_new": true|false (true si l'utilisateur déclare un nouveau projet)"
+  }},
   "entities": [
     {{
       "canonical_name": "string",
-      "type": "person|place|project|concept",
+      "type": "person|place|project|concept|organization|animal",
       "aliases": ["string"],
       "summary": "string (1 phrase qui décrit cette entité, ou null si rien de notable)",
       "attributes": {{"clé": "valeur"}},
@@ -92,6 +103,18 @@ Analyse l'entrée et retourne UNIQUEMENT un JSON valide (sans markdown) :
   "is_ephemeral": false,
   "ephemeral_content": null
 }}
+
+Règles atomic_note :
+- Une "réflexion libre" ("j'ai pensé à…", "j'ai eu une idée sur…", journal personnel) → atomic_note,
+  PAS une entité fourre-tout. Les concepts mentionnés deviennent des entities reliées séparément.
+- Si la capture est purement factuelle (ex: "anniversaire de maman = 26 mars"), atomic_note = null.
+
+Règles project_entry :
+- Si la capture est explicitement liée à un projet (déclaré ou nommé dans la capture), produire un project_entry.
+- "nouveau projet : X" → is_new=true, project_canonical=X.
+- La liste des projets existants te sera fournie en contexte ci-dessous.
+- Si aucun projet identifiable → project_entry = null.
+
 Règles persistence_value :
 5 = permanent (date naissance, lien familial, prénom)
 4 = stable modifiable (lieu de travail, adresse)
@@ -107,12 +130,48 @@ La date d'aujourd'hui est : {today}.\
 """
 
 
-def step1_classify(entry: dict, client: anthropic.Anthropic, verbose: bool = False) -> dict:
-    system = _SYSTEM_CLASSIFIER.format(today=_TODAY)
+def _load_active_projects_block(conn) -> str:
+    """Builds the context block listing existing project entities for the prompt.
+
+    Returned as a separate (uncached) system text block so changes to the project
+    list don't bust the cache of the stable rules above.
+    """
+    rows = cursor_to_dicts(conn.execute(
+        "SELECT canonical_name, summary, aliases FROM entities "
+        "WHERE type='project' ORDER BY mention_count DESC, last_mentioned DESC LIMIT 50"
+    ))
+    if not rows:
+        return "[PROJETS EXISTANTS]\n(aucun pour l'instant — toute mention de 'nouveau projet : X' doit créer l'entité)"
+    lines = ["[PROJETS EXISTANTS — utilise leur canonical_name exact pour le rattachement]"]
+    for r in rows:
+        try:
+            aliases = json.loads(r.get("aliases") or "[]")
+        except (ValueError, TypeError):
+            aliases = []
+        alias_str = f" (alias: {', '.join(aliases)})" if aliases else ""
+        summary = (r.get("summary") or "").strip().replace("\n", " ")[:120]
+        lines.append(f"- {r['canonical_name']}{alias_str}{(' — ' + summary) if summary else ''}")
+    return "\n".join(lines)
+
+
+def step1_classify(
+    entry: dict,
+    client: anthropic.Anthropic,
+    verbose: bool = False,
+    conn=None,
+) -> dict:
+    system_stable = _SYSTEM_CLASSIFIER.format(today=_TODAY)
+    system_blocks = [
+        {"type": "text", "text": system_stable, "cache_control": {"type": "ephemeral"}},
+    ]
+    if conn is not None:
+        projects_block = _load_active_projects_block(conn)
+        # NOT cached — varies as projects are created.
+        system_blocks.append({"type": "text", "text": projects_block})
     response = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1024,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        max_tokens=1536,
+        system=system_blocks,
         messages=[{"role": "user", "content": entry["content"]}],
     )
     raw = response.content[0].text.strip()
@@ -232,8 +291,14 @@ def _entity_persistence(entity_data: dict) -> int:
     return max(vals) if vals else 3
 
 
-def _upsert_entity(entity_data: dict, conn) -> str:
-    """Create or update an entity node, filling summary / attributes / persistence."""
+def _upsert_entity(entity_data: dict, conn, capture_id: int | None = None) -> str:
+    """Create or update an entity node, filling summary / attributes / persistence.
+
+    SYN-41: a newly created entity carries its `provenance_capture_id` back to
+    the immutable inbox row that spawned it. UPDATE path leaves provenance alone
+    (first-mention provenance is the lineage we care about; subsequent mentions
+    don't overwrite history).
+    """
     existing = entity_data.get("existing_entity")
     now = datetime.now(timezone.utc).date().isoformat()
     summary = entity_data.get("summary")
@@ -270,8 +335,9 @@ def _upsert_entity(entity_data: dict, conn) -> str:
         entity_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO entities "
-            "(id, type, canonical_name, aliases, attributes, summary, last_mentioned, persistence_value) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(id, type, canonical_name, aliases, attributes, summary, last_mentioned, "
+            " persistence_value, provenance_capture_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 entity_id,
                 entity_data.get("type", "concept"),
@@ -281,6 +347,7 @@ def _upsert_entity(entity_data: dict, conn) -> str:
                 summary,
                 now,
                 persistence,
+                capture_id,
             ),
         )
     return entity_id
@@ -338,7 +405,7 @@ def step4_route(
 
         entity_id: str | None = None
         if should_create and not dry_run:
-            entity_id = _upsert_entity(entity_data, conn)
+            entity_id = _upsert_entity(entity_data, conn, capture_id=source_inbox_id)
             if entity_id not in entity_ids:
                 entity_ids.append(entity_id)
         elif verbose and not should_create:
@@ -370,13 +437,15 @@ def step4_route(
                 if entity_id:
                     conn.execute(
                         "INSERT INTO facts "
-                        "(id, entity_id, predicate, value, confidence, source_inbox_id, persistence_value) "
-                        "VALUES (?,?,?,?,?,?,?)",
+                        "(id, entity_id, predicate, value, confidence, source_inbox_id, "
+                        " persistence_value, provenance_capture_id) "
+                        "VALUES (?,?,?,?,?,?,?,?)",
                         (
                             str(uuid.uuid4()), entity_id,
                             fact["predicate"], fact["value"],
                             confidence, str(source_inbox_id),
                             fact.get("persistence_value", 3),
+                            source_inbox_id,
                         ),
                     )
             elif confidence >= 0.5:
@@ -406,8 +475,10 @@ def step4_route(
             ).fetchone()
             if from_row and to_row:
                 conn.execute(
-                    "INSERT INTO relations (id, entity_from, predicate, entity_to) VALUES (?,?,?,?)",
-                    (str(uuid.uuid4()), from_row[0], predicate, to_row[0]),
+                    "INSERT INTO relations "
+                    "(id, entity_from, predicate, entity_to, provenance_capture_id) "
+                    "VALUES (?,?,?,?,?)",
+                    (str(uuid.uuid4()), from_row[0], predicate, to_row[0], source_inbox_id),
                 )
                 if verbose:
                     print(f"    [route] relation {from_name} —{predicate}→ {to_name}")
@@ -468,23 +539,31 @@ def step5_validate_pending(
             row = conn.execute(
                 "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (entity_name,)
             ).fetchone()
+            # SYN-41: provenance traces back to the original capture that spawned
+            # the pending fact (or whichever corroborator promoted it).
+            try:
+                prov_id = int(pf.get("source_inbox_id")) if pf.get("source_inbox_id") else None
+            except (TypeError, ValueError):
+                prov_id = None
             if row:
                 entity_id = row[0]
             else:
                 entity_id = str(uuid.uuid4())
                 conn.execute(
-                    "INSERT INTO entities (id, canonical_name) VALUES (?,?)",
-                    (entity_id, entity_name),
+                    "INSERT INTO entities (id, canonical_name, provenance_capture_id) VALUES (?,?,?)",
+                    (entity_id, entity_name, prov_id),
                 )
             conn.execute(
                 "INSERT INTO facts "
-                "(id, entity_id, predicate, value, confidence, source_inbox_id, persistence_value) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "(id, entity_id, predicate, value, confidence, source_inbox_id, "
+                " persistence_value, provenance_capture_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (
                     str(uuid.uuid4()), entity_id,
                     pf.get("predicate"), pf.get("value"),
                     new_conf, pf.get("source_inbox_id"),
                     pf.get("persistence_value", 3),
+                    prov_id,
                 ),
             )
             conn.execute("DELETE FROM pending_facts WHERE id=?", (pending_id,))
@@ -614,6 +693,98 @@ def write_episodic_note(
         print(f"    [episodic] note id={note_id}: {title!r}")
 
 
+# ── SYN-42 — Multi-output routing helpers ────────────────────────────────────
+
+def _persist_atomic_note(
+    content: str,
+    summary: str,
+    entities_mentioned: list[str],
+    capture_id: int,
+    conn,
+    verbose: bool = False,
+) -> int | None:
+    """Persist a free-form thought as an atomic_note with provenance.
+
+    Differs from the legacy write_episodic_note: doesn't require a full
+    `classified` dict, accepts an explicit content (so the multi-output router
+    can pass either the raw capture or a Claude-extracted excerpt), and carries
+    the provenance_capture_id from SYN-41.
+    """
+    title = (summary or content)[:60]
+    conn.execute(
+        "INSERT INTO atomic_notes "
+        "(title, content, summary, entities_mentioned, memory_strength, provenance_capture_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (title, content, summary,
+         json.dumps(entities_mentioned, ensure_ascii=False),
+         1.0, capture_id),
+    )
+    note_id = conn.last_insert_rowid()
+    try:
+        vec_bytes = embed_text(f"{title}\n{content}")
+        conn.execute(
+            "INSERT OR REPLACE INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)",
+            (note_id, vec_bytes),
+        )
+    except Exception as exc:
+        if verbose:
+            print(f"    [atomic_note] vectorize error: {exc}")
+    if verbose:
+        print(f"    [atomic_note] id={note_id}: {title!r}")
+    return note_id
+
+
+def _persist_project_entry(
+    project_canonical: str,
+    content: str,
+    capture_id: int,
+    conn,
+    is_new_project: bool = False,
+    verbose: bool = False,
+) -> tuple[str, str]:
+    """Find or create the project entity then INSERT into project_entries.
+
+    Returns (project_id, entry_id). Uses canonical_name case-insensitively to
+    match the resolver's existing convention.
+    """
+    canonical = project_canonical.strip()
+    row = first_row(conn.execute(
+        "SELECT id FROM entities WHERE type='project' AND LOWER(canonical_name) = LOWER(?)",
+        (canonical,),
+    ))
+    if row:
+        project_id = row["id"]
+        # Bump mention_count so the project shows up in Force-sorted views.
+        conn.execute(
+            "UPDATE entities SET mention_count = mention_count + 1, last_mentioned = DATE('now') "
+            "WHERE id = ?",
+            (project_id,),
+        )
+    else:
+        project_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO entities "
+            "(id, type, canonical_name, mention_count, last_mentioned, persistence_value, "
+            " summary, provenance_capture_id) "
+            "VALUES (?, 'project', ?, 1, DATE('now'), 3, ?, ?)",
+            (project_id, canonical,
+             "Projet créé automatiquement par le Dream Cycle." if is_new_project else None,
+             capture_id),
+        )
+        if verbose:
+            print(f"    [project] auto-created '{canonical}' id={project_id}")
+
+    entry_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO project_entries (id, project_id, capture_id, content, kind) "
+        "VALUES (?, ?, ?, ?, 'note')",
+        (entry_id, project_id, capture_id, content),
+    )
+    if verbose:
+        print(f"    [project] '{canonical}' ← entry id={entry_id}")
+    return project_id, entry_id
+
+
 # ── Per-entry processing ─────────────────────────────────────────────────────
 
 def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False) -> None:
@@ -628,37 +799,91 @@ def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False) -> 
 def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str], list[dict]]:
     """Process one inbox entry; mark it processed. Returns (entity_ids, new_facts).
 
+    SYN-42: routing is now NON-EXCLUSIVE. A single capture can simultaneously
+    produce a project_entry, an atomic_note, entities, facts and relations.
+    Each sub-routing is gated by what Haiku put in the JSON, not by an exclusive
+    if/elif chain.
+
     Raises anthropic.APIError on infrastructure failure (caller aborts the run and
     leaves the entry queued); other exceptions are content errors the caller marks
     as 'failed'.
     """
-    classified = step1_classify(entry, client, verbose)
+    classified = step1_classify(entry, client, verbose, conn=conn)
 
-    # Ephemeral → intentions only
+    # Ephemeral stays a special exit — it's "this isn't memory, just an
+    # intention that expires". No graph, no atomic_note, no project.
     if classified.get("is_ephemeral") or classified.get("input_type") == "ephemeral":
         with conn:
             handle_intentions(classified, conn, dry_run, verbose)
             _mark(conn, entry["id"], now, "processed", dry_run)
         return [], []
 
-    # Episodic → vectorized atomic_note
-    if classified.get("input_type") == "episodic":
-        with conn:
-            write_episodic_note(classified, entry, conn, dry_run, verbose)
-            _mark(conn, entry["id"], now, "processed", dry_run)
+    # All other inputs go through the multi-output router below.
+    capture_id = entry["id"]
+    entity_ids: list[str] = []
+    new_facts: list[dict] = []
+
+    if dry_run:
+        if verbose:
+            outs = []
+            if classified.get("project_entry"):
+                outs.append(f"project_entry→{classified['project_entry'].get('project_canonical')}")
+            if classified.get("atomic_note"):
+                outs.append("atomic_note")
+            if classified.get("entities"):
+                outs.append(f"{len(classified['entities'])} entities")
+            print(f"    [dry] would route: {', '.join(outs) or '(nothing)'}")
         return [], []
 
-    # Fact / resource → entity graph
-    resolved = step2_resolve(classified, conn, verbose)
-    new_facts = [
-        {**fact, "entity_canonical": ent["canonical_name"], "source_inbox_id": entry["id"]}
-        for ent in resolved.get("resolved_entities", [])
-        for fact in ent.get("facts", [])
-    ]
+    # 1. Graph (entities + facts + relations) — runs whenever Haiku found entities.
+    resolved = step2_resolve(classified, conn, verbose) if classified.get("entities") else None
+    if resolved:
+        new_facts = [
+            {**fact, "entity_canonical": ent["canonical_name"], "source_inbox_id": capture_id}
+            for ent in resolved.get("resolved_entities", [])
+            for fact in ent.get("facts", [])
+        ]
+
     with conn:
-        entity_ids = step4_route(resolved, entry["id"], conn, dry_run, verbose)
-        handle_intentions(resolved, conn, dry_run, verbose)
-        _mark(conn, entry["id"], now, "processed", dry_run)
+        if resolved:
+            entity_ids = step4_route(resolved, capture_id, conn, dry_run=False, verbose=verbose)
+
+        # 2. Atomic note — free-form thought that mentions entities without being one.
+        atomic = classified.get("atomic_note")
+        if atomic and atomic.strip():
+            mentioned = [
+                e["canonical_name"]
+                for e in classified.get("entities", [])
+                if e.get("canonical_name")
+            ]
+            _persist_atomic_note(
+                content=atomic.strip(),
+                summary=classified.get("summary") or "",
+                entities_mentioned=mentioned,
+                capture_id=capture_id,
+                conn=conn,
+                verbose=verbose,
+            )
+        elif classified.get("input_type") == "episodic" and not atomic:
+            # Backward compat: legacy 'episodic' captures with no explicit atomic_note
+            # still get persisted as a vectorized note from the raw capture content.
+            write_episodic_note(classified, entry, conn, dry_run=False, verbose=verbose)
+
+        # 3. Project entry — timeline contribution to a durable project entity.
+        proj = classified.get("project_entry")
+        if proj and proj.get("project_canonical"):
+            _persist_project_entry(
+                project_canonical=proj["project_canonical"],
+                content=(proj.get("content") or entry["content"]).strip(),
+                capture_id=capture_id,
+                conn=conn,
+                is_new_project=bool(proj.get("is_new")),
+                verbose=verbose,
+            )
+
+        handle_intentions(classified, conn, dry_run=False, verbose=verbose)
+        _mark(conn, capture_id, now, "processed", dry_run=False)
+
     return entity_ids, new_facts
 
 

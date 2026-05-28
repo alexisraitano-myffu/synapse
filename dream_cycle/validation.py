@@ -56,24 +56,32 @@ def record_and_apply_validation(
     row = conn.execute(
         "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (entity_name,)
     ).fetchone()
+    # SYN-41: provenance traces back to the capture that spawned the pending.
+    try:
+        prov_id = int(fact_data.get("source_inbox_id")) if fact_data.get("source_inbox_id") else None
+    except (TypeError, ValueError):
+        prov_id = None
+
     if row:
         entity_id = row[0]
     else:
         entity_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO entities (id, canonical_name) VALUES (?,?)",
-            (entity_id, entity_name),
+            "INSERT INTO entities (id, canonical_name, provenance_capture_id) VALUES (?,?,?)",
+            (entity_id, entity_name, prov_id),
         )
 
     conn.execute(
         "INSERT INTO facts "
-        "(id, entity_id, predicate, value, confidence, source_inbox_id, persistence_value) "
-        "VALUES (?,?,?,?,?,?,?)",
+        "(id, entity_id, predicate, value, confidence, source_inbox_id, "
+        " persistence_value, provenance_capture_id) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         (
             str(uuid.uuid4()), entity_id,
             fact_data.get("predicate"), fact_data.get("value"),
             CONFIRMED_CONFIDENCE, fact_data.get("source_inbox_id"),
             fact_data.get("persistence_value", 3),
+            prov_id,
         ),
     )
     conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
