@@ -73,7 +73,8 @@ Analyse l'entrée et retourne UNIQUEMENT un JSON valide (sans markdown) :
         {{
           "predicate": "string (snake_case ex: has_birthday, works_at, lives_in)",
           "value": "string",
-          "persistence_value": 1
+          "persistence_value": 1,
+          "evidence_strength": "explicit|hedged|implicit"
         }}
       ]
     }}
@@ -95,6 +96,10 @@ Règles persistence_value :
 3 = état actuel (projet en cours)
 2 = contextuel (événement ponctuel)
 1 = bruit (mention passagère)
+Règles evidence_strength :
+explicit = fait énoncé directement, sans modal d'incertitude
+hedged   = modaux d'incertitude présents ("semble", "je crois", "il paraît", "devrait", "peut-être", "probablement", "il me semble")
+implicit = fait non énoncé mais déduit du contexte (inférence indirecte, ex: on parle du déménagement de Pierre sans dire où)
 Résous les dates relatives vers des dates absolues.
 La date d'aujourd'hui est : {today}.\
 """
@@ -182,6 +187,13 @@ def step2_resolve(classified: dict, conn, verbose: bool = False) -> dict:
 
 _PERSISTENCE_BONUS = {5: 0.2, 4: 0.15, 3: 0.05, 2: 0.0, 1: -0.1}
 
+# Evidence strength → confidence floor. The pivot of routing: Claude decides
+# how the fact is asserted in the source text, Python adds marginal bonuses.
+#   - explicit  → directly stated, no hedge → tends to land in `facts`
+#   - hedged    → modal of uncertainty present → tends to land in `pending`
+#   - implicit  → inferred from context, not stated → tends to be rejected
+_EVIDENCE_BASE = {"explicit": 0.92, "hedged": 0.65, "implicit": 0.40}
+
 # Anti-pollution garde-fou for entity creation: an entity is created on mention
 # only if it carries at least this much persistence in one of its facts (i.e. it
 # is more than pure noise) — unless it already exists or appears in a relation.
@@ -192,18 +204,17 @@ MIN_ENTITY_PERSISTENCE = 2
 
 def compute_confidence(
     fact: dict,
-    has_explicit_statement: bool,
-    context_supports: bool,
+    evidence_strength: str,
+    existing: bool,
     mention_count: int,
 ) -> float:
-    score = 0.0
-    if has_explicit_statement:
-        score += 0.5
-    if context_supports:
-        score += 0.3
-    score += min(0.2, mention_count * 0.05)
-    score += _PERSISTENCE_BONUS.get(fact.get("persistence_value", 3), 0)
-    return min(1.0, max(0.0, score))
+    base = _EVIDENCE_BASE.get(evidence_strength, _EVIDENCE_BASE["explicit"])
+    bonus = 0.0
+    if existing:
+        bonus += 0.05
+    bonus += min(0.05, mention_count * 0.02)
+    bonus += _PERSISTENCE_BONUS.get(fact.get("persistence_value", 3), 0)
+    return min(1.0, max(0.0, base + bonus))
 
 
 # ── Step 4 — Router ────────────────────────────────────────────────────────────
@@ -297,8 +308,8 @@ def step4_route(
         for fact in entity_data.get("facts", []):
             confidence = compute_confidence(
                 fact,
-                has_explicit_statement=True,
-                context_supports=bool(existing),
+                evidence_strength=fact.get("evidence_strength", "explicit"),
+                existing=bool(existing),
                 mention_count=mention_count,
             )
             scored.append((fact, confidence))
@@ -340,6 +351,7 @@ def step4_route(
                 "predicate": fact["predicate"],
                 "value": fact["value"],
                 "persistence_value": fact.get("persistence_value", 3),
+                "evidence_strength": fact.get("evidence_strength", "explicit"),
                 "confidence": confidence,
                 "source_inbox_id": source_inbox_id,
             }
@@ -426,8 +438,8 @@ def step5_validate_pending(
         new_conf = compute_confidence(
             {"predicate": pf.get("predicate"), "value": pf.get("value"),
              "persistence_value": pf.get("persistence_value", 3)},
-            has_explicit_statement=True,
-            context_supports=True,
+            evidence_strength="explicit",
+            existing=True,
             mention_count=2,
         )
         if new_conf <= 0.85:
