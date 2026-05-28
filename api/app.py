@@ -165,6 +165,18 @@ class AnthropicKeyIn(BaseModel):
     key: str
 
 
+# SYN-45 — bodies for project-entry correction endpoints
+class ProjectEntryMoveIn(BaseModel):
+    project_id: str
+
+
+class ProjectEntryFactIn(BaseModel):
+    predicate: str
+    value: str
+    entity_id: str
+    persistence_value: int = 3
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -332,6 +344,106 @@ def entity_detail(entity_id: str):
             "facts_count": len(facts),
             "facts": facts, "relations": relations,
         }
+    finally:
+        conn.close()
+
+
+@app.post("/project-entries/{entry_id}/move", dependencies=[Depends(require_auth)])
+def move_project_entry(entry_id: str, body: ProjectEntryMoveIn):
+    """Reassign a project_entry to a different project.
+
+    SYN-45: the immutable capture (inbox row) is never touched — we only
+    reassign the projection. Caller is expected to trigger a refinement
+    later if the synthesis on either project needs updating.
+    """
+    conn = get_connection()
+    try:
+        entry = first_row(conn.execute(
+            "SELECT id, project_id FROM project_entries WHERE id = ?", (entry_id,)
+        ))
+        if not entry:
+            raise HTTPException(status_code=404, detail="project_entry not found")
+        target = first_row(conn.execute(
+            "SELECT id FROM entities WHERE id = ? AND type = 'project'",
+            (body.project_id,),
+        ))
+        if not target:
+            raise HTTPException(status_code=404, detail="target project not found")
+        with conn:
+            conn.execute(
+                "UPDATE project_entries SET project_id = ? WHERE id = ?",
+                (body.project_id, entry_id),
+            )
+        return {"status": "moved", "entry_id": entry_id,
+                "from_project_id": entry["project_id"],
+                "to_project_id": body.project_id}
+    finally:
+        conn.close()
+
+
+@app.post("/project-entries/{entry_id}/detach", dependencies=[Depends(require_auth)])
+def detach_project_entry(entry_id: str):
+    """Remove the project rattachement; the capture in inbox is preserved.
+
+    SYN-45: the projection is destroyed but the source-of-truth capture stays
+    in inbox. The user can re-route later from another correction endpoint,
+    or capture again.
+    """
+    conn = get_connection()
+    try:
+        entry = first_row(conn.execute(
+            "SELECT id, project_id, capture_id FROM project_entries WHERE id = ?",
+            (entry_id,),
+        ))
+        if not entry:
+            raise HTTPException(status_code=404, detail="project_entry not found")
+        with conn:
+            conn.execute("DELETE FROM project_entries WHERE id = ?", (entry_id,))
+        return {"status": "detached", "entry_id": entry_id,
+                "former_project_id": entry["project_id"],
+                "capture_id": entry["capture_id"]}
+    finally:
+        conn.close()
+
+
+@app.post("/project-entries/{entry_id}/reclassify-as-fact", dependencies=[Depends(require_auth)])
+def reclassify_entry_as_fact(entry_id: str, body: ProjectEntryFactIn):
+    """Turn a project_entry into an explicit fact on a target entity.
+
+    SYN-45: the entry is removed (the projection), the capture stays in inbox,
+    and a new fact is created with confidence=1.0 (the user vouches for it).
+    Provenance points back to the capture that originally spawned the entry.
+    """
+    import uuid as _uuid
+    conn = get_connection()
+    try:
+        entry = first_row(conn.execute(
+            "SELECT id, capture_id FROM project_entries WHERE id = ?", (entry_id,)
+        ))
+        if not entry:
+            raise HTTPException(status_code=404, detail="project_entry not found")
+        ent = first_row(conn.execute(
+            "SELECT id FROM entities WHERE id = ?", (body.entity_id,)
+        ))
+        if not ent:
+            raise HTTPException(status_code=404, detail="target entity not found")
+        with conn:
+            fact_id = str(_uuid.uuid4())
+            conn.execute(
+                "INSERT INTO facts "
+                "(id, entity_id, predicate, value, confidence, source_inbox_id, "
+                " persistence_value, provenance_capture_id) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    fact_id, body.entity_id, body.predicate, body.value,
+                    1.0, str(entry["capture_id"]),
+                    body.persistence_value, entry["capture_id"],
+                ),
+            )
+            conn.execute("DELETE FROM project_entries WHERE id = ?", (entry_id,))
+        return {"status": "reclassified", "fact_id": fact_id,
+                "entity_id": body.entity_id,
+                "capture_id": entry["capture_id"]}
     finally:
         conn.close()
 
