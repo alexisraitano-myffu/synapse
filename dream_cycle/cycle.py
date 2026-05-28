@@ -214,7 +214,12 @@ def compute_confidence(
         bonus += 0.05
     bonus += min(0.05, mention_count * 0.02)
     bonus += _PERSISTENCE_BONUS.get(fact.get("persistence_value", 3), 0)
-    return min(1.0, max(0.0, base + bonus))
+    score = base + bonus
+    # Invariant: a hedged fact must remain in the pending zone for user validation,
+    # regardless of how high its persistence is. Clamp just under the facts threshold.
+    if evidence_strength == "hedged":
+        score = min(score, 0.84)
+    return min(1.0, max(0.0, score))
 
 
 # ── Step 4 — Router ────────────────────────────────────────────────────────────
@@ -427,18 +432,26 @@ def step5_validate_pending(
         except (ValueError, TypeError):
             continue
 
-        corroborating = any(
-            nf.get("predicate") == pf.get("predicate")
-            and nf.get("entity_canonical", "").lower() == pf.get("entity_canonical", "").lower()
-            for nf in new_facts
+        # A pending is promoted only when *another* note corroborates it.
+        # Excluding the pending's own source prevents self-corroboration (the
+        # very fact that created the pending would otherwise auto-promote it).
+        corroborator = next(
+            (nf for nf in new_facts
+             if nf.get("predicate") == pf.get("predicate")
+             and nf.get("entity_canonical", "").lower() == pf.get("entity_canonical", "").lower()
+             and str(nf.get("source_inbox_id")) != str(pf.get("source_inbox_id"))),
+            None,
         )
-        if not corroborating:
+        if corroborator is None:
             continue
 
+        # Use the corroborator's evidence_strength so two hedged sources stay
+        # in pending (the SYN-30 clamp keeps the score below the facts threshold);
+        # only an explicit corroboration lifts the doubt.
         new_conf = compute_confidence(
             {"predicate": pf.get("predicate"), "value": pf.get("value"),
              "persistence_value": pf.get("persistence_value", 3)},
-            evidence_strength="explicit",
+            evidence_strength=corroborator.get("evidence_strength", "explicit"),
             existing=True,
             mention_count=2,
         )
@@ -636,7 +649,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     # Fact / resource → entity graph
     resolved = step2_resolve(classified, conn, verbose)
     new_facts = [
-        {**fact, "entity_canonical": ent["canonical_name"]}
+        {**fact, "entity_canonical": ent["canonical_name"], "source_inbox_id": entry["id"]}
         for ent in resolved.get("resolved_entities", [])
         for fact in ent.get("facts", [])
     ]
