@@ -24,6 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from typing import Literal
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -143,6 +145,13 @@ class ValidateIn(BaseModel):
     confirmed: bool
     correction: str | None = None
     device_id: str | None = None
+
+
+EntityType = Literal["person", "place", "project", "concept", "organization", "animal"]
+
+
+class EntityUpdate(BaseModel):
+    type: EntityType
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -294,6 +303,21 @@ def entity_detail(entity_id: str):
             "facts_count": len(facts),
             "facts": facts, "relations": relations,
         }
+    finally:
+        conn.close()
+
+
+@app.patch("/entity/{entity_id}", dependencies=[Depends(require_auth)])
+def update_entity(entity_id: str, body: EntityUpdate):
+    """Update an entity's type. Closed enum (see EntityType)."""
+    conn = get_connection()
+    try:
+        e = first_row(conn.execute("SELECT id FROM entities WHERE id=?", (entity_id,)))
+        if not e:
+            raise HTTPException(status_code=404, detail="entity not found")
+        with conn:
+            conn.execute("UPDATE entities SET type=? WHERE id=?", (body.type, entity_id))
+        return {"id": entity_id, "type": body.type}
     finally:
         conn.close()
 
