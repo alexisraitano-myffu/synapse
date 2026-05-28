@@ -137,3 +137,11 @@ CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # Dream Cycle reasoning only
 ### Visualizer (`visualizer/`)
 
 FastAPI app (`app.py`) serving `/api/nodes`, `/api/edges`, `/api/stats`, `/api/note/{id}`, backed by the same SQLite DB. It reads the `atomic_notes` (episodic) world. Edges are computed live from vector similarity (k-NN per note, L2 distance threshold 1.1). Static frontend is a D3.js force-directed graph (`static/graph.js`). Note: it does not yet render the entity graph — wiring that to `/api/nodes` is a natural next step.
+
+## Clients
+
+The HTTP API has known clients beyond MCP:
+- A **mobile app** (Android + iOS, Kotlin Multiplatform + Compose Multiplatform) lives in a separate **private/proprietary** repo `synapse-app` and talks to this backend over the LAN (`POST /capture`, `GET /feed`, `GET /changes`, `POST /pending/{id}/validate`). The frozen contract it codes against is the generated `openapi.json` in this repo. Keep that file up to date when endpoints change.
+- (Future) a desktop app and a managed sync relay are part of the wider product but live outside this repo.
+
+The roadmap (Phase C — memory_strength decay, coreference window, resource fetch, weekly digest, etc.) is tracked in an **internal task tracker outside this repo**. Don't reference internal tooling URLs from this file (public repo).
