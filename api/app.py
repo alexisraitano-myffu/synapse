@@ -79,8 +79,13 @@ def _scheduler_loop() -> None:
 
 @contextlib.asynccontextmanager
 async def lifespan(_app):
+    from api.discovery import start_advertising, stop_advertising
     threading.Thread(target=_scheduler_loop, daemon=True).start()
-    yield
+    azc = await start_advertising()
+    try:
+        yield
+    finally:
+        await stop_advertising(azc)
 
 
 app = FastAPI(title="Synapse API", lifespan=lifespan)

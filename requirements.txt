@@ -26,3 +26,6 @@ httpx>=0.27.0          # FastAPI TestClient
 # Future: Dream Cycle REST API
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
+
+# LAN auto-discovery (mDNS) — phones find the brain Mac without typing an IP
+zeroconf>=0.131.0
