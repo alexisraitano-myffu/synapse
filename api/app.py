@@ -478,6 +478,54 @@ def move_project_entry(entry_id: str, body: ProjectEntryMoveIn):
         conn.close()
 
 
+@app.post("/project-entries/{entry_id}/attach-to-project", dependencies=[Depends(require_auth)])
+def attach_entry_to_project(entry_id: str, body: ProjectEntryMoveIn):
+    """Add a parallel rattachement to another project (additive, not move).
+
+    SYN-55 + SYN-57: a capture can belong to N projects (the schema already
+    allows multiple project_entries per capture_id, and the classifier emits
+    project_entries in batch). This manual endpoint mirrors that capability
+    for the UI: it takes an existing entry as a template and INSERTs a new
+    row pointing to the target project, keeping the source row intact. The
+    immutable inbox row is never touched.
+    """
+    import uuid as _uuid
+    conn = get_connection()
+    try:
+        src = first_row(conn.execute(
+            "SELECT id, project_id, capture_id, content, kind FROM project_entries WHERE id = ?",
+            (entry_id,),
+        ))
+        if not src:
+            raise HTTPException(status_code=404, detail="project_entry not found")
+        if src["project_id"] == body.project_id:
+            raise HTTPException(status_code=400, detail="already attached to this project")
+        target = first_row(conn.execute(
+            "SELECT id FROM entities WHERE id = ? AND type = 'project'",
+            (body.project_id,),
+        ))
+        if not target:
+            raise HTTPException(status_code=404, detail="target project not found")
+        # Prevent duplicate parallel rattachements on the same (project, capture).
+        dup = first_row(conn.execute(
+            "SELECT id FROM project_entries WHERE project_id = ? AND capture_id = ?",
+            (body.project_id, src["capture_id"]),
+        ))
+        if dup:
+            raise HTTPException(status_code=409, detail="capture already attached to that project")
+        new_id = str(_uuid.uuid4())
+        with conn:
+            conn.execute(
+                "INSERT INTO project_entries (id, project_id, capture_id, content, kind) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (new_id, body.project_id, src["capture_id"], src["content"], src["kind"]),
+            )
+        return {"status": "attached", "new_entry_id": new_id,
+                "project_id": body.project_id, "capture_id": src["capture_id"]}
+    finally:
+        conn.close()
+
+
 @app.post("/project-entries/{entry_id}/detach", dependencies=[Depends(require_auth)])
 def detach_project_entry(entry_id: str):
     """Remove the project rattachement; the capture in inbox is preserved.
