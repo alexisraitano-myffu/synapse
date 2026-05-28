@@ -96,9 +96,9 @@ Règles persistence_value :
 3 = état actuel (projet en cours)
 2 = contextuel (événement ponctuel)
 1 = bruit (mention passagère)
-Règles evidence_strength :
-explicit = fait énoncé directement, sans modal d'incertitude
-hedged   = modaux d'incertitude présents ("semble", "je crois", "il paraît", "devrait", "peut-être", "probablement", "il me semble")
+Règles evidence_strength (s'applique à la langue de la capture, FR/EN/autre) :
+explicit = fait énoncé directement, sans marqueur d'incertitude
+hedged   = marqueur d'incertitude épistémique présent (ex FR: "semble", "je crois", "il paraît", "devrait", "peut-être", "probablement" ; EN: "seems", "I think", "apparently", "probably", "might" ; même critère dans toute autre langue)
 implicit = fait non énoncé mais déduit du contexte (inférence indirecte, ex: on parle du déménagement de Pierre sans dire où)
 Résous les dates relatives vers des dates absolues.
 La date d'aujourd'hui est : {today}.\
