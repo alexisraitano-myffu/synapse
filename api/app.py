@@ -336,6 +336,47 @@ def entity_detail(entity_id: str):
         conn.close()
 
 
+@app.get("/project/{project_id}/state", dependencies=[Depends(require_auth)])
+def project_state(project_id: str):
+    """Live synthesis of a project entity (SYN-43).
+
+    Returns the current summary_md + metadata, plus a small recent-entries slice
+    so the client can show the timeline without a second round-trip.
+    """
+    conn = get_connection()
+    try:
+        ent = first_row(conn.execute(
+            "SELECT id, canonical_name, type FROM entities "
+            "WHERE id = ? AND type = 'project'", (project_id,)
+        ))
+        if not ent:
+            raise HTTPException(status_code=404, detail="project not found")
+        state = first_row(conn.execute(
+            "SELECT psv.id AS version_id, psv.summary_md, psv.entry_count, "
+            "       psv.trigger, psv.created_at, ps.updated_at "
+            "FROM project_state ps "
+            "JOIN project_state_versions psv ON psv.id = ps.current_version_id "
+            "WHERE ps.project_id = ?", (project_id,)
+        ))
+        entries = cursor_to_dicts(conn.execute(
+            "SELECT id, content, kind, capture_id, created_at "
+            "FROM project_entries WHERE project_id = ? "
+            "ORDER BY created_at DESC LIMIT 50", (project_id,)
+        ))
+        total_entries = conn.execute(
+            "SELECT COUNT(*) FROM project_entries WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        return {
+            "project_id": ent["id"],
+            "canonical_name": ent["canonical_name"],
+            "current_state": state,            # may be None if no entry yet
+            "entries_recent": entries,
+            "entries_total": total_entries,
+        }
+    finally:
+        conn.close()
+
+
 @app.patch("/entity/{entity_id}", dependencies=[Depends(require_auth)])
 def update_entity(entity_id: str, body: EntityUpdate):
     """Update an entity's type. Closed enum (see EntityType)."""

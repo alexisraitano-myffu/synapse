@@ -734,6 +734,106 @@ def _persist_atomic_note(
     return note_id
 
 
+_PROJECT_SUMMARY_SYSTEM = """\
+Tu maintiens une synthèse vivante d'un projet personnel. La synthèse doit :
+- rester en markdown clair (titres ##, listes, max ~500 mots),
+- résumer l'état du projet : objectifs, décisions, idées émergentes, blocages, prochaines étapes,
+- éviter la redondance (si l'info existe déjà, ne pas la répéter),
+- préserver la nuance (idées floues restent floues, contradictions restent visibles).
+
+Retourne UNIQUEMENT le markdown mis à jour, sans préambule.\
+"""
+
+
+def _append_project_summary(
+    project_id: str,
+    project_name: str,
+    new_entry_content: str,
+    new_entry_count: int,
+    conn,
+    client: "anthropic.Anthropic",
+    verbose: bool = False,
+) -> str | None:
+    """Generate or amend a project's live synthesis after a new entry.
+
+    SYN-43: one Haiku call per project_entry. If a current version exists,
+    we ask Claude to amend it (cheap, entropic). The "garbage collector" pass
+    (SYN-44 refinement passif) corrects accumulated drift.
+    """
+    # Look up the current synthesis, if any
+    current = first_row(conn.execute(
+        "SELECT psv.summary_md FROM project_state ps "
+        "JOIN project_state_versions psv ON psv.id = ps.current_version_id "
+        "WHERE ps.project_id = ?",
+        (project_id,),
+    ))
+    current_summary = current["summary_md"] if current else None
+
+    if current_summary:
+        user_msg = (
+            f"Projet : {project_name}\n\n"
+            f"Synthèse actuelle :\n---\n{current_summary}\n---\n\n"
+            f"Nouvelle entrée à intégrer :\n---\n{new_entry_content}\n---\n\n"
+            f"Mets à jour la synthèse pour intégrer la nouvelle entrée."
+        )
+    else:
+        user_msg = (
+            f"Projet : {project_name}\n\n"
+            f"Première entrée :\n---\n{new_entry_content}\n---\n\n"
+            f"Écris la synthèse initiale du projet à partir de cette entrée."
+        )
+
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1024,
+            system=[{"type": "text", "text": _PROJECT_SUMMARY_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_msg}],
+        )
+    except Exception as exc:
+        # Don't block the cycle on a synthesis failure — keep the entry, retry later.
+        if verbose:
+            print(f"    [project_summary] Claude error: {exc}")
+        return None
+
+    summary_md = response.content[0].text.strip()
+    # Strip optional ```markdown fences
+    if summary_md.startswith("```"):
+        summary_md = summary_md.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+
+    version_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO project_state_versions "
+        "(id, project_id, summary_md, entry_count, trigger) "
+        "VALUES (?,?,?,?,'passive')",
+        (version_id, project_id, summary_md, new_entry_count),
+    )
+    existing_state = first_row(conn.execute(
+        "SELECT project_id FROM project_state WHERE project_id = ?", (project_id,)
+    ))
+    if existing_state:
+        conn.execute(
+            "UPDATE project_state SET current_version_id=?, updated_at=CURRENT_TIMESTAMP, "
+            "entry_count_at_sync=? WHERE project_id=?",
+            (version_id, new_entry_count, project_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO project_state "
+            "(project_id, current_version_id, entry_count_at_sync) VALUES (?,?,?)",
+            (project_id, version_id, new_entry_count),
+        )
+
+    if verbose:
+        u = response.usage
+        cache_read = getattr(u, "cache_read_input_tokens", 0)
+        print(f"    [project_summary] v{new_entry_count} for '{project_name}' "
+              f"tokens={u.input_tokens}/{u.output_tokens}"
+              + (f" cache_hit={cache_read}" if cache_read else ""))
+    return summary_md
+
+
 def _persist_project_entry(
     project_canonical: str,
     content: str,
@@ -741,11 +841,15 @@ def _persist_project_entry(
     conn,
     is_new_project: bool = False,
     verbose: bool = False,
+    client: "anthropic.Anthropic | None" = None,
 ) -> tuple[str, str]:
     """Find or create the project entity then INSERT into project_entries.
 
     Returns (project_id, entry_id). Uses canonical_name case-insensitively to
     match the resolver's existing convention.
+
+    SYN-43: if `client` is provided, also amends the project's live synthesis
+    after persisting the new entry (one Haiku call).
     """
     canonical = project_canonical.strip()
     row = first_row(conn.execute(
@@ -782,6 +886,22 @@ def _persist_project_entry(
     )
     if verbose:
         print(f"    [project] '{canonical}' ← entry id={entry_id}")
+
+    # SYN-43: amend the live synthesis right after the entry lands.
+    if client is not None:
+        new_count = conn.execute(
+            "SELECT COUNT(*) FROM project_entries WHERE project_id = ?", (project_id,)
+        ).fetchone()[0]
+        _append_project_summary(
+            project_id=project_id,
+            project_name=canonical,
+            new_entry_content=content,
+            new_entry_count=new_count,
+            conn=conn,
+            client=client,
+            verbose=verbose,
+        )
+
     return project_id, entry_id
 
 
@@ -879,6 +999,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 conn=conn,
                 is_new_project=bool(proj.get("is_new")),
                 verbose=verbose,
+                client=client,  # SYN-43: triggers live synthesis append
             )
 
         handle_intentions(classified, conn, dry_run=False, verbose=verbose)
