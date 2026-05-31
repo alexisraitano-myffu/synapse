@@ -122,13 +122,19 @@ def _entities() -> list[dict]:
 
 
 def test_entity_created_on_mention_even_without_high_confidence(isolated_db):
-    """A first-mention fact (conf 0.75 < 0.85) still creates the entity node;
-    the fact itself lands in pending."""
+    """A non-high-confidence fact still creates the entity node; the fact itself
+    lands in pending. `hedged` evidence is clamped to 0.84 (< the 0.85 facts
+    threshold) regardless of persistence, so this exercises the decoupling: the
+    entity exists (persistence 5 ≥ MIN_ENTITY_PERSISTENCE) while its fact waits
+    for validation. (An *explicit* fact would correctly land in `facts`.)"""
     resolved = {
         "resolved_entities": [{
             "canonical_name": "Marie", "type": "person", "aliases": ["maman"],
             "summary": "La mère de l'utilisateur", "attributes": {"role": "mère"},
-            "facts": [{"predicate": "has_birthday", "value": "2026-05-15", "persistence_value": 5}],
+            "facts": [{
+                "predicate": "has_birthday", "value": "2026-05-15",
+                "persistence_value": 5, "evidence_strength": "hedged",
+            }],
             "existing_entity": None,
         }],
         "relations": [],
