@@ -12,6 +12,7 @@ import json
 import uuid
 
 from db import first_row
+from facts_store import insert_fact
 
 CONFIRMED_CONFIDENCE = 0.95  # user-confirmed facts are near-certain
 
@@ -71,18 +72,13 @@ def record_and_apply_validation(
             (entity_id, entity_name, prov_id),
         )
 
-    conn.execute(
-        "INSERT INTO facts "
-        "(id, entity_id, predicate, value, confidence, source_inbox_id, "
-        " persistence_value, provenance_capture_id) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (
-            str(uuid.uuid4()), entity_id,
-            fact_data.get("predicate"), fact_data.get("value"),
-            CONFIRMED_CONFIDENCE, fact_data.get("source_inbox_id"),
-            fact_data.get("persistence_value", 3),
-            prov_id,
-        ),
+    insert_fact(
+        conn, entity_id=entity_id,
+        predicate=fact_data.get("predicate"), value=fact_data.get("value"),
+        confidence=CONFIRMED_CONFIDENCE,
+        source_inbox_id=fact_data.get("source_inbox_id"),
+        persistence_value=fact_data.get("persistence_value", 3),
+        provenance_capture_id=prov_id,
     )
     conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
 

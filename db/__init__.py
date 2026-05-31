@@ -321,6 +321,23 @@ def init_db() -> None:
         except apsw.SQLError:
             pass  # column already present
 
+        # Migration: SYN-37 + SYN-59 — fact/entity lifecycle (orthogonal axes,
+        # both hidden from default views, both reversible):
+        #   archived_at  — user "filed it away, don't show me" (entities + facts)
+        #   obsoleted_at — fact "no longer true today, but historically valid";
+        #                  set by SYN-37 auto-supersede OR by a manual user gesture
+        #   obsoleted_by — FK to the replacing fact (SYN-37 only; NULL if manual)
+        for ddl in [
+            "ALTER TABLE facts    ADD COLUMN archived_at  TIMESTAMP",
+            "ALTER TABLE facts    ADD COLUMN obsoleted_at TIMESTAMP",
+            "ALTER TABLE facts    ADD COLUMN obsoleted_by TEXT REFERENCES facts(id)",
+            "ALTER TABLE entities ADD COLUMN archived_at  TIMESTAMP",
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
+
         # Quick lookups for the merge-proposals queue.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "

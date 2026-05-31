@@ -35,6 +35,7 @@ from config_store import get_anthropic_key
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
+from facts_store import insert_fact
 
 try:
     import dateparser
@@ -695,18 +696,13 @@ def step4_route(
 
             if confidence > 0.85:
                 if entity_id:
-                    conn.execute(
-                        "INSERT INTO facts "
-                        "(id, entity_id, predicate, value, confidence, source_inbox_id, "
-                        " persistence_value, provenance_capture_id) "
-                        "VALUES (?,?,?,?,?,?,?,?)",
-                        (
-                            str(uuid.uuid4()), entity_id,
-                            fact["predicate"], fact["value"],
-                            confidence, str(source_inbox_id),
-                            fact.get("persistence_value", 3),
-                            source_inbox_id,
-                        ),
+                    insert_fact(
+                        conn, entity_id=entity_id,
+                        predicate=fact["predicate"], value=fact["value"],
+                        confidence=confidence,
+                        source_inbox_id=str(source_inbox_id),
+                        persistence_value=fact.get("persistence_value", 3),
+                        provenance_capture_id=source_inbox_id,
                     )
             elif confidence >= 0.5:
                 conn.execute(
@@ -813,18 +809,12 @@ def step5_validate_pending(
                     "INSERT INTO entities (id, canonical_name, provenance_capture_id) VALUES (?,?,?)",
                     (entity_id, entity_name, prov_id),
                 )
-            conn.execute(
-                "INSERT INTO facts "
-                "(id, entity_id, predicate, value, confidence, source_inbox_id, "
-                " persistence_value, provenance_capture_id) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    str(uuid.uuid4()), entity_id,
-                    pf.get("predicate"), pf.get("value"),
-                    new_conf, pf.get("source_inbox_id"),
-                    pf.get("persistence_value", 3),
-                    prov_id,
-                ),
+            insert_fact(
+                conn, entity_id=entity_id,
+                predicate=pf.get("predicate"), value=pf.get("value"),
+                confidence=new_conf, source_inbox_id=pf.get("source_inbox_id"),
+                persistence_value=pf.get("persistence_value", 3),
+                provenance_capture_id=prov_id,
             )
             conn.execute("DELETE FROM pending_facts WHERE id=?", (pending_id,))
         promoted += 1

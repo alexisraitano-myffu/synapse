@@ -95,10 +95,11 @@ def search_entities_by_vector(
 
     # status='active' (SYN-58): pending (awaiting type validation) and archived
     # (rejected) entities must never surface as search hits or merge candidates.
+    # archived_at IS NULL (SYN-59): user-archived entities are hidden too.
     sql = (
         "SELECT id, canonical_name, type, summary, embedding FROM entities "
         "WHERE embedding IS NOT NULL AND merged_into_id IS NULL "
-        "AND status = 'active'"
+        "AND status = 'active' AND archived_at IS NULL"
     )
     params: list = []
     if type_filter:

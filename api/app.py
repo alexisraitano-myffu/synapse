@@ -35,6 +35,7 @@ from config import BASE_DIR
 from db import cursor_to_dicts, first_row, get_connection, init_db
 from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
+from facts_store import insert_fact
 
 init_db()
 
@@ -289,18 +290,24 @@ def _ego_filter(entities: list[dict], relations: list[dict], focus: str):
 
 
 @app.get("/graph", dependencies=[Depends(require_auth)])
-def graph(entity: str | None = None, mode: str = "full"):
-    """Nodes = entities (size ~ mention_count), edges = relations."""
+def graph(entity: str | None = None, mode: str = "full", include_archived: bool = False):
+    """Nodes = entities (size ~ mention_count), edges = relations.
+    `include_archived=true` also returns user-archived entities (SYN-59)."""
     conn = get_connection()
     try:
         nodes = []
         # SYN-39: hide soft-merged rows; their data already lives on the canonical one.
         # SYN-58: hide non-active rows (pending type-validation / archived).
+        # SYN-59: hide user-archived entities unless include_archived; facts_count
+        # counts only active facts (not archived / obsolete).
+        archived_clause = "" if include_archived else " AND e.archived_at IS NULL"
         for e in cursor_to_dicts(conn.execute(
             "SELECT e.id, e.canonical_name, e.type, e.mention_count, e.persistence_value, "
             "       e.summary, e.last_mentioned, "
-            "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id) AS facts_count "
+            "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id "
+            "          AND f.archived_at IS NULL AND f.obsoleted_at IS NULL) AS facts_count "
             "FROM entities e WHERE e.merged_into_id IS NULL AND e.status = 'active'"
+            + archived_clause
         )):
             nodes.append({
                 "id": e["id"],
@@ -328,8 +335,11 @@ def graph(entity: str | None = None, mode: str = "full"):
 
 
 @app.get("/entity/{entity_id}", dependencies=[Depends(require_auth)])
-def entity_detail(entity_id: str):
+def entity_detail(entity_id: str, include: str | None = None):
+    """`include` (CSV) opts archived/obsolete facts back into the response —
+    e.g. `?include=archived,obsolete` for the history/archive sections."""
     import json as _json
+    inc = {p.strip() for p in (include or "").split(",") if p.strip()}
     conn = get_connection()
     try:
         e = first_row(conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)))
@@ -344,10 +354,17 @@ def entity_detail(entity_id: str):
             )
         # SYN-54: surface provenance_capture_id on every projection so the client
         # can render a "source" chip pointing back to the immutable inbox row.
+        # SYN-59: hide archived/obsolete facts by default; opt back in via ?include.
+        fact_filter = ""
+        if "obsolete" not in inc:
+            fact_filter += " AND obsoleted_at IS NULL"
+        if "archived" not in inc:
+            fact_filter += " AND archived_at IS NULL"
         facts = cursor_to_dicts(conn.execute(
-            "SELECT predicate, value, confidence, persistence_value, created_at, "
-            "       provenance_capture_id "
-            "FROM facts WHERE entity_id=? ORDER BY confidence DESC", (entity_id,),
+            "SELECT id, predicate, value, confidence, persistence_value, created_at, "
+            "       provenance_capture_id, archived_at, obsoleted_at, obsoleted_by "
+            "FROM facts WHERE entity_id=?" + fact_filter + " ORDER BY confidence DESC",
+            (entity_id,),
         ))
         relations = cursor_to_dicts(conn.execute(
             "SELECT r.predicate, e.canonical_name AS entity_to, r.confidence, "
@@ -447,7 +464,8 @@ def projects_list():
             "LEFT JOIN project_state ps ON ps.project_id = e.id "
             "LEFT JOIN project_state_versions psv ON psv.id = ps.current_version_id "
             "WHERE e.type = 'project' AND e.merged_into_id IS NULL "
-            "  AND e.status = 'active' "  # SYN-58: hide pending/archived projects
+            "  AND e.status = 'active' "       # SYN-58: hide pending/archived-status
+            "  AND e.archived_at IS NULL "      # SYN-59: hide user-archived projects
             "ORDER BY COALESCE(e.last_mentioned, e.created_at) DESC"
         ))
         return rows
@@ -777,6 +795,60 @@ def type_proposal_reject(proposal_id: str):
         conn.close()
 
 
+# ── Lifecycle: archive / obsolete (SYN-59) ────────────────────────────────────
+
+def _set_timestamp(table: str, row_id: str, columns: dict, label: str):
+    """Set/clear lifecycle timestamp columns on one entity/fact row. `columns`
+    maps column→'now'|None. 404 if the row doesn't exist."""
+    conn = get_connection()
+    try:
+        if not first_row(conn.execute(f"SELECT id FROM {table} WHERE id = ?", (row_id,))):
+            raise HTTPException(status_code=404, detail=f"{table[:-1]} not found")
+        sets = ", ".join(
+            f"{c} = CURRENT_TIMESTAMP" if v == "now" else f"{c} = NULL"
+            for c, v in columns.items()
+        )
+        with conn:
+            conn.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (row_id,))
+        return {"status": label, "id": row_id}
+    finally:
+        conn.close()
+
+
+@app.post("/entity/{entity_id}/archive", dependencies=[Depends(require_auth)])
+def entity_archive(entity_id: str):
+    return _set_timestamp("entities", entity_id, {"archived_at": "now"}, "archived")
+
+
+@app.post("/entity/{entity_id}/unarchive", dependencies=[Depends(require_auth)])
+def entity_unarchive(entity_id: str):
+    return _set_timestamp("entities", entity_id, {"archived_at": None}, "unarchived")
+
+
+@app.post("/fact/{fact_id}/archive", dependencies=[Depends(require_auth)])
+def fact_archive(fact_id: str):
+    return _set_timestamp("facts", fact_id, {"archived_at": "now"}, "archived")
+
+
+@app.post("/fact/{fact_id}/unarchive", dependencies=[Depends(require_auth)])
+def fact_unarchive(fact_id: str):
+    return _set_timestamp("facts", fact_id, {"archived_at": None}, "unarchived")
+
+
+@app.post("/fact/{fact_id}/obsolete", dependencies=[Depends(require_auth)])
+def fact_obsolete(fact_id: str):
+    """Manual obsolescence (no replacement): obsoleted_by stays NULL — that's
+    SYN-37's job when a newer fact supersedes."""
+    return _set_timestamp("facts", fact_id, {"obsoleted_at": "now"}, "obsoleted")
+
+
+@app.post("/fact/{fact_id}/restore", dependencies=[Depends(require_auth)])
+def fact_restore(fact_id: str):
+    """Resurrect an obsolete fact — clears both obsoleted_at and obsoleted_by."""
+    return _set_timestamp("facts", fact_id,
+                          {"obsoleted_at": None, "obsoleted_by": None}, "restored")
+
+
 @app.get("/capture/{capture_id}", dependencies=[Depends(require_auth)])
 def capture_detail(capture_id: int):
     """Return the raw inbox row by id. Powers the 'source' chip — anything
@@ -924,17 +996,12 @@ def reclassify_entry_as_fact(entry_id: str, body: ProjectEntryFactIn):
         if not ent:
             raise HTTPException(status_code=404, detail="target entity not found")
         with conn:
-            fact_id = str(_uuid.uuid4())
-            conn.execute(
-                "INSERT INTO facts "
-                "(id, entity_id, predicate, value, confidence, source_inbox_id, "
-                " persistence_value, provenance_capture_id) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    fact_id, body.entity_id, body.predicate, body.value,
-                    1.0, str(entry["capture_id"]),
-                    body.persistence_value, entry["capture_id"],
-                ),
+            fact_id = insert_fact(
+                conn, entity_id=body.entity_id,
+                predicate=body.predicate, value=body.value, confidence=1.0,
+                source_inbox_id=str(entry["capture_id"]),
+                persistence_value=body.persistence_value,
+                provenance_capture_id=entry["capture_id"],
             )
             conn.execute("DELETE FROM project_entries WHERE id = ?", (entry_id,))
         return {"status": "reclassified", "fact_id": fact_id,

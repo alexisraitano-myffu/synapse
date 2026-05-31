@@ -266,6 +266,79 @@ def test_pending_entity_hidden_from_graph(client):
     assert all(n["id"] != eid for n in g["nodes"]), "pending entity must not leak into graph"
 
 
+# ── Lifecycle: archive / obsolete (SYN-59) ────────────────────────────────────
+
+def _seed_entity_with_fact(name="Michel", predicate="works_at", value="Mistral"):
+    import uuid as _uuid
+    from facts_store import insert_fact
+    conn = _conn()
+    try:
+        eid = str(_uuid.uuid4())
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name) VALUES (?,?,?)",
+                         (eid, "person", name))
+            fid = insert_fact(conn, entity_id=eid, predicate=predicate,
+                              value=value, confidence=0.95)
+    finally:
+        conn.close()
+    return eid, fid
+
+
+def _fact_ids(client, eid, **params):
+    return [f["id"] for f in client.get(f"/entity/{eid}", params=params).json()["facts"]]
+
+
+def test_fact_obsolete_then_restore(client):
+    eid, fid = _seed_entity_with_fact()
+    assert fid in _fact_ids(client, eid)                      # visible by default
+    assert client.post(f"/fact/{fid}/obsolete").status_code == 200
+    assert fid not in _fact_ids(client, eid)                  # hidden
+    assert fid in _fact_ids(client, eid, include="obsolete")  # opt back in
+    assert client.post(f"/fact/{fid}/restore").status_code == 200
+    assert fid in _fact_ids(client, eid)                      # back in default view
+
+
+def test_fact_archive_then_unarchive(client):
+    eid, fid = _seed_entity_with_fact()
+    client.post(f"/fact/{fid}/archive")
+    assert fid not in _fact_ids(client, eid)
+    assert fid in _fact_ids(client, eid, include="archived")
+    client.post(f"/fact/{fid}/unarchive")
+    assert fid in _fact_ids(client, eid)
+
+
+def test_entity_archive_hides_from_graph(client):
+    eid, _fid = _seed_entity_with_fact()
+    assert any(n["id"] == eid for n in client.get("/graph").json()["nodes"])
+    assert client.post(f"/entity/{eid}/archive").status_code == 200
+    assert all(n["id"] != eid for n in client.get("/graph").json()["nodes"])
+    assert any(n["id"] == eid
+               for n in client.get("/graph", params={"include_archived": True}).json()["nodes"])
+    client.post(f"/entity/{eid}/unarchive")
+    assert any(n["id"] == eid for n in client.get("/graph").json()["nodes"])
+
+
+def test_lifecycle_404_on_unknown(client):
+    assert client.post("/fact/does-not-exist/obsolete").status_code == 404
+    assert client.post("/entity/does-not-exist/archive").status_code == 404
+
+
+def test_supersede_visible_through_entity_endpoint(client):
+    """SYN-37 end-to-end through the API: a second works_at hides the first."""
+    eid, fid1 = _seed_entity_with_fact(value="Stripe")
+    from facts_store import insert_fact
+    conn = _conn()
+    try:
+        with conn:
+            fid2 = insert_fact(conn, entity_id=eid, predicate="works_at",
+                               value="OpenAI", confidence=0.95)
+    finally:
+        conn.close()
+    active = _fact_ids(client, eid)
+    assert fid2 in active and fid1 not in active           # only the latest is active
+    assert fid1 in _fact_ids(client, eid, include="obsolete")
+
+
 # ── Pending + validate (event-sourced) ───────────────────────────────────────
 
 def _seed_pending():
