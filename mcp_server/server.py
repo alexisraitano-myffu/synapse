@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
 from entity_search import search_entities_by_vector
+from dream_cycle.decay import reactivate_notes
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
@@ -133,6 +134,11 @@ def search_memory(query: str, limit: int = 5) -> str:
             )
             note_results = [_format_result(r, "vector") for r in cursor_to_dicts(cur)]
             entity_results = _search_entities(query_vec, limit, conn)
+            # SYN-19: a search hit is a light reactivation of the surfaced notes.
+            hit_ids = [r["id"] for r in note_results if r.get("id") is not None]
+            if hit_ids:
+                with conn:
+                    reactivate_notes(conn, hit_ids, factor=0.5)
         finally:
             conn.close()
 

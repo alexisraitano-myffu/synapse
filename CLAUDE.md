@@ -39,6 +39,11 @@ pytest test_cycle.py::test_episodic_note_is_searchable   # a single test
 python reembed.py
 ```
 
+**Run the decay job** (SYN-19 — recompute `atomic_notes.memory_strength` via Ebbinghaus; also runs at the end of every Dream Cycle, but a nightly cron covers empty-inbox days):
+```bash
+python -m dream_cycle.decay        # env: SYNAPSE_DECAY_TAU_DAYS (default 30)
+```
+
 **Run the HTTP API** (backend for the mobile/desktop apps; FastAPI on `0.0.0.0:8000`):
 ```bash
 python -m api                      # env: SYNAPSE_API_TOKEN (bearer auth), SYNAPSE_API_PORT,

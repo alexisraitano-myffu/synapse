@@ -36,6 +36,7 @@ from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
 from facts_store import insert_fact
+from dream_cycle.decay import apply_decay, reactivate_notes_for_entities
 
 try:
     import dateparser
@@ -1365,6 +1366,13 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
             )
 
         handle_intentions(classified, conn, dry_run=False, verbose=verbose)
+
+        # SYN-19: a new capture mentioning an entity reactivates the notes that
+        # reference it (strong bump → memory_strength springs back).
+        mentioned = [e.get("canonical_name") for e in classified.get("entities", [])
+                     if e.get("canonical_name")]
+        reactivate_notes_for_entities(conn, mentioned)
+
         _mark(conn, capture_id, now, "processed", dry_run=False)
 
     return entity_ids, new_facts
@@ -1437,6 +1445,13 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
             with conn:
                 vectorized = step6_vectorize(all_entity_ids, conn, client, dry_run, verbose)
             print(f"  → {vectorized} entit{'y' if vectorized == 1 else 'ies'} vectorized")
+
+        # SYN-19 — refresh Ebbinghaus memory_strength (cadence-free recompute).
+        if not dry_run:
+            with conn:
+                decayed = apply_decay(conn)
+            if verbose and decayed:
+                print(f"  → decay refreshed {decayed} note(s)")
 
         print("\n" + "═" * 60)
         summary = f"  Done  ·  {len(all_entity_ids)} entit{'y' if len(all_entity_ids) == 1 else 'ies'} updated"

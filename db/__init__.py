@@ -245,6 +245,11 @@ def init_db() -> None:
              "ALTER TABLE atomic_notes ADD COLUMN entities_mentioned TEXT DEFAULT '[]'"),
             ("memory_strength",
              "ALTER TABLE atomic_notes ADD COLUMN memory_strength REAL DEFAULT 1.0"),
+            # SYN-19: timestamp of the last reactivation (mention / search hit).
+            # NULL → decay falls back to created_at. memory_strength is recomputed
+            # from this, never decremented in place.
+            ("last_reactivated_at",
+             "ALTER TABLE atomic_notes ADD COLUMN last_reactivated_at TIMESTAMP"),
         ]:
             try:
                 conn.execute(ddl)
