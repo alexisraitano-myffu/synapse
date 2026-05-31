@@ -135,3 +135,26 @@ def search_entities_by_vector(
 def search_entities_by_text(conn, text: str, **kwargs) -> list[dict]:
     """Convenience wrapper: embed `text` locally, then run the vector search."""
     return search_entities_by_vector(conn, embed_text(text), **kwargs)
+
+
+def search_resources_by_vector(conn, query_vec: bytes, *, limit: int = 10) -> list[dict]:
+    """SYN-21: top-K stored resources by cosine on their embedded summary
+    (resources, like entities, use UUID ids → manual scan). Returns dicts
+    `{id, title, url, summary, score}`, score-descending."""
+    q = deserialize_vec(query_vec)
+    scored: list[tuple[float, dict]] = []
+    for row in cursor_to_dicts(conn.execute(
+        "SELECT id, title, url, summary, embedding FROM resources "
+        "WHERE embedding IS NOT NULL"
+    )):
+        v = deserialize_vec(row["embedding"])
+        if len(v) != len(q):
+            continue
+        dist = sum((a - b) ** 2 for a, b in zip(q, v)) ** 0.5
+        scored.append((_score_from_distance(dist), row))
+    scored.sort(key=lambda x: -x[0])
+    return [
+        {"id": r["id"], "title": r["title"] or r["url"],
+         "url": r["url"], "summary": r["summary"] or "", "score": s}
+        for s, r in scored[:limit]
+    ]

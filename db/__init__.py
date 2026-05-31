@@ -256,6 +256,23 @@ def init_db() -> None:
             except apsw.SQLError:
                 pass  # column already present
 
+        # Migration: SYN-21 — real resource pipeline (fetch + summary). The table
+        # pre-existed but lacked the fetch fields.
+        for ddl in [
+            "ALTER TABLE resources ADD COLUMN url        TEXT",
+            "ALTER TABLE resources ADD COLUMN content    TEXT",
+            "ALTER TABLE resources ADD COLUMN fetched_at TIMESTAMP",
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
+        # One resource per URL (idempotent re-capture of the same link).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_url "
+            "ON resources(url) WHERE url IS NOT NULL"
+        )
+
         # Migration: sync columns on inbox (client_id enables idempotent capture).
         for ddl in [
             "ALTER TABLE inbox ADD COLUMN client_id TEXT",

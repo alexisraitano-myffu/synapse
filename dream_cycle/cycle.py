@@ -37,6 +37,7 @@ from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
 from facts_store import insert_fact
 from dream_cycle.decay import apply_decay, reactivate_notes_for_entities
+from dream_cycle.resources import process_capture_resources
 
 try:
     import dateparser
@@ -1288,6 +1289,14 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     # so the recipe entity (+ its type proposal, SYN-58) is captured. Only a
     # *pure* intention (no entities, no project) takes the fast exit here.
     is_ephemeral = classified.get("is_ephemeral") or classified.get("input_type") == "ephemeral"
+
+    # SYN-21: resource fetch is URL-driven and independent of routing — run it
+    # for ANY capture, even a pure intention ("à lire : https://…"). Network +
+    # LLM happen outside the main transaction; failures never fail the entry.
+    if not dry_run:
+        process_capture_resources(entry["content"], conn, client,
+                                  capture_id=entry["id"], verbose=verbose)
+
     if is_ephemeral and not (classified.get("entities") or classified.get("project_entries")):
         with conn:
             handle_intentions(classified, conn, dry_run, verbose)

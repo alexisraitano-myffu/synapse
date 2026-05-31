@@ -14,7 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
-from entity_search import search_entities_by_vector
+from entity_search import search_entities_by_vector, search_resources_by_vector
 from dream_cycle.decay import reactivate_notes
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -56,6 +56,22 @@ def _search_entities(query_vec: bytes, limit: int, conn) -> list[dict]:
             "search_type": "entity",
         }
         for e in search_entities_by_vector(conn, query_vec, limit=limit)
+    ]
+
+
+def _search_resources(query_vec: bytes, limit: int, conn) -> list[dict]:
+    """SYN-21: semantic search over stored resources, mapped to the MCP shape."""
+    return [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "content": r["summary"],
+            "url": r["url"],
+            "type": "resource",
+            "score": r["score"],
+            "search_type": "resource",
+        }
+        for r in search_resources_by_vector(conn, query_vec, limit=limit)
     ]
 
 
@@ -134,6 +150,7 @@ def search_memory(query: str, limit: int = 5) -> str:
             )
             note_results = [_format_result(r, "vector") for r in cursor_to_dicts(cur)]
             entity_results = _search_entities(query_vec, limit, conn)
+            resource_results = _search_resources(query_vec, limit, conn)
             # SYN-19: a search hit is a light reactivation of the surfaced notes.
             hit_ids = [r["id"] for r in note_results if r.get("id") is not None]
             if hit_ids:
@@ -142,7 +159,7 @@ def search_memory(query: str, limit: int = 5) -> str:
         finally:
             conn.close()
 
-        merged = note_results + entity_results
+        merged = note_results + entity_results + resource_results
         merged.sort(key=lambda r: r.get("score", 0.0), reverse=True)
         if merged:
             return json.dumps(merged[:limit], ensure_ascii=False, default=str)
