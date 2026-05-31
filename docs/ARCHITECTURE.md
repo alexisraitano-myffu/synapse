@@ -45,7 +45,7 @@ flowchart TD
     Classify -->|fact| Resolve["② RESOLVE<br/>dédup alias · dates relatives→absolues"]
     Classify -->|episodic| Episodic["write_episodic_note<br/>→ atomic_notes (+ vecteur)"]
     Classify -->|ephemeral| Intentions[("intentions · TTL 48h")]
-    Classify -->|resource| ResourceTODO["(traité comme fact ;<br/>fetch+résumé = TODO)"]
+    Classify -->|"URL détectée"| ResourceFetch["fetch + extraction + résumé Haiku<br/>→ resources (cherchable) · SYN-21"]
 
     Resolve --> Create["entité créée sur mention<br/>(garde-fou MIN_ENTITY_PERSISTENCE)"]
     Create --> Score["③ SCORE — compute_confidence<br/>explicit .5 + contexte .3 + répétition ≤.2 + bonus persistance"]
@@ -79,7 +79,9 @@ Code : [dream_cycle/cycle.py](../dream_cycle/cycle.py). Déclenché par `python 
 | Seuil consolidation `T_high` (faits) | `step4_route` | 0.85 | un **fait** > 0.85 est confirmé direct ; sinon pending (l'entité, elle, est créée sur mention) |
 | Seuil pending `T_pending` | `step4_route` | 0.5 | borne basse « à valider » vs digest |
 | TTL intentions | `handle_intentions` | 48h | durée des rappels éphémères |
-| memory_strength | épisodique | 1.0 (figé) | *(Phase C)* oubli gracieux |
+| **memory_strength decay** | `dream_cycle/decay.py` | τ = `SYNAPSE_DECAY_TAU_DAYS` (30j) | oubli gracieux Ebbinghaus (SYN-19) — actif |
+| **Seuil merge embedding** | `_propose_merge_by_embedding` | `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85) | fusion auto de doublons (SYN-61) |
+| **Prédicats single-valued** | `facts_store` | liste statique | last-writes-wins / obsolescence (SYN-37) |
 | Confiance validation manuelle | `validate_fact` | 0.95 | certitude quand l'utilisateur confirme |
 | Seuil distance graphe | visualiseur | 1.1 | densité du graphe |
 | Modèle d'embedding | `config.py` | MiniLM multilingue 384-d | qualité/langue de la similarité |
@@ -101,8 +103,13 @@ SQLite (`~/.synapse/synapse.db`), ouvert via `apsw`, extension `sqlite-vec`. Sch
 | `intentions` | éphémère (TTL 48h) | — |
 | `validation_events` | journal append-only des validations (durable, réplicable) | — |
 | `cycle_runs` | 1 ligne par run du cycle (stats `/dream-cycle/last`) | — |
-| `resources` | ressources (réservé) | — |
+| `resources` | URL fetchées + résumé + embedding (SYN-21) | sémantique |
+| `entity_merge_proposals` | file de dédup d'entités (SYN-39/61) | — |
+| `entity_type_proposals` / `active_entity_types` | vocab de types dynamique (SYN-58) | — |
+| `project_entries` / `project_state` / `project_state_versions` | agrégat projet (SYN-40) | — |
 | `knowledge_graph` | legacy, **inutilisé** | — |
+
+Colonnes de cycle de vie : `entities.status` (active/pending/archived) + `archived_at` ; `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/58/59) ; `atomic_notes.last_reactivated_at` (decay SYN-19). Vues de lecture filtrent par défaut (`status='active'`, `archived_at IS NULL`, `obsoleted_at IS NULL`).
 
 Embeddings : **fastembed local** (ONNX, `paraphrase-multilingual-MiniLM-L12-v2`, 384-d, L2-normalisé). Pas d'appel API pour embedder. Notes dans `atomic_notes_vec` (vec0) ; entités en BLOB (`entities.embedding`) recherchées par cosinus manuel.
 
@@ -182,28 +189,37 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 
 ## 9. État d'implémentation
 
-**Implémenté** : Dream Cycle unifié (fact / episodic / ephemeral) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités · schéma épisodique · API HTTP + modèle de sync (UUID, idempotence, validations-événements, `/changes`) · résilience par entrée + statut de capture · tests hors-ligne (`test_embeddings.py`, `test_cycle.py`, `test_api.py`).
+**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (33 endpoints) + modèle de sync · résilience par entrée · tests hors-ligne (73 verts).
+
+**Batch graphe d'entités (shippé 2026-05-31)** :
+
+| Domaine | Livré | Ticket |
+|---|---|---|
+| Sémantique | vectorisation entités (cosine partagé) · suggestions `/entity/{id}/similar` | SYN-60, SYN-62 |
+| Dédup | merge proposals substring + fallback embedding | SYN-39, SYN-61 |
+| Types | vocab `entity.type` extensible via pending + garde-fou projet | SYN-58 |
+| Faits | conflit last-writes-wins (obsolescence) + archive/obsolète manuel | SYN-37, SYN-59 |
+| Mémoire | **decay `memory_strength`** (Ebbinghaus) | SYN-19 |
+| Ressources | **fetch + résumé d'URL** → `resources` cherchable | SYN-21 |
 
 **Pistes restantes** :
 
 | Domaine | Piste |
 |---|---|
-| Traitement | résolution de coréférence (fenêtre de contexte récent) |
-| Traitement | `resource` : fetch + résumé d'URL |
-| Traitement | multi-format (image / vision) |
-| Mémoire | TTL inbox |
-| Mémoire | `memory_strength` (décroissance d'Ebbinghaus / oubli gracieux) |
-| Mémoire | compression des `atomic_notes` anciennes |
-| Mémoire | digest périodique de la `review_queue` |
+| Traitement | résolution de coréférence (fenêtre de contexte récent) · multi-format (image / vision) |
+| Projets | refinement actif via MCP · exhumation · élagage dégressif de l'historique de synthèse (SYN-40 future) |
+| Mémoire | TTL inbox · compression des `atomic_notes` éteintes · digest périodique de la `review_queue` |
+| App | toggle « voir entités archivées » · retouches navigation |
 
 ---
 
 ## 10. Roadmap
 
 Directions backend (sans dates) :
-- **Oubli gracieux** — calculer `memory_strength` (décroissance d'Ebbinghaus), compresser/archiver les notes épisodiques anciennes.
-- **Ressources** — fetch + résumé d'URL dans `resources`.
+- ~~Oubli gracieux (`memory_strength` Ebbinghaus)~~ ✅ SYN-19 · ~~Ressources (fetch + résumé d'URL)~~ ✅ SYN-21.
+- **Compression** — compresser/archiver les `atomic_notes` éteintes (sous le seuil de decay), PDF resources.
 - **Coréférence** — résoudre pronoms/références via une fenêtre de contexte récent.
+- **Projets (SYN-40 future)** — refinement actif via agent MCP, exhumation, élagage dégressif de l'historique de synthèse.
 - **Digest** — remonter les éléments faible-confiance de `review_queue`.
 - **Découverte LAN** — mDNS/Bonjour pour que les clients trouvent le serveur sans URL manuelle.
 

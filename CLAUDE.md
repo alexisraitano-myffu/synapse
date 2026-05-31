@@ -65,9 +65,12 @@ python visualizer/app.py
 ```
 Capture → inbox → Dream Cycle ─┬─ fact      → entities / facts / relations
                                ├─ episodic  → atomic_notes (+ atomic_notes_vec)
-                               ├─ ephemeral → intentions (48h TTL)
-                               └─ resource  → (routed like fact for now; fetch+summary TODO)
+                               ├─ ephemeral → intentions (48h TTL)   ← NON-exclusive: durable
+                               │                                       entities are still extracted
+                               └─ any URL   → fetch + Haiku summary → resources (searchable, SYN-21)
 ```
+
+Routing is **non-exclusive**: one capture can produce entities + atomic_note + project_entries + an intention + a resource at once (`_process_entry`). URL-driven resource fetch runs for any capture, even a pure intention.
 
 `import dream_cycle` resolves to the **package** `dream_cycle/`; the pipeline lives in `dream_cycle/cycle.py` and is exported as `run_dream_cycle` (also `python -m dream_cycle`). There is one cycle — the earlier two-implementation split has been merged.
 
@@ -77,25 +80,29 @@ Operates per inbox entry, with French prompts. Classifies each entry, then route
 
 - **fact** → the 6-step graph pipeline below.
 - **episodic** → `write_episodic_note`: stores raw content + summary + `entities_mentioned` in `atomic_notes` with `memory_strength=1.0`, and vectorizes it into `atomic_notes_vec`.
-- **ephemeral** → `intentions` (48h TTL), skips the graph.
-- **resource** → currently falls through to the fact pipeline (fetch+summary into `resources` is a future step, per spec).
+- **ephemeral** → `intentions` (48h TTL). Non-exclusive: durable entities in the same capture are still routed (SYN-58).
+- **resource** → any URL in the capture is fetched (`httpx`) + extracted (stdlib `html.parser`, no trafilatura dep) + summarised (Haiku) + stored in `resources`, searchable via its embedded summary (`dream_cycle/resources.py`, SYN-21).
 
 The 6 steps for facts:
-1. **Classify** — Haiku tags `input_type` and extracts entities, facts (snake_case predicates + `persistence_value` 1–5), relations, and a one-line summary.
+1. **Classify** — Haiku tags `input_type` and extracts entities, facts (snake_case predicates + `persistence_value` 1–5), relations, summary. **Entity type vocab is dynamic** (SYN-58): the prompt reads `active_entity_types` at runtime (uncached block); an entity that fits no active type carries `type_proposal{value,reason}` instead of being mis-typed. Garde-fou: `type=project` only with a matching `project_entries` item.
 2. **Resolve** — matches entities to existing rows (canonical name or alias); resolves relative dates to absolute via `dateparser` (date-like predicates only).
-3. **Score** (`compute_confidence`) — explicit-statement (+0.5) + context (+0.3) + mention-count (≤+0.2) + persistence bonus → [0,1].
-4. **Route** — **entity nodes are created on mention** (decoupled from fact confidence) as long as they pass the anti-pollution garde-fou `MIN_ENTITY_PERSISTENCE` (≥2, i.e. not pure noise) OR appear in a relation OR already exist. **Facts** are still confidence-gated: > 0.85 → `facts`; 0.5–0.85 → `pending_facts`; < 0.5 → `review_queue`. So a fresh entity exists in the graph while its facts await corroboration/validation. Relations are written when both endpoints exist (now reliably, since entities are created eagerly). `_upsert_entity` fills `summary`/`attributes`/`persistence_value`.
+3. **Score** (`compute_confidence`) — evidence base (`explicit` 0.92 · `hedged` 0.65 · `implicit` 0.40) + existing/mention/persistence bonuses → [0,1]; `hedged` clamped to 0.84.
+4. **Route** — **entity nodes are created on mention** (decoupled from fact confidence) if they pass `MIN_ENTITY_PERSISTENCE` (≥2) OR appear in a relation OR already exist. A vocab-gap entity is created `status='pending'` + an `entity_type_proposals` row. **Facts** are confidence-gated: > 0.85 → `facts`; 0.5–0.85 → `pending_facts`; < 0.5 → `review_queue`. Newly-created entities are scanned for duplicates → `entity_merge_proposals` (substring SYN-39, then embedding fallback SYN-61). All fact writes go through **`facts_store.insert_fact`**, which applies SYN-37 last-writes-wins: a single-valued predicate (`works_at`, `lives_in`, …) obsoletes the prior active fact (`obsoleted_at`/`obsoleted_by`) when the new one is ≥ as confident.
 5. **Behavioral validation** — a pending fact corroborated by a new mention in the same run is promoted into `facts`.
+6. **Vectorize** — embeds touched entities into `entities.embedding` (BLOB). Then **decay** (SYN-19): `apply_decay` recomputes `memory_strength` for all `atomic_notes`.
 
-Per-entry resilience: each entry is processed in isolation. An `anthropic.APIError` (no/invalid key, network) **aborts the whole run** and leaves entries queued for a retry; a content error on one entry marks just that entry `status='failed'` (`processed_at` set so it isn't retried) and the run continues. The API can auto-run the cycle debounced after captures (`SYNAPSE_AUTO_CYCLE`).
-6. **Vectorize** — embeds touched entities into the `entities.embedding` BLOB column.
+Per-entry resilience: each entry is processed in isolation. An `anthropic.APIError` (no/invalid key, network) **aborts the whole run** and leaves entries queued for a retry; a content error on one entry marks just that entry `status='failed'` and the run continues. The API can auto-run the cycle debounced after captures (`SYNAPSE_AUTO_CYCLE`).
 
-`memory_strength` (Ebbinghaus decay / graceful forgetting) is in the schema but not yet computed — that's the planned Phase C.
+**Memory strength / graceful forgetting (SYN-19, `dream_cycle/decay.py`)**: `memory_strength = exp(-Δdays/τ)` recomputed from `atomic_notes.last_reactivated_at` (τ via `SYNAPSE_DECAY_TAU_DAYS`, default 30) — cadence-independent. Reactivation: a mention in a new capture is a strong bump; a `search_memory` hit is a light one. Runs at the end of each cycle + standalone `python -m dream_cycle.decay` (nightly cron for empty-inbox days).
+
+**Lifecycle (SYN-37/59)**: `facts` and `entities` carry `archived_at` (user "filed away") and facts also `obsoleted_at`/`obsoleted_by` ("no longer true" — auto by SYN-37 supersede or manual). Read views hide them by default; `?include=archived,obsolete` (entity facts) and `?include_archived=true` (graph) opt them back in.
+
+**Shared modules**: `entity_search.py` (entity/resource cosine search + composite-text helper, used by MCP search, merge fallback, `/similar`), `facts_store.py` (single source of fact writes + supersede), `dream_cycle/decay.py`, `dream_cycle/resources.py`.
 
 ### MCP tools (`mcp_server/server.py`)
 
 - `add_to_inbox(content, source)` — raw capture
-- `search_memory(query, limit)` — local vector search over **both** `atomic_notes` (episodic) and `entities` (graph), merged and score-sorted; falls back to `LIKE` keyword search if the vector path yields nothing
+- `search_memory(query, limit)` — local vector search over `atomic_notes` (episodic), `entities` (graph) **and `resources`** (SYN-21), merged and score-sorted; falls back to `LIKE` keyword search if the vector path yields nothing. A hit lightly reactivates the surfaced notes (SYN-19).
 - `list_recent(limit)` — recent inbox entries
 - `run_dream_cycle()` — triggers the unified cycle (kept for testing; production is cron-driven)
 - `get_entity(name)` — entity by canonical name or alias, with its facts and relations
@@ -104,7 +111,7 @@ Per-entry resilience: each entry is processed in isolation. An `anthropic.APIErr
 
 ### HTTP API (`api/app.py`)
 
-FastAPI app for the mobile/desktop clients (run `python -m api`, port 8000). Bearer auth via `SYNAPSE_API_TOKEN` (auth **disabled** if unset — dev mode). Endpoints: `GET /health`, `POST /capture` (**idempotent on client UUID** — `INSERT OR IGNORE` on `inbox.client_id`), `GET /feed`, `GET /graph` (`?mode=ego&entity=`), `GET /entity/{id}`, `GET /pending` (question + source quote), `POST /pending/{id}/validate`, `POST /dream-cycle/run` (single-instance **file lock** + writes `cycle_runs`), `GET /dream-cycle/last`, `GET /changes` (pull-replication snapshot of derived state). Per-request apsw connections (sync endpoints). Sync model: captures carry `id`/`device_id`/`captured_at`, validations are append-only events → state rebuildable, multi-device replication possible (see `docs/ARCHITECTURE.md`).
+FastAPI app for the mobile/desktop clients (run `python -m api`, port 8000), **33 endpoints**; the frozen contract is `openapi.json` (regenerate via `app.openapi()` when it changes — the app codes against it). Bearer auth via `SYNAPSE_API_TOKEN` (auth **disabled** if unset — dev). Core: `GET /health`, `POST /capture` (**idempotent on client UUID**), `GET /feed`, `GET /graph` (`?mode=ego&entity=&include_archived=`), `GET /entity/{id}` (`?include=archived,obsolete`), `GET /pending`, `POST /pending/{id}/validate`, `POST /dream-cycle/run` (file lock + `cycle_runs`), `GET /dream-cycle/last`, `GET /changes`, `GET /atomic-notes`, `GET /projects`, `GET /project/{id}/state`, project-entry ops. **Entity-graph endpoints (this batch)**: `GET /entity/{id}/similar` (SYN-62), `GET/POST /entity-type-proposals*` (SYN-58), `GET/POST /merge-proposals*` (SYN-39), `POST /entity|fact/{id}/archive|unarchive` + `/fact/{id}/obsolete|restore` (SYN-59). Per-request apsw connections. Sync model: captures carry `id`/`device_id`/`captured_at`, validations are append-only events → state rebuildable (see `docs/ARCHITECTURE.md`).
 
 ### Embedding strategy
 
@@ -119,13 +126,16 @@ Search is hybrid: vector k-NN via sqlite-vec first (no API key needed — embedd
 SQLite at `~/.synapse/synapse.db`, opened via `apsw` (stdlib `sqlite3` on macOS can't load extensions). The sqlite-vec extension is loaded at connection time. Schema and connection helpers (`get_connection`, `cursor_to_dicts`, `first_row`, `init_db`) live in `db/__init__.py`; `init_db()` is idempotent (`CREATE TABLE IF NOT EXISTS` + best-effort `ALTER TABLE` migrations wrapped in try/except) and is called at MCP startup and at the top of the Dream Cycle.
 
 Tables:
-- `inbox` — raw captures; `processed_at` NULL until the Dream Cycle consumes them. Sync columns: `client_id` (UNIQUE partial index → idempotent capture), `device_id`, `captured_at`, `status`
-- `validation_events` — append-only log of user validate/reject decisions (durable, replicable)
+- `inbox` — raw captures; `processed_at` NULL until consumed. Sync: `client_id` (UNIQUE partial index → idempotent), `device_id`, `captured_at`, `status`
+- `validation_events` — append-only log of validate/reject decisions
 - `cycle_runs` — one row per Dream Cycle run (stats for `GET /dream-cycle/last`)
-- `atomic_notes` / `atomic_notes_vec` — episodic memory; vec0 rowid mirrors `atomic_notes.id`. Columns include `summary`, `entities_mentioned` (JSON), `memory_strength` (added by migration)
-- `entities`, `facts`, `relations`, `resources` — entity graph (entity/fact IDs are UUID strings); entity embeddings live in `entities.embedding` as raw BLOBs (UUID ids can't use the int-rowid vec0 table, so entity search does manual cosine)
+- `atomic_notes` / `atomic_notes_vec` — episodic memory; vec0 rowid mirrors `atomic_notes.id`. Columns: `summary`, `entities_mentioned` (JSON), `memory_strength` + `last_reactivated_at` (SYN-19)
+- `entities`, `facts`, `relations`, `resources` — entity graph (UUID ids). `entities.embedding` raw BLOB (manual cosine — UUID ids can't use int-rowid vec0). Lifecycle cols: `entities.status` (active|pending|archived, SYN-58) + `entities.archived_at`, `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/59). `resources` now has `url`/`content`/`summary`/`embedding`/`fetched_at` (SYN-21, unique index on `url`)
+- `active_entity_types` (live type vocab: 6 builtin + user-validated) + `entity_type_proposals` (SYN-58)
+- `entity_merge_proposals` (SYN-39) — dedup queue; `merged_into_id`/`merged_at` soft-link on `entities`
 - `pending_facts`, `review_queue`, `intentions` — routing buckets
-- `knowledge_graph` — legacy explicit relations table; unused by current code
+- `project_entries`, `project_state`, `project_state_versions` — project aggregate (SYN-40)
+- `knowledge_graph` — legacy, unused
 
 vec0 virtual tables don't support `COUNT(*)`; count by point-looking-up each rowid (see `visualizer/app.py::get_stats`).
 
@@ -138,6 +148,8 @@ EMBEDDING_DIM = 384
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # local fastembed
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # Dream Cycle reasoning only
 ```
+
+**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CYCLE_DEBOUNCE_SECONDS` (120), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19). Single-valued predicates list (SYN-37): `facts_store.SINGLE_VALUED_PREDICATES`.
 
 ### Visualizer (`visualizer/`)
 
