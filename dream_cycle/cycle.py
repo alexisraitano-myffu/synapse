@@ -34,7 +34,7 @@ from config import CLAUDE_MODEL
 from config_store import get_anthropic_key
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
-from entity_search import entity_embedding_text
+from entity_search import entity_embedding_text, search_entities_by_vector
 
 try:
     import dateparser
@@ -252,6 +252,43 @@ def _find_existing_entity(canonical_name: str, aliases: list[str], conn) -> dict
     return None
 
 
+# SYN-61: cosine threshold above which the embedding fallback proposes a merge.
+# Sensitive knob — too low spams noise, too high misses real dups. Overridable
+# per-run via SYNAPSE_MERGE_EMBEDDING_THRESHOLD; verbose logs every hit + score.
+_MERGE_EMBEDDING_THRESHOLD_DEFAULT = 0.85
+
+
+def _merge_proposal_exists(conn, a_id: str, b_id: str) -> bool:
+    """True if a proposal already pairs these two entities (any status) — we
+    don't want to re-prompt the user about the same pair every cycle."""
+    return first_row(conn.execute(
+        "SELECT id FROM entity_merge_proposals "
+        "WHERE (candidate_entity_id=? AND existing_entity_id=?) "
+        "   OR (candidate_entity_id=? AND existing_entity_id=?)",
+        (a_id, b_id, b_id, a_id),
+    )) is not None
+
+
+def _record_merge_proposal(conn, new_id, new_name, existing, score, reason,
+                           capture_id, verbose=False) -> bool:
+    """Insert one merge proposal unless the pair is already proposed. Returns
+    True if a row was written."""
+    if _merge_proposal_exists(conn, new_id, existing["id"]):
+        return False
+    prop_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO entity_merge_proposals "
+        "(id, candidate_entity_id, existing_entity_id, similarity_score, "
+        " similarity_reason, evidence_capture_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (prop_id, new_id, existing["id"], score, reason, capture_id),
+    )
+    if verbose:
+        print(f"    [merge?] '{new_name}' ↔ '{existing['canonical_name']}' "
+              f"→ proposal {prop_id} ({reason})")
+    return True
+
+
 def _propose_merge_if_similar(
     new_id: str,
     new_name: str,
@@ -260,11 +297,17 @@ def _propose_merge_if_similar(
     conn,
     verbose: bool = False,
 ) -> None:
-    """SYN-39: raise a pending proposal when a freshly created entity looks
-    like a duplicate of an existing same-type one (e.g. 'Martin' alongside
-    'Martin Bari'). V1 heuristic = name substring match (one name fully
-    contained in the other) plus a shared-token check to avoid 'Pi'⊂'Pierre'
-    false positives. Embedding-based similarity stays out of scope for now.
+    """Raise a pending proposal when a freshly created entity looks like a
+    duplicate of an existing same-type one.
+
+    Two layers, cheapest first; the one that fires first wins (one proposal per
+    new entity is enough — the user picks):
+      1. SYN-39 substring heuristic — one name fully contained in the other plus
+         a shared full token ('Martin' ↔ 'Martin Bari'; the token check dodges
+         'Pi' ⊂ 'Pierre').
+      2. SYN-61 embedding fallback — when substring finds nothing, cosine
+         similarity over same-type entities catches dups that share no
+         substring ('Marie Dupont' ↔ 'M. Dupont', 'OpenAI' ↔ 'Open AI').
     """
     if not new_name:
         return
@@ -288,27 +331,53 @@ def _propose_merge_if_similar(
         ex_tokens = set(ex_lower.split())
         if not (needle_tokens & ex_tokens):
             continue
-        # Skip if a proposal already exists for this pair (any status — we
-        # don't want to re-prompt the user every cycle).
-        already = first_row(conn.execute(
-            "SELECT id FROM entity_merge_proposals "
-            "WHERE (candidate_entity_id=? AND existing_entity_id=?) "
-            "   OR (candidate_entity_id=? AND existing_entity_id=?)",
-            (new_id, c["id"], c["id"], new_id),
-        ))
-        if already:
-            continue
-        prop_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO entity_merge_proposals "
-            "(id, candidate_entity_id, existing_entity_id, similarity_score, "
-            " similarity_reason, evidence_capture_id) "
-            "VALUES (?,?,?,?,?,?)",
-            (prop_id, new_id, c["id"], 0.9, "name_substring", capture_id),
-        )
+        if _record_merge_proposal(conn, new_id, new_name, c, 0.9,
+                                  "name_substring", capture_id, verbose):
+            return  # substring matched — don't also run the embedding fallback
+
+    # No substring proposal → SYN-61 embedding fallback.
+    _propose_merge_by_embedding(new_id, new_name, new_type, capture_id, conn, verbose)
+
+
+def _propose_merge_by_embedding(
+    new_id: str,
+    new_name: str,
+    new_type: str,
+    capture_id: int | None,
+    conn,
+    verbose: bool = False,
+) -> bool:
+    """SYN-61: embedding-similarity fallback for `_propose_merge_if_similar`.
+
+    The new entity isn't vectorized yet (step6 runs at the end of the cycle), so
+    we embed it on the fly and cosine-search same-type entities. Matches the new
+    entity only against the *historical* graph — same-run entities also lack an
+    embedding until step6, which is fine: substring already catches obvious
+    in-run dups. Threshold tunable via SYNAPSE_MERGE_EMBEDDING_THRESHOLD.
+    Returns True if a proposal was created.
+    """
+    threshold = float(os.getenv(
+        "SYNAPSE_MERGE_EMBEDDING_THRESHOLD", str(_MERGE_EMBEDDING_THRESHOLD_DEFAULT)
+    ))
+    entity = first_row(conn.execute("SELECT * FROM entities WHERE id=?", (new_id,)))
+    if not entity:
+        return False
+    try:
+        new_vec = embed_text(entity_embedding_text(entity))
+    except Exception as exc:
         if verbose:
-            print(f"    [merge?] '{new_name}' ↔ '{ex_name}' → proposal {prop_id}")
-        return  # one proposal per new entity is enough; user picks
+            print(f"    [merge?] embedding fallback skipped for '{new_name}': {exc}")
+        return False
+
+    matches = search_entities_by_vector(
+        conn, new_vec, limit=5, min_score=threshold,
+        type_filter=new_type, exclude_ids={new_id},
+    )
+    for m in matches:
+        if _record_merge_proposal(conn, new_id, new_name, m, m["score"],
+                                  f"embedding_{m['score']:.2f}", capture_id, verbose):
+            return True  # one proposal per new entity is enough
+    return False
 
 
 def step2_resolve(classified: dict, conn, verbose: bool = False) -> dict:
