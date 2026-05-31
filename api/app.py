@@ -33,6 +33,8 @@ from pydantic import BaseModel
 import config_store
 from config import BASE_DIR
 from db import cursor_to_dicts, first_row, get_connection, init_db
+from embeddings import embed_text
+from entity_search import entity_embedding_text, search_entities_by_vector
 
 init_db()
 
@@ -361,6 +363,58 @@ def entity_detail(entity_id: str):
             "facts_count": len(facts),
             "facts": facts, "relations": relations,
             "provenance_capture_id": e.get("provenance_capture_id"),
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/entity/{entity_id}/similar", dependencies=[Depends(require_auth)])
+def entity_similar(
+    entity_id: str,
+    limit: int = 5,
+    min_score: float = 0.7,
+    same_type: bool = False,
+):
+    """SYN-62: soft semantic neighbours of an entity — links the user never
+    stated explicitly ('Escalade' ↔ 'Bouldering', 'Schopenhauer' ↔ 'Nietzsche').
+
+    Suggestion only, never a materialized relation: each call recomputes against
+    the current graph (no cache — fastembed is local and the scan is sub-ms), so
+    results evolve as new entities/summaries appear. `same_type=true` restricts
+    to the entity's own type. Soft-merged entities are excluded by the search.
+    """
+    conn = get_connection()
+    try:
+        e = first_row(conn.execute("SELECT * FROM entities WHERE id=?", (entity_id,)))
+        if not e:
+            raise HTTPException(status_code=404, detail="entity not found")
+        if e.get("merged_into_id"):
+            raise HTTPException(
+                status_code=410,
+                detail={"reason": "merged", "merged_into_id": e["merged_into_id"]},
+            )
+        # Reuse the stored vector when present (step6 fills it); fall back to an
+        # on-the-fly embed for an entity not yet vectorized.
+        query_vec = e.get("embedding") or embed_text(entity_embedding_text(e))
+        matches = search_entities_by_vector(
+            conn, query_vec,
+            limit=max(1, min(limit, 50)),
+            min_score=min_score,
+            type_filter=e["type"] if same_type else None,
+            exclude_ids={entity_id},
+        )
+        return {
+            "entity_id": entity_id,
+            "similar": [
+                {
+                    "entity_id": m["id"],
+                    "canonical_name": m["canonical_name"],
+                    "type": m["type"],
+                    "summary": m["summary"],
+                    "similarity_score": m["score"],
+                }
+                for m in matches
+            ],
         }
     finally:
         conn.close()

@@ -114,6 +114,70 @@ def test_entity_detail(client):
     assert any(r["entity_to"] == "Alexis" for r in d["relations"])
 
 
+# ── Semantic suggestions (SYN-62) ─────────────────────────────────────────────
+
+def _seed_similar():
+    """Insert vectorized entities so /similar has something to score."""
+    import uuid as _uuid
+    from embeddings import embed_text
+    from entity_search import entity_embedding_text
+    ids = {}
+    conn = _conn()
+    try:
+        with conn:
+            for name, type_, summary in [
+                ("Escalade", "concept", "Grimper des parois et des blocs en falaise"),
+                ("Bouldering", "concept", "Grimpe de bloc sans corde, en salle ou en falaise"),
+                ("Politique monétaire", "concept", "Taux directeurs de la banque centrale"),
+                ("Marie", "person", "Une amie qui fait de la grimpe"),
+            ]:
+                eid = str(_uuid.uuid4())
+                row = {"canonical_name": name, "type": type_,
+                       "aliases": "[]", "attributes": "{}", "summary": summary}
+                vec = embed_text(entity_embedding_text(row))
+                conn.execute(
+                    "INSERT INTO entities (id, type, canonical_name, aliases, "
+                    "attributes, summary, embedding) VALUES (?,?,?,?,?,?,?)",
+                    (eid, type_, name, "[]", "{}", summary, vec),
+                )
+                ids[name] = eid
+    finally:
+        conn.close()
+    return ids
+
+
+def test_entity_similar_returns_semantic_neighbours(client):
+    ids = _seed_similar()
+    r = client.get(f"/entity/{ids['Escalade']}/similar", params={"min_score": 0.3})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["entity_id"] == ids["Escalade"]
+    names = [s["canonical_name"] for s in body["similar"]]
+    # The entity itself is never in its own suggestions.
+    assert "Escalade" not in names
+    # Climbing-adjacent entity should rank above the finance one.
+    assert "Bouldering" in names
+    assert names[0] == "Bouldering"
+    # Scores are descending and carry the expected fields.
+    scores = [s["similarity_score"] for s in body["similar"]]
+    assert scores == sorted(scores, reverse=True)
+    assert all({"entity_id", "canonical_name", "type", "similarity_score"} <= s.keys()
+               for s in body["similar"])
+
+
+def test_entity_similar_same_type_filter(client):
+    ids = _seed_similar()
+    r = client.get(f"/entity/{ids['Escalade']}/similar",
+                   params={"min_score": 0.1, "same_type": True})
+    types = {s["type"] for s in r.json()["similar"]}
+    assert types <= {"concept"}, "same_type=true must keep only concepts"
+    assert all(s["canonical_name"] != "Marie" for s in r.json()["similar"])
+
+
+def test_entity_similar_404_unknown(client):
+    assert client.get("/entity/does-not-exist/similar").status_code == 404
+
+
 # ── Pending + validate (event-sourced) ───────────────────────────────────────
 
 def _seed_pending():

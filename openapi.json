@@ -21,6 +21,106 @@
         }
       }
     },
+    "/config": {
+      "get": {
+        "summary": "Get Config",
+        "description": "Status only — never echoes the key back. Used by the wizard to know\nwhether to prompt for one.",
+        "operationId": "get_config_config_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/config/anthropic-key": {
+      "put": {
+        "summary": "Put Anthropic Key",
+        "description": "Stores the key in ~/.synapse/config.json (0600). Lets the desktop app\npush the key without touching .env files.",
+        "operationId": "put_anthropic_key_config_anthropic_key_put",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnthropicKeyIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/capture": {
       "post": {
         "summary": "Capture",
@@ -213,6 +313,811 @@
             "schema": {
               "type": "string",
               "title": "Entity Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update Entity",
+        "description": "Update an entity's type. Closed enum (see EntityType).",
+        "operationId": "update_entity_entity__entity_id__patch",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EntityUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/entity/{entity_id}/similar": {
+      "get": {
+        "summary": "Entity Similar",
+        "description": "SYN-62: soft semantic neighbours of an entity — links the user never\nstated explicitly ('Escalade' ↔ 'Bouldering', 'Schopenhauer' ↔ 'Nietzsche').\n\nSuggestion only, never a materialized relation: each call recomputes against\nthe current graph (no cache — fastembed is local and the scan is sub-ms), so\nresults evolve as new entities/summaries appear. `same_type=true` restricts\nto the entity's own type. Soft-merged entities are excluded by the search.",
+        "operationId": "entity_similar_entity__entity_id__similar_get",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "min_score",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 0.7,
+              "title": "Min Score"
+            }
+          },
+          {
+            "name": "same_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Same Type"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/projects": {
+      "get": {
+        "summary": "Projects List",
+        "description": "List entities of type=project with synthesis preview (SYN-53).\n\nOne row per project, joined to its current_state (if any) and counted\nagainst project_entries. Single trip — avoids the N+1 /entity/{id} +\n/project/{id}/state walk a client would otherwise do.",
+        "operationId": "projects_list_projects_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/atomic-notes": {
+      "get": {
+        "summary": "Atomic Notes List",
+        "description": "List atomic_notes for the Notes view (SYN-52).\n\nFilters are AND-combined and best-effort:\n- q: substring match on title or content (case-insensitive)\n- entity: matches any note whose entities_mentioned JSON array contains\n  the canonical name (LIKE on the serialized list — cheap, no JSON1)",
+        "operationId": "atomic_notes_list_atomic_notes_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "entity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/merge-proposals": {
+      "get": {
+        "summary": "Merge Proposals List",
+        "description": "List entity merge proposals filtered by status (SYN-39).\n\nJoins the two side entities + their fact previews so the client can render\na side-by-side card without follow-up requests.",
+        "operationId": "merge_proposals_list_merge_proposals_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "pending",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/merge-proposals/{proposal_id}/accept": {
+      "post": {
+        "summary": "Merge Proposal Accept",
+        "description": "Accept a merge proposal: reroute everything to the chosen canonical and\nsoft-mark the absorbed entity (no DELETE, lineage preserved).",
+        "operationId": "merge_proposal_accept_merge_proposals__proposal_id__accept_post",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeAcceptIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/merge-proposals/{proposal_id}/reject": {
+      "post": {
+        "summary": "Merge Proposal Reject",
+        "description": "Mark the proposal rejected (status terminal, won't be re-proposed).",
+        "operationId": "merge_proposal_reject_merge_proposals__proposal_id__reject_post",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/capture/{capture_id}": {
+      "get": {
+        "summary": "Capture Detail",
+        "description": "Return the raw inbox row by id. Powers the 'source' chip — anything\nelsewhere with a provenance_capture_id can resolve to a full capture\npayload here without leaking SQL details to the client.",
+        "operationId": "capture_detail_capture__capture_id__get",
+        "parameters": [
+          {
+            "name": "capture_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Capture Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/project-entries/{entry_id}/move": {
+      "post": {
+        "summary": "Move Project Entry",
+        "description": "Reassign a project_entry to a different project.\n\nSYN-45: the immutable capture (inbox row) is never touched — we only\nreassign the projection. Caller is expected to trigger a refinement\nlater if the synthesis on either project needs updating.",
+        "operationId": "move_project_entry_project_entries__entry_id__move_post",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectEntryMoveIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/project-entries/{entry_id}/attach-to-project": {
+      "post": {
+        "summary": "Attach Entry To Project",
+        "description": "Add a parallel rattachement to another project (additive, not move).\n\nSYN-55 + SYN-57: a capture can belong to N projects (the schema already\nallows multiple project_entries per capture_id, and the classifier emits\nproject_entries in batch). This manual endpoint mirrors that capability\nfor the UI: it takes an existing entry as a template and INSERTs a new\nrow pointing to the target project, keeping the source row intact. The\nimmutable inbox row is never touched.",
+        "operationId": "attach_entry_to_project_project_entries__entry_id__attach_to_project_post",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectEntryMoveIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/project-entries/{entry_id}/detach": {
+      "post": {
+        "summary": "Detach Project Entry",
+        "description": "Remove the project rattachement; the capture in inbox is preserved.\n\nSYN-45: the projection is destroyed but the source-of-truth capture stays\nin inbox. The user can re-route later from another correction endpoint,\nor capture again.",
+        "operationId": "detach_project_entry_project_entries__entry_id__detach_post",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/project-entries/{entry_id}/reclassify-as-fact": {
+      "post": {
+        "summary": "Reclassify Entry As Fact",
+        "description": "Turn a project_entry into an explicit fact on a target entity.\n\nSYN-45: the entry is removed (the projection), the capture stays in inbox,\nand a new fact is created with confidence=1.0 (the user vouches for it).\nProvenance points back to the capture that originally spawned the entry.",
+        "operationId": "reclassify_entry_as_fact_project_entries__entry_id__reclassify_as_fact_post",
+        "parameters": [
+          {
+            "name": "entry_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entry Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectEntryFactIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/project/{project_id}/state": {
+      "get": {
+        "summary": "Project State",
+        "description": "Live synthesis of a project entity (SYN-43).\n\nReturns the current summary_md + metadata, plus a small recent-entries slice\nso the client can show the timeline without a second round-trip.",
+        "operationId": "project_state_project__project_id__state_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
             }
           },
           {
@@ -525,6 +1430,19 @@
   },
   "components": {
     "schemas": {
+      "AnthropicKeyIn": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key"
+        ],
+        "title": "AnthropicKeyIn"
+      },
       "CaptureIn": {
         "properties": {
           "id": {
@@ -575,6 +1493,27 @@
         ],
         "title": "CaptureIn"
       },
+      "EntityUpdate": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "person",
+              "place",
+              "project",
+              "concept",
+              "organization",
+              "animal"
+            ],
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "title": "EntityUpdate"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -587,6 +1526,60 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "MergeAcceptIn": {
+        "properties": {
+          "canonical_id": {
+            "type": "string",
+            "title": "Canonical Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canonical_id"
+        ],
+        "title": "MergeAcceptIn"
+      },
+      "ProjectEntryFactIn": {
+        "properties": {
+          "predicate": {
+            "type": "string",
+            "title": "Predicate"
+          },
+          "value": {
+            "type": "string",
+            "title": "Value"
+          },
+          "entity_id": {
+            "type": "string",
+            "title": "Entity Id"
+          },
+          "persistence_value": {
+            "type": "integer",
+            "title": "Persistence Value",
+            "default": 3
+          }
+        },
+        "type": "object",
+        "required": [
+          "predicate",
+          "value",
+          "entity_id"
+        ],
+        "title": "ProjectEntryFactIn"
+      },
+      "ProjectEntryMoveIn": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ProjectEntryMoveIn"
       },
       "ValidateIn": {
         "properties": {
