@@ -34,6 +34,7 @@ from config import CLAUDE_MODEL
 from config_store import get_anthropic_key
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
+from entity_search import entity_embedding_text
 
 try:
     import dateparser
@@ -689,22 +690,7 @@ def step6_vectorize(
         if not entity:
             continue
 
-        try:
-            aliases = json.loads(entity.get("aliases", "[]"))
-        except (ValueError, TypeError):
-            aliases = []
-        try:
-            attributes = json.loads(entity.get("attributes", "{}"))
-        except (ValueError, TypeError):
-            attributes = {}
-
-        text = (
-            f"Nom: {entity['canonical_name']}\n"
-            f"Type: {entity.get('type', '')}\n"
-            f"Aliases: {', '.join(aliases)}\n"
-            f"Attributs: {json.dumps(attributes, ensure_ascii=False)}\n"
-            f"Résumé: {entity.get('summary', '')}"
-        )
+        text = entity_embedding_text(entity)
 
         if dry_run:
             if verbose:

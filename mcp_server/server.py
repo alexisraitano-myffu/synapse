@@ -1,7 +1,6 @@
 import contextlib
 import io
 import json
-import struct
 import sys
 import traceback
 from pathlib import Path
@@ -15,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
+from entity_search import search_entities_by_vector
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
@@ -40,43 +40,22 @@ def _format_result(row: dict, search_type: str) -> dict:
     return result
 
 
-def _deserialize_vec(blob: bytes) -> tuple[float, ...]:
-    """Decode a sqlite-vec serialized float32 blob into floats."""
-    return struct.unpack(f"<{len(blob) // 4}f", blob)
-
-
 def _search_entities(query_vec: bytes, limit: int, conn) -> list[dict]:
     """
-    Semantic search over the entity graph.
-
-    Entity embeddings live as raw BLOBs (entity ids are UUIDs, so they can't
-    share the int-rowid vec0 table), so we score them with a manual L2 distance
-    on the unit vectors — fine for a personal-scale graph.
+    Semantic search over the entity graph (thin adapter over the shared
+    `entity_search` scan — see SYN-60) mapped to the MCP result shape.
     """
-    q = _deserialize_vec(query_vec)
-    scored: list[tuple[float, dict]] = []
-    for row in cursor_to_dicts(conn.execute(
-        "SELECT id, canonical_name, type, summary, embedding FROM entities "
-        "WHERE embedding IS NOT NULL"
-    )):
-        v = _deserialize_vec(row["embedding"])
-        if len(v) != len(q):
-            continue
-        dist = sum((a - b) ** 2 for a, b in zip(q, v)) ** 0.5
-        scored.append((dist, row))
-
-    scored.sort(key=lambda x: x[0])
-    results = []
-    for dist, row in scored[:limit]:
-        results.append({
-            "id": row["id"],
-            "title": row["canonical_name"],
-            "content": row.get("summary") or "",
-            "type": row.get("type"),
-            "score": round(max(0.0, 1 - dist / 2), 4),
+    return [
+        {
+            "id": e["id"],
+            "title": e["canonical_name"],
+            "content": e["summary"],
+            "type": e["type"],
+            "score": e["score"],
             "search_type": "entity",
-        })
-    return results
+        }
+        for e in search_entities_by_vector(conn, query_vec, limit=limit)
+    ]
 
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
