@@ -303,7 +303,7 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
         archived_clause = "" if include_archived else " AND e.archived_at IS NULL"
         for e in cursor_to_dicts(conn.execute(
             "SELECT e.id, e.canonical_name, e.type, e.mention_count, e.persistence_value, "
-            "       e.summary, e.last_mentioned, "
+            "       e.summary, e.last_mentioned, e.archived_at, "
             "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id "
             "          AND f.archived_at IS NULL AND f.obsoleted_at IS NULL) AS facts_count "
             "FROM entities e WHERE e.merged_into_id IS NULL AND e.status = 'active'"
@@ -319,6 +319,7 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
                 "last_mentioned": e.get("last_mentioned"),
                 "facts_count": e.get("facts_count", 0),
                 "memory_strength": None,  # reserved (Phase C)
+                "archived_at": e.get("archived_at"),  # SYN-59
             })
         edges = [
             {"from": r["entity_from"], "to": r["entity_to"],
@@ -385,6 +386,8 @@ def entity_detail(entity_id: str, include: str | None = None):
             "facts_count": len(facts),
             "facts": facts, "relations": relations,
             "provenance_capture_id": e.get("provenance_capture_id"),
+            "status": e.get("status"),               # SYN-58
+            "archived_at": e.get("archived_at"),     # SYN-59
         }
     finally:
         conn.close()
