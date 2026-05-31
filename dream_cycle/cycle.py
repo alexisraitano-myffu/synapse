@@ -1286,19 +1286,22 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     as 'failed'.
     """
     classified = step1_classify(entry, client, verbose, conn=conn)
+    capture_id = entry["id"]
+    entity_ids: list[str] = []
+    new_facts: list[dict] = []
 
-    # Ephemeral stays a special exit — it's "this isn't memory, just an
-    # intention that expires". No graph, no atomic_note, no project.
-    if classified.get("is_ephemeral") or classified.get("input_type") == "ephemeral":
+    # SYN-58: ephemeral routing is NON-EXCLUSIVE. We still record the expiring
+    # intention (handle_intentions runs in the router below), but a capture that
+    # also names durable things — "j'ai envie de refaire ma recette de Udon Dan
+    # Dan" — must NOT have those entities discarded: they flow through the router
+    # so the recipe entity (+ its type proposal, SYN-58) is captured. Only a
+    # *pure* intention (no entities, no project) takes the fast exit here.
+    is_ephemeral = classified.get("is_ephemeral") or classified.get("input_type") == "ephemeral"
+    if is_ephemeral and not (classified.get("entities") or classified.get("project_entries")):
         with conn:
             handle_intentions(classified, conn, dry_run, verbose)
             _mark(conn, entry["id"], now, "processed", dry_run)
         return [], []
-
-    # All other inputs go through the multi-output router below.
-    capture_id = entry["id"]
-    entity_ids: list[str] = []
-    new_facts: list[dict] = []
 
     if dry_run:
         if verbose:
@@ -1330,8 +1333,10 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
         # SYN-56: no fallback on input_type=='episodic'. We trust the classifier's
         # atomic_note decision; otherwise the Notes view fills up with non-reflective
         # diary entries / fact restatements ("X a Y") that bypass the explicit rules.
+        # SYN-58: skip on ephemeral — the expiring intention already carries that
+        # thought; persisting it again as a durable note would double-store it.
         atomic = classified.get("atomic_note")
-        if atomic and atomic.strip():
+        if atomic and atomic.strip() and not is_ephemeral:
             mentioned = [
                 e["canonical_name"]
                 for e in classified.get("entities", [])

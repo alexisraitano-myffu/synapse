@@ -85,6 +85,44 @@ def test_project_shell_guard_downgrades_to_concept(isolated_db):
     assert ents[0]["status"] == "active"
 
 
+def test_ephemeral_with_entities_still_captures_them(isolated_db, monkeypatch):
+    """SYN-58: an ephemeral capture that ALSO names a durable entity must not
+    discard it. The recipe entity (+ type proposal) is created and the expiring
+    intention is recorded; the atomic_note is suppressed (no double-store)."""
+    import dream_cycle.cycle as cyc
+    from db import get_connection
+
+    canned = {
+        "input_type": "ephemeral", "is_ephemeral": True,
+        "ephemeral_content": "envie de cuisine",
+        "summary": "envie de refaire les udon",
+        "atomic_note": "j'ai envie de refaire les udon",
+        "project_entries": [],
+        "relations": [],
+        "entities": [{
+            "canonical_name": "Udon Dan Dan", "type": "concept",
+            "type_proposal": {"value": "recipe", "reason": "une recette"},
+            "aliases": [], "summary": "recette", "attributes": {},
+            "facts": [{"predicate": "is", "value": "recette",
+                       "persistence_value": 3, "evidence_strength": "explicit"}],
+        }],
+    }
+    monkeypatch.setattr(cyc, "step1_classify", lambda *a, **k: canned)
+
+    conn = get_connection()
+    try:
+        cyc._process_entry({"id": 1, "content": "..."}, None, conn,
+                           "2026-05-31T00:00:00", False, False)
+    finally:
+        conn.close()
+
+    ents = _rows("SELECT canonical_name, status FROM entities")
+    assert any(e["canonical_name"] == "Udon Dan Dan" and e["status"] == "pending" for e in ents)
+    assert [p["proposed_type"] for p in _rows("SELECT proposed_type FROM entity_type_proposals")] == ["recipe"]
+    assert len(_rows("SELECT id FROM intentions")) == 1  # the envie still expires
+    assert _rows("SELECT id FROM atomic_notes") == []     # not double-stored
+
+
 def test_project_with_matching_entry_stays_project(isolated_db):
     _route({
         "resolved_entities": [_entity("Synapse", type_="project")],
