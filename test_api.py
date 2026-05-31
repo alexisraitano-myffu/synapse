@@ -178,6 +178,94 @@ def test_entity_similar_404_unknown(client):
     assert client.get("/entity/does-not-exist/similar").status_code == 404
 
 
+# ── Entity-type proposals (SYN-58) ────────────────────────────────────────────
+
+def _seed_type_proposal():
+    """A pending entity + its type proposal, as the cycle would create them."""
+    import uuid as _uuid
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO inbox (content, source) VALUES ('recette udon','test')")
+            cid = conn.last_insert_rowid()
+            eid = str(_uuid.uuid4())
+            conn.execute(
+                "INSERT INTO entities (id, type, canonical_name, status) VALUES (?,?,?,?)",
+                (eid, "concept", "Udon Dan Dan", "pending"),
+            )
+            pid = str(_uuid.uuid4())
+            conn.execute(
+                "INSERT INTO entity_type_proposals "
+                "(id, proposed_type, reason, evidence_capture_id, candidate_entity_id) "
+                "VALUES (?,?,?,?,?)",
+                (pid, "recipe", "un plat", cid, eid),
+            )
+    finally:
+        conn.close()
+    return pid, eid
+
+
+def _entity_row(eid):
+    from db import first_row
+    conn = _conn()
+    try:
+        return first_row(conn.execute("SELECT type, status FROM entities WHERE id=?", (eid,)))
+    finally:
+        conn.close()
+
+
+def _active_types():
+    conn = _conn()
+    try:
+        return {r[0] for r in conn.execute("SELECT type FROM active_entity_types")}
+    finally:
+        conn.close()
+
+
+def test_type_proposals_list_shows_candidate_and_evidence(client):
+    pid, eid = _seed_type_proposal()
+    rows = client.get("/entity-type-proposals").json()
+    row = next(p for p in rows if p["id"] == pid)
+    assert row["proposed_type"] == "recipe"
+    assert row["candidate_name"] == "Udon Dan Dan"
+    assert "udon" in row["evidence_content"].lower()
+
+
+def test_type_proposal_accept_extends_vocab_and_activates_entity(client):
+    pid, eid = _seed_type_proposal()
+    assert "recipe" not in _active_types()
+    r = client.post(f"/entity-type-proposals/{pid}/accept", json={})
+    assert r.status_code == 200 and r.json()["type"] == "recipe"
+    assert "recipe" in _active_types()
+    row = _entity_row(eid)
+    assert row["type"] == "recipe" and row["status"] == "active"
+    # terminal: a second accept is rejected
+    assert client.post(f"/entity-type-proposals/{pid}/accept", json={}).status_code == 400
+
+
+def test_type_proposal_accept_honours_rename(client):
+    pid, eid = _seed_type_proposal()
+    r = client.post(f"/entity-type-proposals/{pid}/accept", json={"type": "plat"})
+    assert r.json()["type"] == "plat"
+    assert "plat" in _active_types() and "recipe" not in _active_types()
+    assert _entity_row(eid)["type"] == "plat"
+
+
+def test_type_proposal_reject_archives_entity(client):
+    pid, eid = _seed_type_proposal()
+    assert client.post(f"/entity-type-proposals/{pid}/reject").status_code == 200
+    assert _entity_row(eid)["status"] == "archived"
+    # archived entity is absent from the default graph view
+    g = client.get("/graph").json()
+    assert all(n["id"] != eid for n in g["nodes"])
+
+
+def test_pending_entity_hidden_from_graph(client):
+    _pid, eid = _seed_type_proposal()
+    g = client.get("/graph").json()
+    assert all(n["id"] != eid for n in g["nodes"]), "pending entity must not leak into graph"
+
+
 # ── Pending + validate (event-sourced) ───────────────────────────────────────
 
 def _seed_pending():

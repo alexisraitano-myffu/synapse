@@ -805,6 +805,179 @@
         }
       }
     },
+    "/entity-type-proposals": {
+      "get": {
+        "summary": "Type Proposals List",
+        "description": "List entity-type proposals filtered by status (SYN-58).\n\nJoins the candidate entity + the evidence capture so the client can render\nthe card (\"create type `recipe` for entity X?\") without follow-up requests.",
+        "operationId": "type_proposals_list_entity_type_proposals_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "pending",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/entity-type-proposals/{proposal_id}/accept": {
+      "post": {
+        "summary": "Type Proposal Accept",
+        "description": "Accept a type proposal: extend the vocab, promote the candidate entity.\n\nThe user may rename the proposed type via `body.type`. Adds it to\n`active_entity_types` (source='user'), sets the candidate entity's type and\nflips it to status='active', then marks the proposal accepted. Idempotent on\nthe vocab insert so accepting twice can't duplicate the type.",
+        "operationId": "type_proposal_accept_entity_type_proposals__proposal_id__accept_post",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TypeProposalAcceptIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/entity-type-proposals/{proposal_id}/reject": {
+      "post": {
+        "summary": "Type Proposal Reject",
+        "description": "Reject a type proposal: archive the candidate entity (drops out of the\ndefault views) and mark the proposal rejected.",
+        "operationId": "type_proposal_reject_entity_type_proposals__proposal_id__reject_post",
+        "parameters": [
+          {
+            "name": "proposal_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Proposal Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/capture/{capture_id}": {
       "get": {
         "summary": "Capture Detail",
@@ -1580,6 +1753,23 @@
           "project_id"
         ],
         "title": "ProjectEntryMoveIn"
+      },
+      "TypeProposalAcceptIn": {
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "title": "TypeProposalAcceptIn"
       },
       "ValidateIn": {
         "properties": {

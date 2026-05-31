@@ -82,7 +82,8 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
   "entities": [
     {{
       "canonical_name": "string",
-      "type": "person|place|project|concept|organization|animal",
+      "type": "string (un des TYPES D'ENTITÉ ACTIFS fournis en contexte)",
+      "type_proposal": null,
       "aliases": ["string"],
       "summary": "string (1 phrase qui décrit cette entité, ou null si rien de notable)",
       "attributes": {{"clé": "valeur"}},
@@ -142,6 +143,11 @@ Règles project_entries :
 - Si aucun projet identifiable → project_entries = [] (tableau vide).
 - Ne jamais émettre deux items pour le même project_canonical dans une même capture — fusionne le contenu dans un seul item.
 
+Règles type d'entité :
+- Choisis `type` STRICTEMENT parmi les TYPES D'ENTITÉ ACTIFS fournis en contexte ci-dessous (la liste s'étend avec le temps).
+- Si une entité ne rentre dans AUCUN type actif (ex : une recette, un outil logiciel, un événement, un plat), NE force PAS un type approximatif : mets `"type": "concept"` ET renseigne `"type_proposal": {{"value": "<type_en_snake_case>", "reason": "<pourquoi ce nouveau type>"}}`. Sinon laisse `"type_proposal": null`.
+- Garde-fou "projet" : n'émets `"type": "project"` QUE si tu produis aussi un item project_entries pour CETTE entité dans le même JSON. Un nom ambigu (souvent issu d'une transcription approximative) ne doit jamais créer un projet : dans le doute → `"type": "concept"`.
+
 Règles persistence_value :
 5 = permanent (date naissance, lien familial, prénom)
 4 = stable modifiable (lieu de travail, adresse)
@@ -182,6 +188,26 @@ def _load_active_projects_block(conn) -> str:
     return "\n".join(lines)
 
 
+def _load_active_types_block(conn) -> str:
+    """SYN-58: list the live entity-type vocabulary for the prompt.
+
+    Separate (uncached) system block so vocab growth doesn't bust the cache of
+    the stable rules. Falls back to the six built-ins if the table is somehow
+    empty (defensive — init_db seeds them)."""
+    rows = cursor_to_dicts(conn.execute(
+        "SELECT type FROM active_entity_types ORDER BY source, type"
+    ))
+    types = [r["type"] for r in rows] or [
+        "person", "place", "project", "concept", "organization", "animal",
+    ]
+    return (
+        "[TYPES D'ENTITÉ ACTIFS — choisis EXACTEMENT l'un d'eux pour `type`]\n"
+        + ", ".join(types)
+        + "\nAucun ne convient ? → type=\"concept\" + type_proposal "
+        "{\"value\": \"<type_snake>\", \"reason\": \"...\"}."
+    )
+
+
 def step1_classify(
     entry: dict,
     client: anthropic.Anthropic,
@@ -193,8 +219,9 @@ def step1_classify(
         {"type": "text", "text": system_stable, "cache_control": {"type": "ephemeral"}},
     ]
     if conn is not None:
+        # NOT cached — both vary as the user creates projects / extends the vocab.
+        system_blocks.append({"type": "text", "text": _load_active_types_block(conn)})
         projects_block = _load_active_projects_block(conn)
-        # NOT cached — varies as projects are created.
         system_blocks.append({"type": "text", "text": projects_block})
     response = client.messages.create(
         model=CLAUDE_MODEL,
@@ -287,6 +314,23 @@ def _record_merge_proposal(conn, new_id, new_name, existing, score, reason,
         print(f"    [merge?] '{new_name}' ↔ '{existing['canonical_name']}' "
               f"→ proposal {prop_id} ({reason})")
     return True
+
+
+def _record_type_proposal(conn, entity_id, proposed_type, reason, capture_id,
+                          verbose=False) -> str:
+    """SYN-58: queue a new-entity-type proposal for user validation. The candidate
+    entity is already inserted (in status='pending'); accepting the proposal
+    extends the vocab and flips the entity to active (see the API endpoints)."""
+    prop_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO entity_type_proposals "
+        "(id, proposed_type, reason, evidence_capture_id, candidate_entity_id) "
+        "VALUES (?,?,?,?,?)",
+        (prop_id, proposed_type, reason, capture_id, entity_id),
+    )
+    if verbose:
+        print(f"    [type?] '{proposed_type}' proposed for entity {entity_id} → {prop_id}")
+    return prop_id
 
 
 def _propose_merge_if_similar(
@@ -452,13 +496,18 @@ def _entity_persistence(entity_data: dict) -> int:
     return max(vals) if vals else 3
 
 
-def _upsert_entity(entity_data: dict, conn, capture_id: int | None = None) -> str:
+def _upsert_entity(entity_data: dict, conn, capture_id: int | None = None,
+                   status: str = "active") -> str:
     """Create or update an entity node, filling summary / attributes / persistence.
 
     SYN-41: a newly created entity carries its `provenance_capture_id` back to
     the immutable inbox row that spawned it. UPDATE path leaves provenance alone
     (first-mention provenance is the lineage we care about; subsequent mentions
     don't overwrite history).
+
+    SYN-58: `status` ('active' | 'pending') is set on INSERT only. A re-mention of
+    an existing entity never silently flips its status — that's the type-proposal
+    accept/reject flow's job.
     """
     existing = entity_data.get("existing_entity")
     now = datetime.now(timezone.utc).date().isoformat()
@@ -497,8 +546,8 @@ def _upsert_entity(entity_data: dict, conn, capture_id: int | None = None) -> st
         conn.execute(
             "INSERT INTO entities "
             "(id, type, canonical_name, aliases, attributes, summary, last_mentioned, "
-            " persistence_value, provenance_capture_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            " persistence_value, provenance_capture_id, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 entity_id,
                 entity_data.get("type", "concept"),
@@ -509,6 +558,7 @@ def _upsert_entity(entity_data: dict, conn, capture_id: int | None = None) -> st
                 now,
                 persistence,
                 capture_id,
+                status,
             ),
         )
     return entity_id
@@ -531,6 +581,15 @@ def step4_route(
             if rel.get(key):
                 relation_names.add(rel[key].strip().lower())
 
+    # SYN-58: live type vocabulary + the project names declared in THIS capture
+    # (the project-shell guard below needs the latter).
+    active_types = {r["type"] for r in cursor_to_dicts(conn.execute(
+        "SELECT type FROM active_entity_types"))}
+    project_canonicals = {
+        (pe.get("project_canonical") or "").strip().lower()
+        for pe in resolved.get("project_entries") or []
+    }
+
     for entity_data in resolved.get("resolved_entities", []):
         canonical = (entity_data.get("canonical_name") or "").strip()
         if not canonical:
@@ -538,6 +597,27 @@ def step4_route(
 
         existing = entity_data.get("existing_entity")
         mention_count = (existing.get("mention_count", 1) + 1) if existing else 1
+
+        # ── SYN-58: type guards (new entities only — a re-mention keeps its
+        # established type/status; that's the accept/reject flow's job) ──
+        type_proposal: dict | None = None
+        entity_status = "active"
+        if not existing:
+            etype = (entity_data.get("type") or "concept").strip()
+            # Project-shell guard: type=project requires a matching project_entries
+            # item in the same capture, else it's a mis-tag (often a transcription
+            # artefact) → fall back to concept rather than spawn an empty project.
+            if etype == "project" and canonical.lower() not in project_canonicals:
+                if verbose:
+                    print(f"    [type] '{canonical}' project→concept (no project_entry)")
+                entity_data = {**entity_data, "type": "concept"}
+            # Vocab-gap proposal: the classifier flagged a type it couldn't place.
+            # Park the entity in 'pending' and queue a proposal for the user.
+            tp = entity_data.get("type_proposal")
+            proposed = ((tp or {}).get("value") or "").strip() if isinstance(tp, dict) else ""
+            if proposed and proposed not in active_types:
+                type_proposal = {"value": proposed, "reason": (tp or {}).get("reason")}
+                entity_status = "pending"
 
         scored: list[tuple[dict, float]] = []
         for fact in entity_data.get("facts", []):
@@ -566,9 +646,17 @@ def step4_route(
 
         entity_id: str | None = None
         if should_create and not dry_run:
-            entity_id = _upsert_entity(entity_data, conn, capture_id=source_inbox_id)
+            entity_id = _upsert_entity(
+                entity_data, conn, capture_id=source_inbox_id, status=entity_status,
+            )
             if entity_id not in entity_ids:
                 entity_ids.append(entity_id)
+            # SYN-58: queue the type proposal once the candidate entity exists.
+            if not existing and type_proposal:
+                _record_type_proposal(
+                    conn, entity_id, type_proposal["value"],
+                    type_proposal.get("reason"), source_inbox_id, verbose,
+                )
             # SYN-39: only INSERT path (existing is None) is worth scanning —
             # an UPDATE means we already merged into the canonical entity.
             if not existing:

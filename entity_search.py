@@ -93,9 +93,12 @@ def search_entities_by_vector(
     q = deserialize_vec(query_vec)
     exclude = set(exclude_ids or ())
 
+    # status='active' (SYN-58): pending (awaiting type validation) and archived
+    # (rejected) entities must never surface as search hits or merge candidates.
     sql = (
         "SELECT id, canonical_name, type, summary, embedding FROM entities "
-        "WHERE embedding IS NOT NULL AND merged_into_id IS NULL"
+        "WHERE embedding IS NOT NULL AND merged_into_id IS NULL "
+        "AND status = 'active'"
     )
     params: list = []
     if type_filter:

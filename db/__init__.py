@@ -198,8 +198,37 @@ def init_db() -> None:
                 resolved_at           TIMESTAMP,
                 resolved_canonical_id TEXT REFERENCES entities(id)
             )""",
+            # SYN-58: the entity-type vocabulary is no longer a closed enum baked
+            # into the classifier prompt. `active_entity_types` is the live vocab
+            # (built-in + user-validated); the prompt reads it at runtime. When the
+            # classifier finds no fitting type it raises an `entity_type_proposals`
+            # row (the candidate entity is created in status='pending') instead of
+            # forcing a wrong type — the user validates to extend the vocab.
+            """CREATE TABLE IF NOT EXISTS active_entity_types (
+                type        TEXT PRIMARY KEY,
+                source      TEXT NOT NULL,            -- 'builtin' | 'user'
+                added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS entity_type_proposals (
+                id                  TEXT PRIMARY KEY,
+                proposed_type       TEXT NOT NULL,
+                reason              TEXT,
+                evidence_capture_id INTEGER REFERENCES inbox(id),
+                candidate_entity_id TEXT REFERENCES entities(id),
+                status              TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | rejected
+                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at         TIMESTAMP
+            )""",
         ]:
             conn.execute(stmt)
+
+        # SYN-58: seed the live vocabulary with the six built-in types. Idempotent
+        # (INSERT OR IGNORE) so re-running init_db never disturbs user-added types.
+        for builtin in ("person", "place", "project", "concept", "organization", "animal"):
+            conn.execute(
+                "INSERT OR IGNORE INTO active_entity_types (type, source) VALUES (?, 'builtin')",
+                (builtin,),
+            )
 
         # Migration: add processed_at if DB was created before this column existed
         try:
@@ -282,10 +311,25 @@ def init_db() -> None:
             except apsw.SQLError:
                 pass  # column already present
 
+        # Migration: SYN-58 — entity lifecycle status. 'active' is the default and
+        # the only value the read views surface; 'pending' = awaiting a type-vocab
+        # decision, 'archived' = rejected. Existing rows backfill to 'active'.
+        try:
+            conn.execute(
+                "ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+        except apsw.SQLError:
+            pass  # column already present
+
         # Quick lookups for the merge-proposals queue.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "
             "ON entity_merge_proposals(status, created_at DESC)"
+        )
+        # Quick lookups for the type-proposals queue (SYN-58).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_type_proposals_status "
+            "ON entity_type_proposals(status, created_at DESC)"
         )
     finally:
         conn.close()

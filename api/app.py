@@ -184,6 +184,10 @@ class MergeAcceptIn(BaseModel):
     canonical_id: str  # which of the two entities survives as canonical
 
 
+class TypeProposalAcceptIn(BaseModel):
+    type: str | None = None  # optional rename of the proposed type before adding it
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -291,11 +295,12 @@ def graph(entity: str | None = None, mode: str = "full"):
     try:
         nodes = []
         # SYN-39: hide soft-merged rows; their data already lives on the canonical one.
+        # SYN-58: hide non-active rows (pending type-validation / archived).
         for e in cursor_to_dicts(conn.execute(
             "SELECT e.id, e.canonical_name, e.type, e.mention_count, e.persistence_value, "
             "       e.summary, e.last_mentioned, "
             "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id) AS facts_count "
-            "FROM entities e WHERE e.merged_into_id IS NULL"
+            "FROM entities e WHERE e.merged_into_id IS NULL AND e.status = 'active'"
         )):
             nodes.append({
                 "id": e["id"],
@@ -442,6 +447,7 @@ def projects_list():
             "LEFT JOIN project_state ps ON ps.project_id = e.id "
             "LEFT JOIN project_state_versions psv ON psv.id = ps.current_version_id "
             "WHERE e.type = 'project' AND e.merged_into_id IS NULL "
+            "  AND e.status = 'active' "  # SYN-58: hide pending/archived projects
             "ORDER BY COALESCE(e.last_mentioned, e.created_at) DESC"
         ))
         return rows
@@ -664,6 +670,107 @@ def merge_proposal_reject(proposal_id: str):
                 "UPDATE entity_merge_proposals SET status = 'rejected', "
                 "resolved_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (proposal_id,),
+            )
+        return {"status": "rejected", "proposal_id": proposal_id}
+    finally:
+        conn.close()
+
+
+# ── Entity-type proposals (SYN-58) ────────────────────────────────────────────
+
+@app.get("/entity-type-proposals", dependencies=[Depends(require_auth)])
+def type_proposals_list(status: str = "pending"):
+    """List entity-type proposals filtered by status (SYN-58).
+
+    Joins the candidate entity + the evidence capture so the client can render
+    the card ("create type `recipe` for entity X?") without follow-up requests.
+    """
+    if status not in {"pending", "accepted", "rejected"}:
+        raise HTTPException(status_code=400, detail="invalid status filter")
+    conn = get_connection()
+    try:
+        return cursor_to_dicts(conn.execute(
+            "SELECT p.id, p.proposed_type, p.reason, p.status, p.created_at, "
+            "       p.resolved_at, p.candidate_entity_id, p.evidence_capture_id, "
+            "       e.canonical_name AS candidate_name, e.type AS candidate_type, "
+            "       e.summary        AS candidate_summary, e.status AS candidate_status, "
+            "       i.content        AS evidence_content "
+            "FROM entity_type_proposals p "
+            "LEFT JOIN entities e ON e.id = p.candidate_entity_id "
+            "LEFT JOIN inbox i    ON i.id = p.evidence_capture_id "
+            "WHERE p.status = ? "
+            "ORDER BY p.created_at DESC",
+            (status,),
+        ))
+    finally:
+        conn.close()
+
+
+@app.post("/entity-type-proposals/{proposal_id}/accept", dependencies=[Depends(require_auth)])
+def type_proposal_accept(proposal_id: str, body: TypeProposalAcceptIn):
+    """Accept a type proposal: extend the vocab, promote the candidate entity.
+
+    The user may rename the proposed type via `body.type`. Adds it to
+    `active_entity_types` (source='user'), sets the candidate entity's type and
+    flips it to status='active', then marks the proposal accepted. Idempotent on
+    the vocab insert so accepting twice can't duplicate the type.
+    """
+    conn = get_connection()
+    try:
+        p = first_row(conn.execute(
+            "SELECT id, status, proposed_type, candidate_entity_id "
+            "FROM entity_type_proposals WHERE id = ?", (proposal_id,),
+        ))
+        if not p:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
+        new_type = (body.type or p["proposed_type"] or "").strip()
+        if not new_type:
+            raise HTTPException(status_code=400, detail="empty type")
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO active_entity_types (type, source) VALUES (?, 'user')",
+                (new_type,),
+            )
+            if p["candidate_entity_id"]:
+                conn.execute(
+                    "UPDATE entities SET type = ?, status = 'active' WHERE id = ?",
+                    (new_type, p["candidate_entity_id"]),
+                )
+            conn.execute(
+                "UPDATE entity_type_proposals SET status = 'accepted', "
+                "resolved_at = CURRENT_TIMESTAMP WHERE id = ?", (proposal_id,),
+            )
+        return {"status": "accepted", "proposal_id": proposal_id, "type": new_type,
+                "entity_id": p["candidate_entity_id"]}
+    finally:
+        conn.close()
+
+
+@app.post("/entity-type-proposals/{proposal_id}/reject", dependencies=[Depends(require_auth)])
+def type_proposal_reject(proposal_id: str):
+    """Reject a type proposal: archive the candidate entity (drops out of the
+    default views) and mark the proposal rejected."""
+    conn = get_connection()
+    try:
+        p = first_row(conn.execute(
+            "SELECT id, status, candidate_entity_id "
+            "FROM entity_type_proposals WHERE id = ?", (proposal_id,),
+        ))
+        if not p:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
+        with conn:
+            if p["candidate_entity_id"]:
+                conn.execute(
+                    "UPDATE entities SET status = 'archived' WHERE id = ?",
+                    (p["candidate_entity_id"],),
+                )
+            conn.execute(
+                "UPDATE entity_type_proposals SET status = 'rejected', "
+                "resolved_at = CURRENT_TIMESTAMP WHERE id = ?", (proposal_id,),
             )
         return {"status": "rejected", "proposal_id": proposal_id}
     finally:
