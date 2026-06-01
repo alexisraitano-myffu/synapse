@@ -79,7 +79,9 @@ Code : [dream_cycle/cycle.py](../dream_cycle/cycle.py). Déclenché par `python 
 | Seuil consolidation `T_high` (faits) | `step4_route` | 0.85 | un **fait** > 0.85 est confirmé direct ; sinon pending (l'entité, elle, est créée sur mention) |
 | Seuil pending `T_pending` | `step4_route` | 0.5 | borne basse « à valider » vs digest |
 | TTL intentions | `handle_intentions` | 48h | durée des rappels éphémères |
-| **memory_strength decay** | `dream_cycle/decay.py` | τ = `SYNAPSE_DECAY_TAU_DAYS` (30j) | oubli gracieux Ebbinghaus (SYN-19) — actif |
+| **memory_strength decay** | `dream_cycle/decay.py` | τ = `SYNAPSE_DECAY_TAU_DAYS` (30j) | oubli gracieux Ebbinghaus sur **notes + entités** (SYN-19/68) — actif |
+| Attraction intra-cluster (carte) | `graph_layout.py` | `_INTRA_COMMUNITY_PULL` (3×) | cohésion spatiale des communautés au layout |
+| Plafond de nœuds renvoyés (carte) | `GET /graph` | `max_nodes` (1000) | anti-hairball : ne renvoie jamais plus que les N plus saillants |
 | **Seuil merge embedding** | `_propose_merge_by_embedding` | `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85) | fusion auto de doublons (SYN-61) |
 | **Prédicats single-valued** | `facts_store` | liste statique | last-writes-wins / obsolescence (SYN-37) |
 | Confiance validation manuelle | `validate_fact` | 0.95 | certitude quand l'utilisateur confirme |
@@ -98,7 +100,7 @@ SQLite (`~/.synapse/synapse.db`), ouvert via `apsw`, extension `sqlite-vec`. Sch
 |---|---|---|
 | `inbox` | captures brutes (`processed_at` NULL → à traiter) | working (TTL 7j *prévu*) |
 | `atomic_notes` (+`atomic_notes_vec`) | mémoire épisodique ; cols `summary`, `entities_mentioned`, `memory_strength` | épisodique |
-| `entities` / `facts` / `relations` | graphe sémantique (ids = UUID) | sémantique (∞) |
+| `entities` / `facts` / `relations` | graphe sémantique (ids = UUID) ; `entities.memory_strength` (decay SYN-68) | sémantique (∞) |
 | `pending_facts` / `review_queue` | faits à valider / digest | — |
 | `intentions` | éphémère (TTL 48h) | — |
 | `validation_events` | journal append-only des validations (durable, réplicable) | — |
@@ -107,6 +109,8 @@ SQLite (`~/.synapse/synapse.db`), ouvert via `apsw`, extension `sqlite-vec`. Sch
 | `entity_merge_proposals` | file de dédup d'entités (SYN-39/61) | — |
 | `entity_type_proposals` / `active_entity_types` | vocab de types dynamique (SYN-58) | — |
 | `project_entries` / `project_state` / `project_state_versions` | agrégat projet (SYN-40) | — |
+| `node_positions` | cache des positions de la carte (x, y) — ForceAtlas2, SYN-69 | projection (carte) |
+| `cluster_labels` | cache des labels Haiku par signature de cluster, SYN-70 | projection (carte) |
 | `knowledge_graph` | legacy, **inutilisé** | — |
 
 Colonnes de cycle de vie : `entities.status` (active/pending/archived) + `archived_at` ; `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/58/59) ; `atomic_notes.last_reactivated_at` (decay SYN-19). Vues de lecture filtrent par défaut (`status='active'`, `archived_at IS NULL`, `obsoleted_at IS NULL`).
@@ -115,7 +119,56 @@ Embeddings : **fastembed local** (ONNX, `paraphrase-multilingual-MiniLM-L12-v2`,
 
 ---
 
-## 5. Déclenchement du cycle — garde-fous
+## 5. Modèle du graphe — la carte vivante (SYN-66)
+
+> La carte mentale n'est **pas** une table de plus : c'est une **projection** assemblée à la demande depuis le graphe existant. Aucune nouvelle source de vérité — juste deux caches (`node_positions`, `cluster_labels`). Un recalcul complet ne perd rien. Exposée par `GET /graph` (flags `include_notes`, `cluster`, `layout`, `clusters` + filtres). Code : [graph_layout.py](../graph_layout.py), [graph_clusters.py](../graph_clusters.py), handler dans [api/app.py](../api/app.py).
+
+**Deux natures de nœuds** (le graphe n'est pas que des entités) :
+- **Entités** (`entities`, id = uuid) — nœuds « durs » : personnes, lieux, projets, concepts…
+- **Notes atomiques** (`atomic_notes`, id exposé `n:<rowid>`) — pensées libres, reliées sans devenir des entités.
+
+**Deux natures d'arêtes** :
+- **Relations** entité↔entité (`relations`).
+- **Mentions** note→entité, dérivées de `atomic_notes.entities_mentioned` (résolues par nom canonique).
+
+**Pipeline d'assemblage** (à la demande, < 1s sur quelques milliers de nœuds — pas de batch nocturne) :
+
+```mermaid
+flowchart LR
+  A["Assemblage<br/>entities ∪ atomic_notes<br/>relations + mentions"] --> C["Clustering<br/>Louvain (networkx)<br/>→ community_id"]
+  C --> F["Filtres anti-hairball<br/>ms_min · top%/cluster · since<br/>· types · max_nodes"]
+  F --> L["Layout<br/>ForceAtlas2 → node_positions<br/>persisté · incrémental"]
+  L --> H["Zones<br/>label Haiku (caché) + hull<br/>→ cluster_labels"]
+  H --> O["GET /graph"]
+```
+
+**Mapping data → variables visuelles** (ce que le frontend SYN-64 lit) :
+
+| Variable visuelle | Donnée backend |
+|---|---|
+| Taille du neurone | `memory_strength` × `degree` |
+| Couleur de zone | `community_id` (Louvain) |
+| Saturation / vivacité | `memory_strength` (decay Ebbinghaus, SYN-19/68) |
+| Forme | `kind` (entity / atomic_note) + `type` |
+| Position (x, y) | `node_positions` (ForceAtlas2, persisté) |
+| Épaisseur d'arête | `confidence` |
+| Région nommée | `cluster_labels.label` + `hull` |
+
+**Décisions de modèle** :
+- **Projection, pas source** — tout vient de `entities`/`atomic_notes`/`relations`. Les deux caches accélèrent, ils ne font pas autorité ; `relayout=true` reconstruit tout.
+- **Stabilité avant tout** — `node_positions` est relu tel quel → la carte ne « saute » pas entre deux ouvertures ; un nouveau nœud est placé près du barycentre de son cluster (jitter déterministe) sans réorganiser le reste.
+- **Coût LLM négligeable** — labels batchés (1 appel) + cachés par **signature des entités définissantes** d'un cluster → Haiku n'est rappelé que quand un cluster change vraiment. Fallback `Cluster N` non caché si pas de clé.
+- **Anti-hairball côté serveur** — `max_nodes` (déf. 1000) plafonne toujours la réponse par saillance (`memory_strength × degree`) ; l'app resserre/relâche les autres filtres à la demande.
+
+**À rajouter** (futur, non bloquant) :
+- **Leiden/igraph** si la qualité de clustering l'exige (Louvain/networkx suffit au volume actuel et package sans binaire C dans le .dmg).
+- **Concave / alpha hulls** (aujourd'hui enveloppe convexe pure-Python).
+- **Détection de cluster émergent** — signal post-Dream-Cycle → notification douce « un nouveau thème émerge ».
+- **Hook post-cycle** pour pré-chauffer le layout incrémental après chaque run.
+
+---
+
+## 6. Déclenchement du cycle — garde-fous
 
 Le cycle est **idempotent** (ne traite que l'inbox non traitée) → sûr à relancer. On déclenche **par condition, pas par horloge**.
 
@@ -137,22 +190,22 @@ flowchart TD
 
 ---
 
-## 6. Outils MCP (existant)
+## 7. Outils MCP (existant)
 
 `add_to_inbox` · `search_memory` (vecteur notes + entités, fusion par score ; fallback texte) · `list_recent` · `run_dream_cycle` · `get_entity` · `list_pending` · `validate_fact`. Code : [mcp_server/server.py](../mcp_server/server.py).
 
 ---
 
-## 7. API HTTP (implémentée — `api/app.py`, `python -m api`)
+## 8. API HTTP (implémentée — `api/app.py`, `python -m api`)
 
-Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; auth désactivée si non défini = dev), LAN/Tailscale. Les 10 endpoints sont implémentés ; les formes de réponse incluent des champs réservés non encore remplis (`memory_strength`, etc.). Contrat machine : [`openapi.json`](../openapi.json).
+Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; auth désactivée si non défini = dev), LAN/Tailscale. 34 endpoints implémentés. Contrat machine : [`openapi.json`](../openapi.json).
 
 | Endpoint | Rôle |
 |---|---|
 | `GET /health` | ping + statut (pour l'indicateur « Mac · 12ms ») |
 | `POST /capture` | capture ; **idempotent sur `id` (UUID client)** ; body `{id, device_id, captured_at, content, type, source}` |
 | `GET /feed?limit=` | captures récentes + **statut** (queued / processed / failed) |
-| `GET /graph?mode=ego&entity=&depth=` | nœuds (entités) + arêtes (relations), `mention_count`, type, `memory_strength` |
+| `GET /graph` | graphe + **carte vivante** (SYN-66). Base : nœuds (entités) + arêtes (relations). Flags : `mode=ego&entity=`, `include_notes` (atomic_notes en nœuds `n:<id>` + mentions), `cluster` (`community_id` Louvain), `layout`/`relayout` (positions `x`/`y` ForceAtlas2), `clusters` (zones `{label, hull}`), + filtres `node_types`, `memory_strength_min`, `since`, `top_pct_per_cluster`, `include_isolated`, `max_nodes` |
 | `GET /entity/{id}` | détail entité : facts, relations, aliases, summary, stats |
 | `GET /pending` | faits à valider : question lisible + **citation source** + confiance |
 | `POST /pending/{id}/validate` | `{confirmed, correction?}` → stocké comme **événement** |
@@ -162,7 +215,7 @@ Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; a
 
 ---
 
-## 8. Modèle de synchronisation
+## 9. Modèle de synchronisation
 
 ```mermaid
 sequenceDiagram
@@ -187,9 +240,20 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 
 ---
 
-## 9. État d'implémentation
+## 10. État d'implémentation
 
-**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (33 endpoints) + modèle de sync · résilience par entrée · tests hors-ligne (73 verts).
+**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (34 endpoints) + modèle de sync · résilience par entrée · tests hors-ligne (83 verts).
+
+**Batch carte vivante (API graphe, shippé 2026-06-01)** — voir §5 :
+
+| Domaine | Livré | Ticket |
+|---|---|---|
+| Endpoint | `GET /graph` étendu : atomic_notes en nœuds + clustering Louvain (`community_id`) | SYN-68 |
+| Mémoire | `entities.memory_strength` (decay Ebbinghaus, comme les notes) | SYN-68 |
+| Layout | ForceAtlas2 + `node_positions` (persisté, stable, incrémental) | SYN-69 |
+| Zones | labels Haiku cachés (`cluster_labels`) + concave hull pur-Python | SYN-70 |
+| Anti-hairball | 5 filtres + plafond `max_nodes` | SYN-71 |
+| Dépendance | `networkx>=3.2` (pur-Python ; Louvain + ForceAtlas2) | — |
 
 **Batch graphe d'entités (shippé 2026-05-31)** :
 
@@ -213,7 +277,7 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 
 ---
 
-## 10. Roadmap
+## 11. Roadmap
 
 Directions backend (sans dates) :
 - ~~Oubli gracieux (`memory_strength` Ebbinghaus)~~ ✅ SYN-19 · ~~Ressources (fetch + résumé d'URL)~~ ✅ SYN-21.

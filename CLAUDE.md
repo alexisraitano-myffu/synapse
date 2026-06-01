@@ -39,7 +39,7 @@ pytest test_cycle.py::test_episodic_note_is_searchable   # a single test
 python reembed.py
 ```
 
-**Run the decay job** (SYN-19 — recompute `atomic_notes.memory_strength` via Ebbinghaus; also runs at the end of every Dream Cycle, but a nightly cron covers empty-inbox days):
+**Run the decay job** (SYN-19/68 — recompute `memory_strength` via Ebbinghaus for `atomic_notes` and `entities`; also runs at the end of every Dream Cycle, but a nightly cron covers empty-inbox days):
 ```bash
 python -m dream_cycle.decay        # env: SYNAPSE_DECAY_TAU_DAYS (default 30)
 ```
@@ -89,15 +89,17 @@ The 6 steps for facts:
 3. **Score** (`compute_confidence`) — evidence base (`explicit` 0.92 · `hedged` 0.65 · `implicit` 0.40) + existing/mention/persistence bonuses → [0,1]; `hedged` clamped to 0.84.
 4. **Route** — **entity nodes are created on mention** (decoupled from fact confidence) if they pass `MIN_ENTITY_PERSISTENCE` (≥2) OR appear in a relation OR already exist. A vocab-gap entity is created `status='pending'` + an `entity_type_proposals` row. **Facts** are confidence-gated: > 0.85 → `facts`; 0.5–0.85 → `pending_facts`; < 0.5 → `review_queue`. Newly-created entities are scanned for duplicates → `entity_merge_proposals` (substring SYN-39, then embedding fallback SYN-61). All fact writes go through **`facts_store.insert_fact`**, which applies SYN-37 last-writes-wins: a single-valued predicate (`works_at`, `lives_in`, …) obsoletes the prior active fact (`obsoleted_at`/`obsoleted_by`) when the new one is ≥ as confident.
 5. **Behavioral validation** — a pending fact corroborated by a new mention in the same run is promoted into `facts`.
-6. **Vectorize** — embeds touched entities into `entities.embedding` (BLOB). Then **decay** (SYN-19): `apply_decay` recomputes `memory_strength` for all `atomic_notes`.
+6. **Vectorize** — embeds touched entities into `entities.embedding` (BLOB). Then **decay** (SYN-19/68): `apply_decay` + `apply_entity_decay` recompute `memory_strength` for all `atomic_notes` and `entities`.
 
 Per-entry resilience: each entry is processed in isolation. An `anthropic.APIError` (no/invalid key, network) **aborts the whole run** and leaves entries queued for a retry; a content error on one entry marks just that entry `status='failed'` and the run continues. The API can auto-run the cycle debounced after captures (`SYNAPSE_AUTO_CYCLE`).
 
-**Memory strength / graceful forgetting (SYN-19, `dream_cycle/decay.py`)**: `memory_strength = exp(-Δdays/τ)` recomputed from `atomic_notes.last_reactivated_at` (τ via `SYNAPSE_DECAY_TAU_DAYS`, default 30) — cadence-independent. Reactivation: a mention in a new capture is a strong bump; a `search_memory` hit is a light one. Runs at the end of each cycle + standalone `python -m dream_cycle.decay` (nightly cron for empty-inbox days).
+**Memory strength / graceful forgetting (SYN-19/68, `dream_cycle/decay.py`)**: `memory_strength = exp(-Δdays/τ)` recomputed cadence-independently (τ via `SYNAPSE_DECAY_TAU_DAYS`, default 30) for **both** `atomic_notes` (`apply_decay`, anchor `last_reactivated_at`) **and** `entities` (`apply_entity_decay`, anchor `last_mentioned`, SYN-68). Reactivation: a mention in a new capture is a strong bump; a `search_memory` hit is a light one. Runs at the end of each cycle + standalone `python -m dream_cycle.decay` (nightly cron for empty-inbox days).
+
+**Living-map graph (SYN-66, `graph_layout.py` + `graph_clusters.py`)**: `GET /graph` assembles a projection (no new source of truth) — entities ∪ atomic_notes as nodes, relations + mentions as edges — then Louvain clustering (networkx), ForceAtlas2 layout persisted/incremental in `node_positions`, and batched+cached Haiku cluster labels (`cluster_labels`, keyed by a signature of the cluster's defining entities) + pure-Python convex hulls. **New dep: `networkx>=3.2`** (pure-Python; packages into the PyInstaller .dmg, unlike igraph/leidenalg). Visual mapping: size = `memory_strength`×`degree`, colour = `community_id`, saturation = `memory_strength`, position = `node_positions`. See `docs/ARCHITECTURE.md` §5.
 
 **Lifecycle (SYN-37/59)**: `facts` and `entities` carry `archived_at` (user "filed away") and facts also `obsoleted_at`/`obsoleted_by` ("no longer true" — auto by SYN-37 supersede or manual). Read views hide them by default; `?include=archived,obsolete` (entity facts) and `?include_archived=true` (graph) opt them back in.
 
-**Shared modules**: `entity_search.py` (entity/resource cosine search + composite-text helper, used by MCP search, merge fallback, `/similar`), `facts_store.py` (single source of fact writes + supersede), `dream_cycle/decay.py`, `dream_cycle/resources.py`.
+**Shared modules**: `entity_search.py` (entity/resource cosine search + composite-text helper, used by MCP search, merge fallback, `/similar`), `facts_store.py` (single source of fact writes + supersede), `dream_cycle/decay.py`, `dream_cycle/resources.py`, `graph_layout.py` (ForceAtlas2 + `node_positions`, SYN-69), `graph_clusters.py` (Haiku labels + hulls, SYN-70).
 
 ### MCP tools (`mcp_server/server.py`)
 
@@ -111,7 +113,7 @@ Per-entry resilience: each entry is processed in isolation. An `anthropic.APIErr
 
 ### HTTP API (`api/app.py`)
 
-FastAPI app for the mobile/desktop clients (run `python -m api`, port 8000), **33 endpoints**; the frozen contract is `openapi.json` (regenerate via `app.openapi()` when it changes — the app codes against it). Bearer auth via `SYNAPSE_API_TOKEN` (auth **disabled** if unset — dev). Core: `GET /health`, `POST /capture` (**idempotent on client UUID**), `GET /feed`, `GET /graph` (`?mode=ego&entity=&include_archived=`), `GET /entity/{id}` (`?include=archived,obsolete`), `GET /pending`, `POST /pending/{id}/validate`, `POST /dream-cycle/run` (file lock + `cycle_runs`), `GET /dream-cycle/last`, `GET /changes`, `GET /atomic-notes`, `GET /projects`, `GET /project/{id}/state`, project-entry ops. **Entity-graph endpoints (this batch)**: `GET /entity/{id}/similar` (SYN-62), `GET/POST /entity-type-proposals*` (SYN-58), `GET/POST /merge-proposals*` (SYN-39), `POST /entity|fact/{id}/archive|unarchive` + `/fact/{id}/obsolete|restore` (SYN-59). Per-request apsw connections. Sync model: captures carry `id`/`device_id`/`captured_at`, validations are append-only events → state rebuildable (see `docs/ARCHITECTURE.md`).
+FastAPI app for the mobile/desktop clients (run `python -m api`, port 8000), **34 endpoints**; the frozen contract is `openapi.json` (regenerate via `app.openapi()` when it changes — the app codes against it). Bearer auth via `SYNAPSE_API_TOKEN` (auth **disabled** if unset — dev). Core: `GET /health`, `POST /capture` (**idempotent on client UUID**), `GET /feed`, `GET /graph` (living-map SYN-66: base = entities+relations; opt-in flags `include_notes` adds atomic_notes as `n:<id>` nodes + mention edges, `cluster` → `community_id` (Louvain), `layout`/`relayout` → `x`/`y` (ForceAtlas2, persisted in `node_positions`), `clusters` → `{label, hull}` regions; filters `node_types`/`memory_strength_min`/`since`/`top_pct_per_cluster`/`include_isolated`/`max_nodes`), `GET /entity/{id}` (`?include=archived,obsolete`), `GET /pending`, `POST /pending/{id}/validate`, `POST /dream-cycle/run` (file lock + `cycle_runs`), `GET /dream-cycle/last`, `GET /changes`, `GET /atomic-notes`, `GET /projects`, `GET /project/{id}/state`, project-entry ops. **Entity-graph endpoints (this batch)**: `GET /entity/{id}/similar` (SYN-62), `GET/POST /entity-type-proposals*` (SYN-58), `GET/POST /merge-proposals*` (SYN-39), `POST /entity|fact/{id}/archive|unarchive` + `/fact/{id}/obsolete|restore` (SYN-59). Per-request apsw connections. Sync model: captures carry `id`/`device_id`/`captured_at`, validations are append-only events → state rebuildable (see `docs/ARCHITECTURE.md`).
 
 ### Embedding strategy
 
@@ -130,7 +132,8 @@ Tables:
 - `validation_events` — append-only log of validate/reject decisions
 - `cycle_runs` — one row per Dream Cycle run (stats for `GET /dream-cycle/last`)
 - `atomic_notes` / `atomic_notes_vec` — episodic memory; vec0 rowid mirrors `atomic_notes.id`. Columns: `summary`, `entities_mentioned` (JSON), `memory_strength` + `last_reactivated_at` (SYN-19)
-- `entities`, `facts`, `relations`, `resources` — entity graph (UUID ids). `entities.embedding` raw BLOB (manual cosine — UUID ids can't use int-rowid vec0). Lifecycle cols: `entities.status` (active|pending|archived, SYN-58) + `entities.archived_at`, `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/59). `resources` now has `url`/`content`/`summary`/`embedding`/`fetched_at` (SYN-21, unique index on `url`)
+- `entities`, `facts`, `relations`, `resources` — entity graph (UUID ids). `entities.embedding` raw BLOB (manual cosine — UUID ids can't use int-rowid vec0). Lifecycle cols: `entities.status` (active|pending|archived, SYN-58) + `entities.archived_at`, `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/59). `entities.memory_strength` (decay, SYN-68). `resources` now has `url`/`content`/`summary`/`embedding`/`fetched_at` (SYN-21, unique index on `url`)
+- `node_positions` (carte: `node_id`,`x`,`y` — ForceAtlas2, SYN-69), `cluster_labels` (carte: `signature`,`label` — cached Haiku labels, SYN-70) — projection caches for the living map, never authoritative
 - `active_entity_types` (live type vocab: 6 builtin + user-validated) + `entity_type_proposals` (SYN-58)
 - `entity_merge_proposals` (SYN-39) — dedup queue; `merged_into_id`/`merged_at` soft-link on `entities`
 - `pending_facts`, `review_queue`, `intentions` — routing buckets
@@ -165,7 +168,7 @@ The roadmap (Phase C — memory_strength decay, coreference window, resource fet
 
 ## Local-only engine map
 
-If `docs/engine-map.html` is present in the working tree, it is a personal, gitignored visual map of the Dream Cycle — pipeline diagram + clickable details for prompts, tunable thresholds, schema. Keep it in sync when you change:
+If `docs/engine-map.html` is present in the working tree, it is a personal, gitignored visual map — three tabs (Dream Cycle pipeline · data model · **living-map graph model**, SYN-66) with clickable details for prompts, tunable thresholds, schema. Keep it in sync when you change:
 - Tunable constants in `dream_cycle/cycle.py` (e.g. `MIN_ENTITY_PERSISTENCE`, `_EVIDENCE_BASE`, bucket thresholds in `step4_route`).
 - Env vars consumed by the cycle (`SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CYCLE_DEBOUNCE_SECONDS`, `SYNAPSE_REFINEMENT_THRESHOLD`).
 - Classifier prompt rules (`_SYSTEM_CLASSIFIER`) or sub-routing rules (atomic_note, project_entries, ephemeral).

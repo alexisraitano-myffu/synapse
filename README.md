@@ -53,7 +53,7 @@ python visualizer/app.py
 
 Bearer auth (`SYNAPSE_API_TOKEN`; disabled if unset = dev). Contract: [`openapi.json`](openapi.json).
 
-`GET /health` · `POST /capture` (idempotent on a client UUID) · `GET /feed` · `GET /graph` (`?mode=ego&entity=`) · `GET /entity/{id}` · `GET /pending` · `POST /pending/{id}/validate` · `POST /dream-cycle/run` · `GET /dream-cycle/last` · `GET /changes` (pull-replication).
+`GET /health` · `POST /capture` (idempotent on a client UUID) · `GET /feed` · `GET /graph` (entity graph + opt-in **living-map** layers: atomic-note nodes, Louvain clusters, ForceAtlas2 positions, labelled regions, anti-hairball filters) · `GET /entity/{id}` · `GET /pending` · `POST /pending/{id}/validate` · `POST /dream-cycle/run` · `GET /dream-cycle/last` · `GET /changes` (pull-replication).
 
 Designed for LAN / private mesh (Tailscale). Captures carry a client UUID + device id (idempotent, offline-safe); validations are recorded as append-only events; derived state is rebuildable → multi-device replication without a multi-master database.
 
