@@ -50,13 +50,14 @@ def test_convex_hull_degenerate():
 def test_labels_are_generated_then_cached(isolated_db):
     from db import get_connection
     from graph_clusters import build_clusters
-    nodes = [_ent("e1", "Guitare", 0, x=0, y=0), _ent("e2", "Piano", 0, x=1, y=0)]
+    nodes = [_ent("e1", "Guitare", 0, x=0, y=0), _ent("e2", "Piano", 0, x=1, y=0),
+             _ent("e3", "Violon", 0, x=0, y=1)]
     conn = get_connection()
     try:
         fake = _FakeClient({"0": "Musique"})
         c1 = build_clusters(conn, nodes, client_factory=lambda: fake, model="m")
         assert c1[0]["label"] == "Musique"
-        assert c1[0]["community_id"] == 0 and c1[0]["size"] == 2
+        assert c1[0]["community_id"] == 0 and c1[0]["size"] == 3
         assert fake.calls == 1
 
         # same defining entities → cache hit, the model is NOT called again
@@ -71,7 +72,7 @@ def test_labels_are_generated_then_cached(isolated_db):
 def test_no_client_falls_back_without_caching(isolated_db):
     from db import get_connection
     from graph_clusters import build_clusters
-    nodes = [_ent("e1", "Guitare", 0)]
+    nodes = [_ent("e1", "Guitare", 0), _ent("e2", "Piano", 0), _ent("e3", "Violon", 0)]
     conn = get_connection()
     try:
         c = build_clusters(conn, nodes, client_factory=lambda: None, model="m")
@@ -79,5 +80,24 @@ def test_no_client_falls_back_without_caching(isolated_db):
         # fallback is not cached → a later run with a key still gets to label it
         cached = conn.execute("SELECT COUNT(*) FROM cluster_labels").fetchone()[0]
         assert cached == 0
+    finally:
+        conn.close()
+
+
+def test_tiny_communities_are_not_forced_into_clusters(isolated_db):
+    """A 1- or 2-node community is an orphan, not a zone — it must be dropped."""
+    from db import get_connection
+    from graph_clusters import build_clusters
+    nodes = [
+        _ent("a1", "Guitare", 0, x=0, y=0), _ent("a2", "Piano", 0, x=1, y=0),
+        _ent("a3", "Violon", 0, x=0, y=1),                       # community 0: size 3 → kept
+        _ent("b1", "Tennis", 1, x=5, y=5), _ent("b2", "Padel", 1, x=6, y=5),  # size 2 → dropped
+        _ent("c1", "Orphan", 2, x=9, y=9),                       # size 1 → dropped
+    ]
+    conn = get_connection()
+    try:
+        c = build_clusters(conn, nodes, client_factory=lambda: None, model="m")
+        assert [cl["community_id"] for cl in c] == [0]
+        assert c[0]["size"] == 3 and len(c[0]["hull"]) >= 3
     finally:
         conn.close()

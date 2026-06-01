@@ -25,6 +25,11 @@ from db import cursor_to_dicts
 
 _TOP_N = 8  # defining entities per cluster (fed to Haiku + hashed into the signature)
 
+# A community smaller than this isn't a "zone" — it's an orphan (or a lone pair).
+# We don't force it into a named region: a convex hull needs ≥3 points to read as
+# an area anyway, and a 1–2 node label would just land on top of the node itself.
+MIN_CLUSTER_SIZE = 3
+
 
 def _node_score(n: dict) -> float:
     return (n.get("memory_strength") or 0.0) * (n.get("degree", 0) + 1)
@@ -110,7 +115,8 @@ def build_clusters(conn, nodes: list[dict], *, client_factory=None, model: str |
     """Return [{community_id, label, size, hull}] for the map. Labels are cached
     (one batched Haiku call for misses); hulls come from node x/y, so the caller
     must have run layout first."""
-    groups = _by_community(nodes)
+    groups = {cid: m for cid, m in _by_community(nodes).items()
+              if len(m) >= MIN_CLUSTER_SIZE}
     if not groups:
         return []
 
