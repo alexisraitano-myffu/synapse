@@ -159,6 +159,7 @@ flowchart LR
 - **Stabilité avant tout** — `node_positions` est relu tel quel → la carte ne « saute » pas entre deux ouvertures ; un nouveau nœud est placé près du barycentre de son cluster (jitter déterministe) sans réorganiser le reste.
 - **Coût LLM négligeable** — labels batchés (1 appel) + cachés par **signature des entités définissantes** d'un cluster → Haiku n'est rappelé que quand un cluster change vraiment. Fallback `Cluster N` non caché si pas de clé.
 - **Anti-hairball côté serveur** — `max_nodes` (déf. 1000) plafonne toujours la réponse par saillance (`memory_strength × degree`) ; l'app resserre/relâche les autres filtres à la demande.
+- **Pas de cluster forcé** — une communauté < `MIN_CLUSTER_SIZE` (3, `graph_clusters.py`) ne devient pas une région : un hull a besoin de ≥3 points et un label à 1 nœud retomberait sur le nœud. En dessous, le nœud reste **orphelin** (rendu flottant, sans zone, par le frontend SYN-64).
 
 **À rajouter** (futur, non bloquant) :
 - **Leiden/igraph** si la qualité de clustering l'exige (Louvain/networkx suffit au volume actuel et package sans binaire C dans le .dmg).
@@ -207,6 +208,7 @@ Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; a
 | `GET /feed?limit=` | captures récentes + **statut** (queued / processed / failed) |
 | `GET /graph` | graphe + **carte vivante** (SYN-66). Base : nœuds (entités) + arêtes (relations). Flags : `mode=ego&entity=`, `include_notes` (atomic_notes en nœuds `n:<id>` + mentions), `cluster` (`community_id` Louvain), `layout`/`relayout` (positions `x`/`y` ForceAtlas2), `clusters` (zones `{label, hull}`), + filtres `node_types`, `memory_strength_min`, `since`, `top_pct_per_cluster`, `include_isolated`, `max_nodes` |
 | `GET /entity/{id}` | détail entité : facts, relations, aliases, summary, stats |
+| `GET /atomic-note/{id}` | note unitaire (SYN-64) : contenu, résumé, `entities_mentioned` + `provenance_content` (capture source) — pour ouvrir une note depuis la carte |
 | `GET /pending` | faits à valider : question lisible + **citation source** + confiance |
 | `POST /pending/{id}/validate` | `{confirmed, correction?}` → stocké comme **événement** |
 | `POST /dream-cycle/run` | déclenche le cycle (avec lock) |
@@ -242,7 +244,7 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 
 ## 10. État d'implémentation
 
-**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (34 endpoints) + modèle de sync · résilience par entrée · tests hors-ligne (83 verts).
+**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (34 endpoints) + modèle de sync · résilience par entrée · tests hors-ligne (85 verts).
 
 **Batch carte vivante (API graphe, shippé 2026-06-01)** — voir §5 :
 
