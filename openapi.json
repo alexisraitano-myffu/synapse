@@ -787,6 +787,60 @@
         }
       }
     },
+    "/atomic-note/{note_id}": {
+      "get": {
+        "summary": "Atomic Note Detail",
+        "description": "A single atomic_note for the map / notes detail (SYN-64).\n\nSame shape as the list rows, plus the source capture's content when the\nprovenance link resolves — so the client can show where the note came from.",
+        "operationId": "atomic_note_detail_atomic_note__note_id__get",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/merge-proposals": {
       "get": {
         "summary": "Merge Proposals List",

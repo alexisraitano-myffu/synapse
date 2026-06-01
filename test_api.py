@@ -208,6 +208,19 @@ def test_graph_clusters_section(client, monkeypatch):
     import api.app as appmod
     monkeypatch.setattr(appmod, "_anthropic_client_factory", lambda: None)
     _seed_graph()
+    # A region needs ≥3 nodes (SYN-70 MIN_CLUSTER_SIZE), so add a third entity
+    # tied into the e1–e2 pair to form one community of three.
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e3','person','Paul',3,4)")
+            conn.execute("INSERT INTO relations (id, entity_from, predicate, entity_to, confidence) "
+                         "VALUES ('r2','e2','ami_de','e3',0.8)")
+            conn.execute("INSERT INTO relations (id, entity_from, predicate, entity_to, confidence) "
+                         "VALUES ('r3','e1','ami_de','e3',0.8)")
+    finally:
+        conn.close()
     g = client.get("/graph", params={"clusters": "true"}).json()
     assert "clusters" in g and g["clusters"]
     c = g["clusters"][0]
@@ -520,6 +533,31 @@ def test_changes_returns_derived_state(client):
     body = client.get("/changes").json()
     assert {"entities", "facts", "relations", "atomic_notes", "cursor"} <= body.keys()
     assert len(body["entities"]) == 2
+
+
+# ── Atomic note detail (SYN-64) ──────────────────────────────────────────────
+
+def test_atomic_note_detail(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO inbox (id, content, source) VALUES (7, 'pensée brute source', 'test')")
+            conn.execute(
+                "INSERT INTO atomic_notes (id, title, content, entities_mentioned, provenance_capture_id) "
+                "VALUES (3, 'Titre', 'corps de la note', ?, 7)",
+                (json.dumps(["Marie", "Tennis"]),),
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/atomic-note/3")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["title"] == "Titre"
+    assert body["entities_mentioned"] == ["Marie", "Tennis"]      # parsed from JSON
+    assert body["provenance_content"] == "pensée brute source"    # resolved via inbox
+
+    assert client.get("/atomic-note/999").status_code == 404
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────

@@ -710,6 +710,38 @@ def atomic_notes_list(
         conn.close()
 
 
+@app.get("/atomic-note/{note_id}", dependencies=[Depends(require_auth)])
+def atomic_note_detail(note_id: int):
+    """A single atomic_note for the map / notes detail (SYN-64).
+
+    Same shape as the list rows, plus the source capture's content when the
+    provenance link resolves — so the client can show where the note came from.
+    """
+    conn = get_connection()
+    try:
+        rows = cursor_to_dicts(conn.execute(
+            "SELECT id, title, content, summary, entities_mentioned, memory_strength, "
+            "       provenance_capture_id, created_at, updated_at "
+            "FROM atomic_notes WHERE id = ?",
+            (note_id,),
+        ))
+        if not rows:
+            raise HTTPException(status_code=404, detail="note not found")
+        r = rows[0]
+        import json as _json
+        try:
+            r["entities_mentioned"] = _json.loads(r.get("entities_mentioned") or "[]")
+        except (ValueError, TypeError):
+            r["entities_mentioned"] = []
+        if r.get("provenance_capture_id"):
+            cap = cursor_to_dicts(conn.execute(
+                "SELECT content FROM inbox WHERE id = ?", (r["provenance_capture_id"],)))
+            r["provenance_content"] = cap[0]["content"] if cap else None
+        return r
+    finally:
+        conn.close()
+
+
 @app.get("/merge-proposals", dependencies=[Depends(require_auth)])
 def merge_proposals_list(status: str = "pending"):
     """List entity merge proposals filtered by status (SYN-39).
