@@ -160,6 +160,47 @@ def test_graph_layout_is_stable_and_incremental(client):
     assert "e3" in pos3  # newcomer got a position
 
 
+def test_graph_anti_hairball_filters(client):
+    """SYN-71 — the five filters compose and a hard node cap always applies."""
+    _seed_graph()  # e1 Marie + e2 Alexis (ms default 1.0) with a relation
+    conn = _conn()
+    try:
+        with conn:
+            # a stale, isolated entity: low liveness, no relation
+            conn.execute("INSERT INTO entities (id, type, canonical_name, memory_strength, "
+                         "last_mentioned) VALUES ('e_stale','concept','Vieux',0.01,'2020-01-01')")
+            conn.execute("INSERT INTO atomic_notes (id, content, summary, entities_mentioned) "
+                         "VALUES (1,'pensée','p','[\"Marie\"]')")
+    finally:
+        conn.close()
+
+    # node_types=entities → notes excluded even with include_notes
+    g = client.get("/graph", params={"include_notes": "true", "node_types": "entities"}).json()
+    assert {n["kind"] for n in g["nodes"]} == {"entity"}
+
+    # memory_strength_min drops the stale entity
+    labels = {n["label"] for n in client.get(
+        "/graph", params={"memory_strength_min": "0.5"}).json()["nodes"]}
+    assert "Vieux" not in labels and "Marie" in labels
+
+    # since keeps only recently-active nodes
+    labels = {n["label"] for n in client.get(
+        "/graph", params={"since": "2026-01-01"}).json()["nodes"]}
+    assert "Vieux" not in labels
+
+    # include_isolated=false drops the disconnected entity
+    labels = {n["label"] for n in client.get(
+        "/graph", params={"include_isolated": "false"}).json()["nodes"]}
+    assert "Vieux" not in labels and {"Marie", "Alexis"} <= labels
+
+    # top_pct_per_cluster keeps ≥1 per community
+    g = client.get("/graph", params={"cluster": "true", "top_pct_per_cluster": "0.5"}).json()
+    assert 1 <= len(g["nodes"]) < 3
+
+    # max_nodes is a hard ceiling
+    assert len(client.get("/graph", params={"max_nodes": "1"}).json()["nodes"]) == 1
+
+
 def test_entity_detail(client):
     _seed_graph()
     g = client.get("/graph").json()

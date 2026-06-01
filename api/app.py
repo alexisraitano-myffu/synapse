@@ -320,10 +320,53 @@ def _assign_communities(nodes: list[dict], edges: list[dict]) -> None:
         n["community_id"] = cid.get(n["id"])
 
 
+# ── Anti-hairball filters (SYN-71) ────────────────────────────────────────────
+
+def _prune(nodes: list[dict], edges: list[dict], keep: set) -> tuple[list, list]:
+    """Keep only `keep` nodes and the edges whose both endpoints survive."""
+    return ([n for n in nodes if n["id"] in keep],
+            [e for e in edges if e["from"] in keep and e["to"] in keep])
+
+
+def _set_degree(nodes: list[dict], edges: list[dict]) -> None:
+    """(Re)compute node degree from the current edge set — drives node size on
+    the map (SYN-64: size ~ memory_strength × degree)."""
+    deg: dict = {}
+    for e in edges:
+        deg[e["from"]] = deg.get(e["from"], 0) + 1
+        deg[e["to"]] = deg.get(e["to"], 0) + 1
+    for n in nodes:
+        n["degree"] = deg.get(n["id"], 0)
+
+
+def _node_score(n: dict) -> float:
+    """Composite salience for ranking: liveness × connectivity. A node kept alive
+    by recent mentions and well connected outranks a stale or isolated one."""
+    return (n.get("memory_strength") or 0.0) * (n.get("degree", 0) + 1)
+
+
+def _top_pct_per_cluster(nodes: list[dict], edges: list[dict], pct: float) -> tuple[list, list]:
+    """Within each community keep the top `pct` nodes by salience (always ≥1), so
+    a dense cluster is summarised rather than dumped wholesale."""
+    import math as _math
+    by_comm: dict = {}
+    for n in nodes:
+        by_comm.setdefault(n.get("community_id"), []).append(n)
+    keep: set = set()
+    for members in by_comm.values():
+        members.sort(key=_node_score, reverse=True)
+        k = max(1, _math.ceil(len(members) * pct))
+        keep.update(n["id"] for n in members[:k])
+    return _prune(nodes, edges, keep)
+
+
 @app.get("/graph", dependencies=[Depends(require_auth)])
 def graph(entity: str | None = None, mode: str = "full", include_archived: bool = False,
           include_notes: bool = False, cluster: bool = False,
-          layout: bool = False, relayout: bool = False):
+          layout: bool = False, relayout: bool = False,
+          node_types: str = "both", memory_strength_min: float | None = None,
+          since: str | None = None, top_pct_per_cluster: float | None = None,
+          include_isolated: bool = True, max_nodes: int = 1000):
     """Nodes = entities (size ~ mention_count), edges = relations.
     `include_archived=true` also returns user-archived entities (SYN-59).
 
@@ -337,7 +380,17 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
     - `layout=true` attaches persisted `x`/`y` map positions (ForceAtlas2);
       missing nodes are placed incrementally near their cluster. `relayout=true`
       forces a full recompute of the whole map. layout implies clustering (the
-      community id drives incremental placement)."""
+      community id drives incremental placement).
+
+    Anti-hairball filters (SYN-71), composable — the UI tightens them by default
+    and reveals more on demand:
+    - `node_types`: `entities` | `atomic_notes` | `both` (default both).
+    - `memory_strength_min`: drop nodes below this liveness.
+    - `since`: ISO date — keep only nodes active since then (by last_mentioned).
+    - `top_pct_per_cluster`: keep the top fraction (e.g. 0.2) per community.
+    - `include_isolated`: keep degree-0 nodes (default true).
+    - `max_nodes`: hard ceiling (default 1000) — the densest-by-salience survive,
+      so the endpoint never returns an unbounded hairball."""
     import json
     conn = get_connection()
     try:
@@ -409,18 +462,35 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
                         edges.append({"from": nid, "to": eid,
                                       "label": "mentions", "confidence": 1.0})
 
+        # ── Anti-hairball filters (SYN-71) ───────────────────────────────────
+        # Cheap value filters first (kind / liveness / recency), then prune edges.
+        if node_types in ("entities", "entity"):
+            nodes = [n for n in nodes if n["kind"] == "entity"]
+        elif node_types in ("atomic_notes", "atomic_note", "notes"):
+            nodes = [n for n in nodes if n["kind"] == "atomic_note"]
+        if memory_strength_min is not None:
+            nodes = [n for n in nodes if (n.get("memory_strength") or 0.0) >= memory_strength_min]
+        if since:
+            nodes = [n for n in nodes if (n.get("last_mentioned") or "") >= since]
+        nodes, edges = _prune(nodes, edges, {n["id"] for n in nodes})
+
         if entity and mode == "ego":
             nodes, edges = _ego_filter(nodes, edges, entity)
-        # Node degree (incident edges) — drives node size on the map (SYN-64:
-        # size ~ memory_strength × degree). Computed on the final edge set.
-        deg: dict = {}
-        for e in edges:
-            deg[e["from"]] = deg.get(e["from"], 0) + 1
-            deg[e["to"]] = deg.get(e["to"], 0) + 1
-        for n in nodes:
-            n["degree"] = deg.get(n["id"], 0)
-        if cluster or layout:  # layout needs community_id for incremental placement
+
+        _set_degree(nodes, edges)
+        if not include_isolated:
+            nodes, edges = _prune(nodes, edges, {n["id"] for n in nodes if n["degree"] > 0})
+
+        # top_pct needs community_id; layout needs it for incremental placement.
+        if cluster or layout or top_pct_per_cluster is not None:
             _assign_communities(nodes, edges)
+        if top_pct_per_cluster is not None:
+            nodes, edges = _top_pct_per_cluster(nodes, edges, top_pct_per_cluster)
+        if max_nodes and len(nodes) > max_nodes:
+            keep = {n["id"] for n in sorted(nodes, key=_node_score, reverse=True)[:max_nodes]}
+            nodes, edges = _prune(nodes, edges, keep)
+        _set_degree(nodes, edges)  # final degree after structural pruning
+
         if layout:
             from graph_layout import ensure_positions
             positions = ensure_positions(conn, nodes, edges, full=relayout)
