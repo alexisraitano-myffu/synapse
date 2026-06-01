@@ -36,7 +36,7 @@ from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
 from facts_store import insert_fact
-from dream_cycle.decay import apply_decay, reactivate_notes_for_entities
+from dream_cycle.decay import apply_decay, apply_entity_decay, reactivate_notes_for_entities
 from dream_cycle.resources import process_capture_resources
 
 try:
@@ -1455,12 +1455,14 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
                 vectorized = step6_vectorize(all_entity_ids, conn, client, dry_run, verbose)
             print(f"  → {vectorized} entit{'y' if vectorized == 1 else 'ies'} vectorized")
 
-        # SYN-19 — refresh Ebbinghaus memory_strength (cadence-free recompute).
+        # SYN-19 / SYN-68 — refresh Ebbinghaus memory_strength on notes AND
+        # entities (cadence-free recompute; both anchor on a reactivation date).
         if not dry_run:
             with conn:
                 decayed = apply_decay(conn)
-            if verbose and decayed:
-                print(f"  → decay refreshed {decayed} note(s)")
+                decayed_entities = apply_entity_decay(conn)
+            if verbose and (decayed or decayed_entities):
+                print(f"  → decay refreshed {decayed} note(s), {decayed_entities} entit{'y' if decayed_entities == 1 else 'ies'}")
 
         print("\n" + "═" * 60)
         summary = f"  Done  ·  {len(all_entity_ids)} entit{'y' if len(all_entity_ids) == 1 else 'ies'} updated"

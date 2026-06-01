@@ -40,7 +40,10 @@ def _parse(ts: str) -> datetime:
     try:
         return datetime.strptime(ts, _SQLITE_FMT)
     except ValueError:
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d")  # entities.last_mentioned is a DATE
+        except ValueError:
+            return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _now_naive(now: datetime | None) -> datetime:
@@ -60,6 +63,26 @@ def apply_decay(conn, *, tau_days: float | None = None, now: datetime | None = N
         delta_days = max(0.0, (now_n - base).total_seconds() / 86400.0)
         strength = math.exp(-delta_days / tau)
         conn.execute("UPDATE atomic_notes SET memory_strength = ? WHERE id = ?",
+                     (strength, r["id"]))
+    return len(rows)
+
+
+def apply_entity_decay(conn, *, tau_days: float | None = None,
+                       now: datetime | None = None) -> int:
+    """Recompute memory_strength for every entity from elapsed time since
+    `last_mentioned` (SYN-68). last_mentioned is the entity's reactivation anchor
+    — the Dream Cycle bumps it on every re-mention — so the same cadence-free
+    Ebbinghaus law as atomic_notes applies. Caller owns the transaction. Returns
+    the number of entities updated."""
+    tau = tau_days if tau_days is not None else TAU_DAYS
+    now_n = _now_naive(now)
+    rows = cursor_to_dicts(conn.execute(
+        "SELECT id, created_at, last_mentioned FROM entities"))
+    for r in rows:
+        base = _parse(r["last_mentioned"] or r["created_at"])
+        delta_days = max(0.0, (now_n - base).total_seconds() / 86400.0)
+        strength = math.exp(-delta_days / tau)
+        conn.execute("UPDATE entities SET memory_strength = ? WHERE id = ?",
                      (strength, r["id"]))
     return len(rows)
 
@@ -107,7 +130,8 @@ def run_decay() -> None:
     try:
         with conn:
             n = apply_decay(conn)
-        print(f"Decay applied to {n} atomic_note(s) (τ={TAU_DAYS}d).")
+            m = apply_entity_decay(conn)
+        print(f"Decay applied to {n} atomic_note(s) and {m} entit{'y' if m == 1 else 'ies'} (τ={TAU_DAYS}d).")
     finally:
         conn.close()
 

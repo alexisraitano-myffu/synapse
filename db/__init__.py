@@ -360,6 +360,15 @@ def init_db() -> None:
             except apsw.SQLError:
                 pass  # column already present
 
+        # Migration: SYN-68 — entity memory_strength for the living map. Mirrors
+        # the atomic_notes Ebbinghaus score; recomputed in dream_cycle/decay.py
+        # (apply_entity_decay) from last_mentioned, which the cycle bumps on every
+        # re-mention. Defaults to 1.0 so a fresh entity reads as fully alive.
+        try:
+            conn.execute("ALTER TABLE entities ADD COLUMN memory_strength REAL DEFAULT 1.0")
+        except apsw.SQLError:
+            pass  # column already present
+
         # Quick lookups for the merge-proposals queue.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "

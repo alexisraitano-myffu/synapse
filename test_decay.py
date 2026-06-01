@@ -77,6 +77,29 @@ def test_reactivation_only_targets_mentioned_notes(isolated_db):
     assert marie > 0.9 and other < 0.05
 
 
+def test_entity_decay_old_vs_recent(isolated_db):
+    """SYN-68 — entities decay from last_mentioned like notes decay from
+    last_reactivated_at."""
+    from db import get_connection
+    from dream_cycle.decay import apply_entity_decay
+    conn = get_connection()
+    try:
+        with conn:
+            old = (NOW - timedelta(days=365)).strftime(FMT)
+            recent = (NOW - timedelta(days=1)).strftime(FMT)
+            conn.execute("INSERT INTO entities (id, canonical_name, last_mentioned) "
+                         "VALUES ('e_old','Old',?)", (old,))
+            conn.execute("INSERT INTO entities (id, canonical_name, last_mentioned) "
+                         "VALUES ('e_new','New',?)", (recent,))
+            apply_entity_decay(conn, now=NOW)
+        s_old = conn.execute("SELECT memory_strength FROM entities WHERE id='e_old'").fetchone()[0]
+        s_new = conn.execute("SELECT memory_strength FROM entities WHERE id='e_new'").fetchone()[0]
+    finally:
+        conn.close()
+    assert s_old < 0.05, f"a year-stale entity should be nearly forgotten, got {s_old}"
+    assert s_new > 0.9, f"an entity mentioned yesterday should stay strong, got {s_new}"
+
+
 def test_search_hit_is_a_light_bump(isolated_db):
     from db import get_connection
     from dream_cycle.decay import apply_decay, reactivate_notes

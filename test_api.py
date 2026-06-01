@@ -105,6 +105,34 @@ def test_graph_ego(client):
     assert "Marie" in labels and "Alexis" in labels
 
 
+def test_graph_default_is_entities_only(client):
+    """SYN-68 — the legacy shape is preserved: no notes, no cluster pass."""
+    _seed_graph()
+    g = client.get("/graph").json()
+    assert {n["kind"] for n in g["nodes"]} == {"entity"}
+    assert all(n["community_id"] is None for n in g["nodes"])
+
+
+def test_graph_map_adds_notes_and_clusters(client):
+    """SYN-68 — include_notes adds atomic_notes as a 2nd node kind with mention
+    edges; cluster tags every node with a community_id."""
+    _seed_graph()
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO atomic_notes (id, content, summary, entities_mentioned) "
+                "VALUES (1, 'une pensée sur Marie', 'pensée', '[\"Marie\"]')")
+    finally:
+        conn.close()
+    g = client.get("/graph", params={"include_notes": "true", "cluster": "true"}).json()
+    assert {n["kind"] for n in g["nodes"]} == {"entity", "atomic_note"}
+    note = next(n for n in g["nodes"] if n["kind"] == "atomic_note")
+    assert note["id"] == "n:1"
+    assert any(e["from"] == "n:1" and e["label"] == "mentions" for e in g["edges"])
+    assert all(n["community_id"] is not None for n in g["nodes"])
+
+
 def test_entity_detail(client):
     _seed_graph()
     g = client.get("/graph").json()

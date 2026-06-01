@@ -289,10 +289,51 @@ def _ego_filter(entities: list[dict], relations: list[dict], focus: str):
     return [e for e in entities if e["id"] in keep], kept_rels
 
 
+def _assign_communities(nodes: list[dict], edges: list[dict]) -> None:
+    """Tag every node dict with a `community_id` via Louvain community detection
+    (SYN-66/68). Best-effort: if networkx is unavailable the nodes keep
+    community_id=None rather than failing the request. Deterministic (fixed seed)
+    so the same graph yields the same colouring across calls."""
+    if not nodes:
+        return
+    try:
+        import networkx as nx
+    except ImportError:
+        return
+    ids = {n["id"] for n in nodes}
+    g = nx.Graph()
+    g.add_nodes_from(ids)
+    for e in edges:
+        a, b = e.get("from"), e.get("to")
+        if a in ids and b in ids and a != b:
+            w = float(e.get("confidence") or 1.0)
+            if g.has_edge(a, b):
+                g[a][b]["weight"] += w
+            else:
+                g.add_edge(a, b, weight=w)
+    try:
+        communities = nx.community.louvain_communities(g, weight="weight", seed=42)
+    except Exception:
+        return  # never let clustering break the endpoint
+    cid = {nid: i for i, comm in enumerate(communities) for nid in comm}
+    for n in nodes:
+        n["community_id"] = cid.get(n["id"])
+
+
 @app.get("/graph", dependencies=[Depends(require_auth)])
-def graph(entity: str | None = None, mode: str = "full", include_archived: bool = False):
+def graph(entity: str | None = None, mode: str = "full", include_archived: bool = False,
+          include_notes: bool = False, cluster: bool = False):
     """Nodes = entities (size ~ mention_count), edges = relations.
-    `include_archived=true` also returns user-archived entities (SYN-59)."""
+    `include_archived=true` also returns user-archived entities (SYN-59).
+
+    Living-map options (SYN-66/68), both default off so the legacy entity-list /
+    ego consumers keep the original shape:
+    - `include_notes=true` adds atomic_notes as a second node kind (id `n:<id>`,
+      kind `atomic_note`) plus `mentions` edges note→entity (resolved from each
+      note's entities_mentioned).
+    - `cluster=true` runs community detection and tags every node with a
+      `community_id` (entities and notes share the colouring)."""
+    import json
     conn = get_connection()
     try:
         nodes = []
@@ -303,7 +344,7 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
         archived_clause = "" if include_archived else " AND e.archived_at IS NULL"
         for e in cursor_to_dicts(conn.execute(
             "SELECT e.id, e.canonical_name, e.type, e.mention_count, e.persistence_value, "
-            "       e.summary, e.last_mentioned, e.archived_at, "
+            "       e.summary, e.last_mentioned, e.archived_at, e.memory_strength, "
             "       (SELECT COUNT(*) FROM facts f WHERE f.entity_id = e.id "
             "          AND f.archived_at IS NULL AND f.obsoleted_at IS NULL) AS facts_count "
             "FROM entities e WHERE e.merged_into_id IS NULL AND e.status = 'active'"
@@ -311,6 +352,7 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
         )):
             nodes.append({
                 "id": e["id"],
+                "kind": "entity",
                 "label": e["canonical_name"],
                 "type": e.get("type"),
                 "mention_count": e.get("mention_count", 1),
@@ -318,8 +360,9 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
                 "summary": e.get("summary"),
                 "last_mentioned": e.get("last_mentioned"),
                 "facts_count": e.get("facts_count", 0),
-                "memory_strength": None,  # reserved (Phase C)
+                "memory_strength": e.get("memory_strength"),  # SYN-68 (was reserved)
                 "archived_at": e.get("archived_at"),  # SYN-59
+                "community_id": None,
             })
         edges = [
             {"from": r["entity_from"], "to": r["entity_to"],
@@ -328,8 +371,51 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
                 "SELECT entity_from, entity_to, predicate, confidence FROM relations"
             ))
         ]
+
+        if include_notes:
+            # entities_mentioned stores canonical names, not ids → resolve to the
+            # entity nodes already in the graph so a note links to real targets.
+            name_to_id = {n["label"].lower(): n["id"] for n in nodes}
+            present = {n["id"] for n in nodes}
+            for n in cursor_to_dicts(conn.execute(
+                "SELECT id, title, summary, content, memory_strength, "
+                "       last_reactivated_at, created_at, entities_mentioned "
+                "FROM atomic_notes"
+            )):
+                nid = f"n:{n['id']}"
+                preview = n.get("title") or n.get("summary") or (n.get("content") or "")
+                nodes.append({
+                    "id": nid,
+                    "kind": "atomic_note",
+                    "label": (preview or "")[:60],
+                    "type": "atomic_note",
+                    "summary": n.get("summary"),
+                    "last_mentioned": n.get("last_reactivated_at") or n.get("created_at"),
+                    "memory_strength": n.get("memory_strength"),
+                    "community_id": None,
+                })
+                try:
+                    mentioned = json.loads(n.get("entities_mentioned") or "[]")
+                except (ValueError, TypeError):
+                    mentioned = []
+                for name in mentioned:
+                    eid = name_to_id.get(str(name).lower())
+                    if eid in present:
+                        edges.append({"from": nid, "to": eid,
+                                      "label": "mentions", "confidence": 1.0})
+
         if entity and mode == "ego":
             nodes, edges = _ego_filter(nodes, edges, entity)
+        # Node degree (incident edges) — drives node size on the map (SYN-64:
+        # size ~ memory_strength × degree). Computed on the final edge set.
+        deg: dict = {}
+        for e in edges:
+            deg[e["from"]] = deg.get(e["from"], 0) + 1
+            deg[e["to"]] = deg.get(e["to"], 0) + 1
+        for n in nodes:
+            n["degree"] = deg.get(n["id"], 0)
+        if cluster:
+            _assign_communities(nodes, edges)
         return {"nodes": nodes, "edges": edges}
     finally:
         conn.close()

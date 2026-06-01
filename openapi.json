@@ -233,7 +233,7 @@
     "/graph": {
       "get": {
         "summary": "Graph",
-        "description": "Nodes = entities (size ~ mention_count), edges = relations.\n`include_archived=true` also returns user-archived entities (SYN-59).",
+        "description": "Nodes = entities (size ~ mention_count), edges = relations.\n`include_archived=true` also returns user-archived entities (SYN-59).\n\nLiving-map options (SYN-66/68), both default off so the legacy entity-list /\nego consumers keep the original shape:\n- `include_notes=true` adds atomic_notes as a second node kind (id `n:<id>`,\n  kind `atomic_note`) plus `mentions` edges note→entity (resolved from each\n  note's entities_mentioned).\n- `cluster=true` runs community detection and tags every node with a\n  `community_id` (entities and notes share the colouring).",
         "operationId": "graph_graph_get",
         "parameters": [
           {
@@ -270,6 +270,26 @@
               "type": "boolean",
               "default": false,
               "title": "Include Archived"
+            }
+          },
+          {
+            "name": "include_notes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Notes"
+            }
+          },
+          {
+            "name": "cluster",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Cluster"
             }
           },
           {

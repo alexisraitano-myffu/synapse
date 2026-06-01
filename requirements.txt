@@ -29,3 +29,8 @@ uvicorn[standard]>=0.34.0
 
 # LAN auto-discovery (mDNS) — phones find the brain Mac without typing an IP
 zeroconf>=0.131.0
+
+# Graph clustering for the living map (SYN-66/68). Pure-Python (Louvain via
+# networkx.community) — packages cleanly into the PyInstaller .dmg, unlike the
+# C-extension stack (igraph/leidenalg). Swap to Leiden later if quality needs it.
+networkx>=3.2
