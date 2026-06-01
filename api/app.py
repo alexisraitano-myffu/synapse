@@ -378,7 +378,7 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
           node_types: str = "both", memory_strength_min: float | None = None,
           since: str | None = None, top_pct_per_cluster: float | None = None,
           include_isolated: bool = True, max_nodes: int = 1000,
-          clusters: bool = False):
+          clusters: bool = False, semantic_layout: bool = True):
     """Nodes = entities (size ~ mention_count), edges = relations.
     `include_archived=true` also returns user-archived entities (SYN-59).
 
@@ -509,7 +509,7 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
 
         if layout or clusters:  # clusters need positions for their hulls
             from graph_layout import ensure_positions
-            positions = ensure_positions(conn, nodes, edges, full=relayout)
+            positions = ensure_positions(conn, nodes, edges, full=relayout, semantic=semantic_layout)
             for n in nodes:
                 xy = positions.get(n["id"])
                 if xy:

@@ -18,11 +18,21 @@ community edges are weighted up so communities cohere spatially.
 """
 
 import math
+import os
 import zlib
 
 from db import cursor_to_dicts
 
 _INTRA_COMMUNITY_PULL = 3.0  # intra-cluster edges tug harder than bridges
+
+# Semantic layout (SYN-64): soft springs between entities whose embeddings are close,
+# so vector-similar nodes drift together even without an explicit relation. Layout-only —
+# these edges are never returned to the client. Tunable via env; kept gentle so real
+# relations still dominate the structure.
+_SEMANTIC_K = int(os.environ.get("SYNAPSE_SEMANTIC_K", "4"))             # neighbours per entity
+_SEMANTIC_MIN_SCORE = float(os.environ.get("SYNAPSE_SEMANTIC_MIN_SCORE", "0.80"))  # cosine floor
+_SEMANTIC_WEIGHT = float(os.environ.get("SYNAPSE_SEMANTIC_WEIGHT", "0.45"))        # vs ~1.0 relations
+_SEMANTIC_MAX_NODES = int(os.environ.get("SYNAPSE_SEMANTIC_MAX_NODES", "800"))     # O(n²) guard
 
 
 def _read_positions(conn) -> dict:
@@ -61,6 +71,57 @@ def _build_graph(nodes: list[dict], edges: list[dict]):
             else:
                 g.add_edge(a, b, weight=w)
     return g
+
+
+def semantic_edges(conn, nodes: list[dict]) -> list[dict]:
+    """Layout-only soft edges between entities with close embeddings (top-K cosine).
+
+    Returns edge dicts `{from, to, confidence, semantic: True}` — `confidence` is the
+    spring weight (`_SEMANTIC_WEIGHT × cosine`). Entities only (notes have no entity
+    embedding); empty on any missing dependency / oversized graph so layout still works."""
+    ent_ids = [n["id"] for n in nodes if n.get("kind") == "entity"]
+    if len(ent_ids) < 3 or len(ent_ids) > _SEMANTIC_MAX_NODES:
+        return []
+    try:
+        import numpy as np
+        from entity_search import deserialize_vec
+    except Exception:
+        return []
+    want = set(ent_ids)
+    rows = [r for r in cursor_to_dicts(conn.execute(
+        "SELECT id, embedding FROM entities "
+        "WHERE embedding IS NOT NULL AND merged_into_id IS NULL AND status='active'"
+    )) if r["id"] in want]
+    if len(rows) < 3:
+        return []
+    ids = [r["id"] for r in rows]
+    try:
+        mat = np.array([deserialize_vec(r["embedding"]) for r in rows], dtype=np.float32)
+    except (ValueError, TypeError):
+        return []                                       # ragged dims (model changed mid-flight)
+    if mat.ndim != 2 or mat.shape[0] != len(ids):
+        return []
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    mat = mat / norms                                   # cosine = dot on unit vectors
+    sims = mat @ mat.T
+    np.fill_diagonal(sims, -1.0)                         # never pick self
+    k = min(_SEMANTIC_K, len(ids) - 1)
+    edges: list[dict] = []
+    seen: set = set()
+    for a in range(len(ids)):
+        for b in np.argpartition(-sims[a], k - 1)[:k]:
+            b = int(b)
+            score = float(sims[a, b])
+            if score < _SEMANTIC_MIN_SCORE:
+                continue
+            key = (a, b) if a < b else (b, a)
+            if key in seen:
+                continue
+            seen.add(key)
+            edges.append({"from": ids[a], "to": ids[b],
+                          "confidence": round(_SEMANTIC_WEIGHT * score, 4), "semantic": True})
+    return edges
 
 
 def _full_layout(nodes: list[dict], edges: list[dict]) -> dict:
@@ -107,15 +168,20 @@ def _place_incremental(nodes: list[dict], existing: dict) -> dict:
     return new
 
 
-def ensure_positions(conn, nodes: list[dict], edges: list[dict], *, full: bool = False) -> dict:
+def ensure_positions(conn, nodes: list[dict], edges: list[dict], *, full: bool = False,
+                     semantic: bool = False) -> dict:
     """Return {node_id: {'x':, 'y':}} for every node, persisting as needed.
 
     full=True forces a ForceAtlas2 recompute of the whole map (and rewrites every
     position). Otherwise only nodes without a stored position are placed
-    incrementally; already-placed nodes are returned byte-identical."""
+    incrementally; already-placed nodes are returned byte-identical.
+
+    semantic=True adds embedding-kNN soft edges to the layout graph (SYN-64) — only
+    meaningful on a full recompute, so it's ignored on the incremental path."""
     existing = _read_positions(conn)
     if full or not existing:
-        pos = _full_layout(nodes, edges)
+        extra = semantic_edges(conn, nodes) if semantic else []
+        pos = _full_layout(nodes, edges + extra)
         if pos:
             with conn:
                 _write_positions(conn, pos)

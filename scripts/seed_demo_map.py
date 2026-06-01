@@ -130,6 +130,7 @@ def clean(conn):
 
 
 def seed(conn):
+    from embeddings import embed_text                 # local ONNX model (loads on first call)
     clean(conn)
     name_to_id: dict[str, str] = {}
     rels: list[tuple] = []
@@ -146,10 +147,10 @@ def seed(conn):
                 lm = (TODAY - timedelta(days=days)).isoformat()
                 conn.execute(
                     "INSERT INTO entities (id, type, canonical_name, mention_count, "
-                    "persistence_value, summary, last_mentioned, status, memory_strength) "
-                    "VALUES (?,?,?,?,?,?,?, 'active', ?)",
+                    "persistence_value, summary, last_mentioned, status, memory_strength, embedding) "
+                    "VALUES (?,?,?,?,?,?,?, 'active', ?, ?)",
                     (eid, etype, name, random.randint(1, 12), random.randint(2, 5),
-                     f"{name} — {theme}", lm, _ms_for(days)),
+                     f"{name} — {theme}", lm, _ms_for(days), embed_text(f"{name}. {theme}")),
                 )
                 for pred, val in random.sample(FACT_TEMPLATES[etype], k=1):
                     conn.execute(

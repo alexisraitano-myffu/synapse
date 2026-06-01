@@ -160,6 +160,7 @@ flowchart LR
 - **Coût LLM négligeable** — labels batchés (1 appel) + cachés par **signature des entités définissantes** d'un cluster → Haiku n'est rappelé que quand un cluster change vraiment. Fallback `Cluster N` non caché si pas de clé.
 - **Anti-hairball côté serveur** — `max_nodes` (déf. 1000) plafonne toujours la réponse par saillance (`memory_strength × degree`) ; l'app resserre/relâche les autres filtres à la demande.
 - **Pas de cluster forcé** — une communauté < `MIN_CLUSTER_SIZE` (3, `graph_clusters.py`) ne devient pas une région : un hull a besoin de ≥3 points et un label à 1 nœud retomberait sur le nœud. En dessous, le nœud reste **orphelin** (rendu flottant, sans zone, par le frontend SYN-64).
+- **Layout sémantique (SYN-64)** — au recalcul complet, `semantic_edges` ajoute des ressorts souples **kNN sur embeddings** (top-`SYNAPSE_SEMANTIC_K`=4 cosinus ≥ 0.80, poids `0.45 × score`) : les entités proches *sémantiquement* se rapprochent même sans relation explicite, et remplissent mieux l'espace d'un cluster. Ces arêtes sont **layout-only** (jamais renvoyées). `semantic_layout=false` désactive ; gardé faible pour que les vraies relations dominent.
 
 **À rajouter** (futur, non bloquant) :
 - **Leiden/igraph** si la qualité de clustering l'exige (Louvain/networkx suffit au volume actuel et package sans binaire C dans le .dmg).

@@ -401,6 +401,16 @@
             }
           },
           {
+            "name": "semantic_layout",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Semantic Layout"
+            }
+          },
+          {
             "name": "authorization",
             "in": "header",
             "required": false,
