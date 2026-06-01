@@ -201,6 +201,23 @@ def test_graph_anti_hairball_filters(client):
     assert len(client.get("/graph", params={"max_nodes": "1"}).json()["nodes"]) == 1
 
 
+def test_graph_clusters_section(client, monkeypatch):
+    """SYN-70 — clusters=true adds labelled regions with a hull. Force the
+    fallback (factory → None) so the test stays offline and deterministic
+    regardless of whether an Anthropic key is configured."""
+    import api.app as appmod
+    monkeypatch.setattr(appmod, "_anthropic_client_factory", lambda: None)
+    _seed_graph()
+    g = client.get("/graph", params={"clusters": "true"}).json()
+    assert "clusters" in g and g["clusters"]
+    c = g["clusters"][0]
+    assert {"community_id", "label", "size", "hull"} <= set(c)
+    assert c["label"] == f"Cluster {c['community_id']}"  # forced fallback
+    assert isinstance(c["hull"], list)
+    # nodes carry positions (clusters imply layout)
+    assert all("x" in n and "y" in n for n in g["nodes"])
+
+
 def test_entity_detail(client):
     _seed_graph()
     g = client.get("/graph").json()

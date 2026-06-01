@@ -381,6 +381,17 @@ def init_db() -> None:
             " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
         )
 
+        # SYN-70 — cached cluster labels (Haiku). Keyed by a signature of the
+        # cluster's defining (top) entities, not the volatile community index, so
+        # a label is reused as long as those entities do and Haiku is called only
+        # when they change. A batched call fills every miss at once.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS cluster_labels ("
+            " signature  TEXT PRIMARY KEY,"
+            " label      TEXT NOT NULL,"
+            " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+
         # Quick lookups for the merge-proposals queue.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "

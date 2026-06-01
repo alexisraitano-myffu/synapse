@@ -31,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import config_store
-from config import BASE_DIR
+from config import BASE_DIR, CLAUDE_MODEL
 from db import cursor_to_dicts, first_row, get_connection, init_db
 from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
@@ -289,6 +289,17 @@ def _ego_filter(entities: list[dict], relations: list[dict], focus: str):
     return [e for e in entities if e["id"] in keep], kept_rels
 
 
+def _anthropic_client_factory():
+    """Build an Anthropic client from the configured key, or None if unset — the
+    cluster labeller (SYN-70) then falls back to generic labels. Reuses the same
+    key path and model as the Dream Cycle (BYOK)."""
+    import anthropic
+
+    from config_store import get_anthropic_key
+    key = get_anthropic_key()
+    return anthropic.Anthropic(api_key=key) if key else None
+
+
 def _assign_communities(nodes: list[dict], edges: list[dict]) -> None:
     """Tag every node dict with a `community_id` via Louvain community detection
     (SYN-66/68). Best-effort: if networkx is unavailable the nodes keep
@@ -366,7 +377,8 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
           layout: bool = False, relayout: bool = False,
           node_types: str = "both", memory_strength_min: float | None = None,
           since: str | None = None, top_pct_per_cluster: float | None = None,
-          include_isolated: bool = True, max_nodes: int = 1000):
+          include_isolated: bool = True, max_nodes: int = 1000,
+          clusters: bool = False):
     """Nodes = entities (size ~ mention_count), edges = relations.
     `include_archived=true` also returns user-archived entities (SYN-59).
 
@@ -390,7 +402,11 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
     - `top_pct_per_cluster`: keep the top fraction (e.g. 0.2) per community.
     - `include_isolated`: keep degree-0 nodes (default true).
     - `max_nodes`: hard ceiling (default 1000) — the densest-by-salience survive,
-      so the endpoint never returns an unbounded hairball."""
+      so the endpoint never returns an unbounded hairball.
+
+    `clusters=true` (SYN-70) adds a top-level `clusters: [{community_id, label,
+    size, hull}]` — a short Haiku label per community (cached) and a convex hull
+    around its node positions. Implies clustering + layout."""
     import json
     conn = get_connection()
     try:
@@ -481,8 +497,8 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
         if not include_isolated:
             nodes, edges = _prune(nodes, edges, {n["id"] for n in nodes if n["degree"] > 0})
 
-        # top_pct needs community_id; layout needs it for incremental placement.
-        if cluster or layout or top_pct_per_cluster is not None:
+        # top_pct needs community_id; layout/clusters need it too.
+        if cluster or layout or clusters or top_pct_per_cluster is not None:
             _assign_communities(nodes, edges)
         if top_pct_per_cluster is not None:
             nodes, edges = _top_pct_per_cluster(nodes, edges, top_pct_per_cluster)
@@ -491,14 +507,20 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
             nodes, edges = _prune(nodes, edges, keep)
         _set_degree(nodes, edges)  # final degree after structural pruning
 
-        if layout:
+        if layout or clusters:  # clusters need positions for their hulls
             from graph_layout import ensure_positions
             positions = ensure_positions(conn, nodes, edges, full=relayout)
             for n in nodes:
                 xy = positions.get(n["id"])
                 if xy:
                     n["x"], n["y"] = xy["x"], xy["y"]
-        return {"nodes": nodes, "edges": edges}
+
+        result = {"nodes": nodes, "edges": edges}
+        if clusters:
+            from graph_clusters import build_clusters
+            result["clusters"] = build_clusters(
+                conn, nodes, client_factory=_anthropic_client_factory, model=CLAUDE_MODEL)
+        return result
     finally:
         conn.close()
 
