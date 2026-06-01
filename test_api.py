@@ -133,6 +133,33 @@ def test_graph_map_adds_notes_and_clusters(client):
     assert all(n["community_id"] is not None for n in g["nodes"])
 
 
+def test_graph_layout_is_stable_and_incremental(client):
+    """SYN-69 — positions persist (same map on reopen), and adding a node does
+    not move the nodes already placed."""
+    _seed_graph()
+    first = client.get("/graph", params={"layout": "true"}).json()
+    pos1 = {n["id"]: (n["x"], n["y"]) for n in first["nodes"]}
+    assert all("x" in n and "y" in n for n in first["nodes"])
+
+    # reopen → identical positions (read from node_positions, no re-layout)
+    second = client.get("/graph", params={"layout": "true"}).json()
+    pos2 = {n["id"]: (n["x"], n["y"]) for n in second["nodes"]}
+    assert pos2 == pos1
+
+    # add a new entity, reopen → existing positions untouched, newcomer placed
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count) "
+                         "VALUES ('e3','person','Karim',1)")
+    finally:
+        conn.close()
+    third = client.get("/graph", params={"layout": "true"}).json()
+    pos3 = {n["id"]: (n["x"], n["y"]) for n in third["nodes"]}
+    assert pos3["e1"] == pos1["e1"] and pos3["e2"] == pos1["e2"]  # not disturbed
+    assert "e3" in pos3  # newcomer got a position
+
+
 def test_entity_detail(client):
     _seed_graph()
     g = client.get("/graph").json()

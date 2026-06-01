@@ -322,17 +322,22 @@ def _assign_communities(nodes: list[dict], edges: list[dict]) -> None:
 
 @app.get("/graph", dependencies=[Depends(require_auth)])
 def graph(entity: str | None = None, mode: str = "full", include_archived: bool = False,
-          include_notes: bool = False, cluster: bool = False):
+          include_notes: bool = False, cluster: bool = False,
+          layout: bool = False, relayout: bool = False):
     """Nodes = entities (size ~ mention_count), edges = relations.
     `include_archived=true` also returns user-archived entities (SYN-59).
 
-    Living-map options (SYN-66/68), both default off so the legacy entity-list /
+    Living-map options (SYN-66/68/69), all default off so the legacy entity-list /
     ego consumers keep the original shape:
     - `include_notes=true` adds atomic_notes as a second node kind (id `n:<id>`,
       kind `atomic_note`) plus `mentions` edges note→entity (resolved from each
       note's entities_mentioned).
     - `cluster=true` runs community detection and tags every node with a
-      `community_id` (entities and notes share the colouring)."""
+      `community_id` (entities and notes share the colouring).
+    - `layout=true` attaches persisted `x`/`y` map positions (ForceAtlas2);
+      missing nodes are placed incrementally near their cluster. `relayout=true`
+      forces a full recompute of the whole map. layout implies clustering (the
+      community id drives incremental placement)."""
     import json
     conn = get_connection()
     try:
@@ -414,8 +419,15 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
             deg[e["to"]] = deg.get(e["to"], 0) + 1
         for n in nodes:
             n["degree"] = deg.get(n["id"], 0)
-        if cluster:
+        if cluster or layout:  # layout needs community_id for incremental placement
             _assign_communities(nodes, edges)
+        if layout:
+            from graph_layout import ensure_positions
+            positions = ensure_positions(conn, nodes, edges, full=relayout)
+            for n in nodes:
+                xy = positions.get(n["id"])
+                if xy:
+                    n["x"], n["y"] = xy["x"], xy["y"]
         return {"nodes": nodes, "edges": edges}
     finally:
         conn.close()

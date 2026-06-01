@@ -369,6 +369,18 @@ def init_db() -> None:
         except apsw.SQLError:
             pass  # column already present
 
+        # SYN-69 — persisted map positions. node_id matches the /graph node id
+        # (an entity uuid, or 'n:<id>' for an atomic_note). Read back as-is so the
+        # map is stable; a full ForceAtlas2 recompute happens only on demand, new
+        # nodes are placed incrementally near their cluster centroid.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS node_positions ("
+            " node_id    TEXT PRIMARY KEY,"
+            " x          REAL NOT NULL,"
+            " y          REAL NOT NULL,"
+            " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
+
         # Quick lookups for the merge-proposals queue.
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "
