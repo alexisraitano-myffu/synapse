@@ -535,6 +535,24 @@ def test_changes_returns_derived_state(client):
     assert len(body["entities"]) == 2
 
 
+def test_changes_excludes_embedding_blob(client):
+    """An entity with an embedding (the normal case) must not 500 /changes —
+    the BLOB is dropped before JSON encoding (SYN-10)."""
+    import struct
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO entities (id, type, canonical_name, status, embedding) "
+                "VALUES ('e9','concept','X','active',?)",
+                (struct.pack("<4f", 1.0, 0.0, 0.0, 0.0),))
+    finally:
+        conn.close()
+    r = client.get("/changes")
+    assert r.status_code == 200
+    assert all("embedding" not in e for e in r.json()["entities"])
+
+
 # ── Atomic note detail (SYN-64) ──────────────────────────────────────────────
 
 def test_atomic_note_detail(client):

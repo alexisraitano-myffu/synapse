@@ -1436,6 +1436,8 @@ def changes(since: str | None = None):
     conn = get_connection()
     try:
         entities = cursor_to_dicts(conn.execute("SELECT * FROM entities"))
+        for e in entities:
+            e.pop("embedding", None)          # BLOB — not JSON-serializable, and replicas don't need it
         relations = cursor_to_dicts(conn.execute("SELECT * FROM relations"))
         if since:
             facts = cursor_to_dicts(conn.execute(
