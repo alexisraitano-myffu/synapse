@@ -6,6 +6,7 @@ wins so local dev is unaffected.
 """
 import json
 import os
+import uuid
 from pathlib import Path
 
 from config import BASE_DIR
@@ -49,3 +50,16 @@ def set_anthropic_key(key: str) -> None:
 
 def has_anthropic_key() -> bool:
     return bool(get_anthropic_key())
+
+
+def get_instance_id() -> str:
+    """Stable identity of THIS backend's database (SYN-73). Generated once and
+    persisted, so a replica can detect it's now talking to a different master /
+    a fresh DB (instance_id changed → its sync cursor is invalid → full resync)."""
+    data = _load()
+    iid = data.get("instance_id")
+    if not iid:
+        iid = uuid.uuid4().hex
+        data["instance_id"] = iid
+        _save(data)
+    return iid

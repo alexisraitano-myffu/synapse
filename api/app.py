@@ -200,7 +200,8 @@ def health():
         queued = conn.execute(
             "SELECT COUNT(*) FROM inbox WHERE processed_at IS NULL"
         ).fetchone()[0]
-        return {"status": "ok", "entities": entities, "pending": pending, "inbox_queued": queued}
+        return {"status": "ok", "entities": entities, "pending": pending,
+                "inbox_queued": queued, "instance_id": config_store.get_instance_id()}
     finally:
         conn.close()
 
@@ -1451,6 +1452,7 @@ def changes(since: str | None = None):
             "entities": entities, "facts": facts,
             "relations": relations, "atomic_notes": notes,
             "cursor": datetime.now(timezone.utc).isoformat(),
+            "instance_id": config_store.get_instance_id(),
         }
     finally:
         conn.close()
