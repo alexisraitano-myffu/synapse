@@ -40,3 +40,6 @@ dist/
 # Internal dogfood documentation (contient des refs backlog Linear privé).
 # À ré-évaluer une fois le contenu nettoyé pour publication publique.
 docs/engine-map.html
+
+# graphify knowledge graph (generated artifact)
+graphify-out/
