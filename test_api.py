@@ -72,6 +72,33 @@ def test_feed_reports_failed_and_legacy_processed(client):
     assert feed["l1"]["status"] == "processed"
 
 
+def test_feed_exposes_failure_reason_and_requeue(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO inbox (content, source, client_id, status, processed_at, error) "
+                "VALUES ('note cassée','test','r1','failed','2026-06-11T00:00:00','ValueError: boom')"
+            )
+            entry_id = conn.execute("SELECT id FROM inbox WHERE client_id='r1'").fetchone()[0]
+    finally:
+        conn.close()
+
+    row = next(x for x in client.get("/feed").json() if x["client_id"] == "r1")
+    assert row["error"] == "ValueError: boom"
+
+    r = client.post(f"/inbox/{entry_id}/requeue")
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+
+    row = next(x for x in client.get("/feed").json() if x["client_id"] == "r1")
+    assert row["status"] == "queued"
+    assert row["error"] is None
+
+    # only failed entries are requeueable; a second call is a 404
+    assert client.post(f"/inbox/{entry_id}/requeue").status_code == 404
+
+
 # ── Graph ────────────────────────────────────────────────────────────────────
 
 def _seed_graph():

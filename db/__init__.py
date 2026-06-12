@@ -402,5 +402,13 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_type_proposals_status "
             "ON entity_type_proposals(status, created_at DESC)"
         )
+
+        # Migration: SYN-77 — keep the failure reason on the inbox row. Before
+        # this the cycle printed it to (captured) stdout and the message was
+        # lost, leaving 'failed' entries undiagnosable from the app.
+        try:
+            conn.execute("ALTER TABLE inbox ADD COLUMN error TEXT")
+        except apsw.SQLError:
+            pass  # column already present
     finally:
         conn.close()

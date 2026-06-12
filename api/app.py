@@ -83,8 +83,30 @@ def _scheduler_loop() -> None:
             pass
 
 
+def _recover_interrupted_runs() -> None:
+    """SYN-77 — a run left 'running' with no live cycle was killed mid-cycle
+    (process death / machine shutdown). Surface it as an error instead of
+    showing a phantom 'running' forever; its unprocessed entries stay queued
+    and the auto-cycle catch-up picks them up. A fresh lock file means a cycle
+    may genuinely be running in another process — leave it alone."""
+    if _LOCK_PATH.exists() and time.time() - _LOCK_PATH.stat().st_mtime <= _LOCK_STALE_SECONDS:
+        return
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE cycle_runs SET status='error', "
+                "error='interrupted (process died mid-run)', finished_at=? "
+                "WHERE status='running'",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+    finally:
+        conn.close()
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_app):
+    _recover_interrupted_runs()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     # Loopback-only builds (bundled tester binary) set SYNAPSE_DISABLE_MDNS=1
     # to skip zeroconf — mobile clients on the LAN won't reach this instance.
@@ -259,7 +281,8 @@ def feed(limit: int = 30):
     conn = get_connection()
     try:
         rows = cursor_to_dicts(conn.execute(
-            "SELECT id, client_id, content, source, created_at, captured_at, processed_at, status "
+            "SELECT id, client_id, content, source, created_at, captured_at, processed_at, "
+            "status, error "
             "FROM inbox ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ))
@@ -270,6 +293,25 @@ def feed(limit: int = 30):
                 status = "processed"
             r["status"] = status
         return rows
+    finally:
+        conn.close()
+
+
+@app.post("/inbox/{entry_id}/requeue", dependencies=[Depends(require_auth)])
+def inbox_requeue(entry_id: int):
+    """Put a failed entry back in the queue (SYN-77 — user-driven retry)."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE inbox SET status='queued', processed_at=NULL, error=NULL "
+                "WHERE id=? AND status='failed'",
+                (entry_id,),
+            )
+            requeued = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not requeued:
+            raise HTTPException(status_code=404, detail="no failed inbox entry with this id")
+        return {"id": entry_id, "status": "queued"}
     finally:
         conn.close()
 

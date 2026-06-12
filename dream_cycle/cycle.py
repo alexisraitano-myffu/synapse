@@ -1256,12 +1256,14 @@ def _persist_project_entry(
 
 # ── Per-entry processing ─────────────────────────────────────────────────────
 
-def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False) -> None:
+def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False,
+          error: str | None = None) -> None:
     """Mark an inbox entry done with an outcome status (processed | failed)."""
     if dry_run:
         return
     conn.execute(
-        "UPDATE inbox SET processed_at=?, status=? WHERE id=?", (now, status, entry_id)
+        "UPDATE inbox SET processed_at=?, status=?, error=? WHERE id=?",
+        (now, status, error, entry_id),
     )
 
 
@@ -1435,7 +1437,8 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
                 print(f"  ⚠ échec entrée id={entry['id']}: {exc}")
                 if not dry_run:
                     with conn:
-                        _mark(conn, entry["id"], now, "failed")
+                        _mark(conn, entry["id"], now, "failed",
+                              error=f"{type(exc).__name__}: {exc}"[:500])
                 failed += 1
             print()
 
