@@ -1404,6 +1404,13 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 for e in classified.get("entities", [])
                 if e.get("canonical_name")
             ]
+            # SYN-86: a note routed to a project must MENTION it — the fiche's
+            # "notes liées" section links by entities_mentioned (dogfood: the
+            # 'refondre le design de Synapse' task carried no mention at all).
+            for pe in classified.get("project_entries") or []:
+                pc = (pe or {}).get("project_canonical")
+                if pc and pc not in mentioned:
+                    mentioned.append(pc)
             _persist_atomic_note(
                 content=atomic.strip(),
                 summary=classified.get("summary") or "",
