@@ -742,3 +742,21 @@ def test_note_kinds_filter_and_archive(client):
     # /changes carries the new columns for the replica
     notes = {n["content"]: n for n in client.get("/changes").json()["atomic_notes"]}
     assert notes["anniversaire de Marie"]["kind"] == "event"
+
+
+# ── Fact categories (SYN-88) ─────────────────────────────────────────────────
+
+def test_entity_facts_expose_category(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e30','person','Léa',1,5)")
+        from facts_store import insert_fact
+        with conn:
+            insert_fact(conn, entity_id='e30', predicate='works_at', value='Acme',
+                        confidence=0.95, category='work')
+    finally:
+        conn.close()
+    facts = client.get("/entity/e30").json()["facts"]
+    assert facts[0]["category"] == "work"

@@ -28,7 +28,7 @@ def is_single_valued(predicate: str) -> bool:
 
 def insert_fact(conn, *, entity_id, predicate, value, confidence,
                 source_inbox_id=None, persistence_value=3,
-                provenance_capture_id=None, fact_id=None) -> str:
+                provenance_capture_id=None, fact_id=None, category=None) -> str:
     """Insert a fact, applying SYN-37 last-writes-wins for single-valued predicates.
 
     For a single-valued predicate, any *active* (not obsoleted, not archived) fact
@@ -55,9 +55,9 @@ def insert_fact(conn, *, entity_id, predicate, value, confidence,
     conn.execute(
         "INSERT INTO facts "
         "(id, entity_id, predicate, value, confidence, source_inbox_id, "
-        " persistence_value, provenance_capture_id) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        " persistence_value, provenance_capture_id, category) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (fact_id, entity_id, predicate, value, confidence,
-         source_inbox_id, persistence_value, provenance_capture_id),
+         source_inbox_id, persistence_value, provenance_capture_id, category),
     )
     return fact_id

@@ -619,7 +619,7 @@ def entity_detail(entity_id: str, include: str | None = None):
             fact_filter += " AND archived_at IS NULL"
         facts = cursor_to_dicts(conn.execute(
             "SELECT id, predicate, value, confidence, persistence_value, created_at, "
-            "       provenance_capture_id, archived_at, obsoleted_at, obsoleted_by "
+            "       provenance_capture_id, archived_at, obsoleted_at, obsoleted_by, category "
             "FROM facts WHERE entity_id=?" + fact_filter + " ORDER BY confidence DESC",
             (entity_id,),
         ))

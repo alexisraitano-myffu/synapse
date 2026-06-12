@@ -98,7 +98,8 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
           "predicate": "string (snake_case ex: has_birthday, works_at, lives_in)",
           "value": "string",
           "persistence_value": 1,
-          "evidence_strength": "explicit|hedged|implicit"
+          "evidence_strength": "explicit|hedged|implicit",
+          "category": "identity|dates|work|places|relations|preferences|health|other (thème du fait — sert à grouper l'affichage de la fiche)"
         }}
       ]
     }}
@@ -718,6 +719,7 @@ def step4_route(
                 "value": fact["value"],
                 "persistence_value": fact.get("persistence_value", 3),
                 "evidence_strength": fact.get("evidence_strength", "explicit"),
+                "category": fact.get("category"),
                 "confidence": confidence,
                 "source_inbox_id": source_inbox_id,
             }
@@ -734,6 +736,7 @@ def step4_route(
                         source_inbox_id=str(source_inbox_id),
                         persistence_value=fact.get("persistence_value", 3),
                         provenance_capture_id=source_inbox_id,
+                        category=fact.get("category"),
                     )
             elif confidence >= 0.5:
                 conn.execute(
@@ -847,6 +850,7 @@ def step5_validate_pending(
                 confidence=new_conf, source_inbox_id=pf.get("source_inbox_id"),
                 persistence_value=pf.get("persistence_value", 3),
                 provenance_capture_id=prov_id,
+                category=pf.get("category"),
             )
             conn.execute("DELETE FROM pending_facts WHERE id=?", (pending_id,))
         promoted += 1

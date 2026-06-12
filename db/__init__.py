@@ -411,6 +411,14 @@ def init_db() -> None:
         except apsw.SQLError:
             pass  # column already present
 
+        # Migration: SYN-88 — fact category (identity | dates | work | places |
+        # relations | preferences | health | other) : le classifieur thématise
+        # chaque fait pour que la fiche les groupe en sections repliables.
+        try:
+            conn.execute("ALTER TABLE facts ADD COLUMN category TEXT")
+        except apsw.SQLError:
+            pass  # column already present
+
         # Migration: SYN-85 — note kinds. 'note' (réflexion) | 'task' (backlog
         # retrouvable — pas de due date / coche, le decay oublie pour nous) |
         # 'event' (occurrence datée, event_date absolue + récurrence annuelle).

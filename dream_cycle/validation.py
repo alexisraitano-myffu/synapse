@@ -81,6 +81,7 @@ def record_and_apply_validation(
         source_inbox_id=fact_data.get("source_inbox_id"),
         persistence_value=fact_data.get("persistence_value", 3),
         provenance_capture_id=prov_id,
+        category=fact_data.get("category"),
     )
     conn.execute("DELETE FROM pending_facts WHERE id=?", (fact_id,))
 
