@@ -60,4 +60,7 @@ def insert_fact(conn, *, entity_id, predicate, value, confidence,
         (fact_id, entity_id, predicate, value, confidence,
          source_inbox_id, persistence_value, provenance_capture_id, category),
     )
+    # SYN-89: any fact write invalidates the entity's derived summary — the
+    # next Dream Cycle regenerates it from the active facts.
+    conn.execute("UPDATE entities SET summary_stale = 1 WHERE id = ?", (entity_id,))
     return fact_id

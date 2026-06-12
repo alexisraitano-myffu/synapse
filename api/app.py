@@ -72,9 +72,17 @@ def _scheduler_loop() -> None:
                 queued = conn.execute(
                     "SELECT COUNT(*) FROM inbox WHERE processed_at IS NULL"
                 ).fetchone()[0]
+                # SYN-89: user fact edits flag summaries stale — they warrant a
+                # (cheap) cycle run even with an empty inbox.
+                stale = conn.execute(
+                    "SELECT COUNT(*) FROM entities "
+                    "WHERE summary_stale = 1 AND merged_into_id IS NULL"
+                ).fetchone()[0]
             finally:
                 conn.close()
-            if queued == 0 or time.time() - _last_capture_ts < _debounce_seconds():
+            if queued == 0 and stale == 0:
+                continue
+            if queued > 0 and time.time() - _last_capture_ts < _debounce_seconds():
                 continue
             try:
                 dream_cycle_run(trigger="auto")  # guarded by the lock; errors land in cycle_runs
@@ -1144,6 +1152,13 @@ def _set_timestamp(table: str, row_id: str, columns: dict, label: str):
         )
         with conn:
             conn.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (row_id,))
+            if table == "facts":
+                # SYN-89: a fact lifecycle change invalidates the derived summary.
+                conn.execute(
+                    "UPDATE entities SET summary_stale = 1 "
+                    "WHERE id = (SELECT entity_id FROM facts WHERE id = ?)",
+                    (row_id,),
+                )
         return {"status": label, "id": row_id}
     finally:
         conn.close()
@@ -1506,6 +1521,12 @@ def update_fact(fact_id: str, body: FactUpdate):
         params.append(fact_id)
         with conn:
             conn.execute(f"UPDATE facts SET {', '.join(sets)} WHERE id=?", params)
+            # SYN-89: a user correction invalidates the derived summary.
+            conn.execute(
+                "UPDATE entities SET summary_stale = 1 "
+                "WHERE id = (SELECT entity_id FROM facts WHERE id = ?)",
+                (fact_id,),
+            )
         return {"id": fact_id, "predicate": predicate, "value": value, "confidence": 1.0}
     finally:
         conn.close()

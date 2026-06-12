@@ -419,6 +419,16 @@ def init_db() -> None:
         except apsw.SQLError:
             pass  # column already present
 
+        # Migration: SYN-89 — re-résumé. Posé à 1 dès qu'un fait de l'entité
+        # change (insert/édition/archive/obsolète) ; le Dream Cycle régénère
+        # alors le résumé from scratch depuis les faits actifs (intemporel).
+        try:
+            conn.execute(
+                "ALTER TABLE entities ADD COLUMN summary_stale INTEGER NOT NULL DEFAULT 0"
+            )
+        except apsw.SQLError:
+            pass  # column already present
+
         # Migration: SYN-85 — note kinds. 'note' (réflexion) | 'task' (backlog
         # retrouvable — pas de due date / coche, le decay oublie pour nous) |
         # 'event' (occurrence datée, event_date absolue + récurrence annuelle).

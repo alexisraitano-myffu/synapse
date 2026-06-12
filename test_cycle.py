@@ -288,3 +288,63 @@ def test_validation_resolves_entity_by_alias(isolated_db):
         conn.close()
     assert n_entities == 1          # no duplicate shell
     assert owner == "e-ch"          # fact landed on the canonical entity
+
+
+# ── Re-summary (SYN-89) ──────────────────────────────────────────────────────
+
+def test_fact_writes_flag_summary_stale(isolated_db):
+    """Any fact write (insert via facts_store, lifecycle via API helper) must
+    invalidate the entity's derived summary."""
+    from db import get_connection
+    from facts_store import insert_fact
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e40','person','Cici Huang',1,5)")
+            insert_fact(conn, entity_id='e40', predicate='has_birthday',
+                        value='2026-06-16', confidence=0.95)
+        stale = conn.execute("SELECT summary_stale FROM entities WHERE id='e40'").fetchone()[0]
+    finally:
+        conn.close()
+    assert stale == 1
+
+
+def test_resummarize_uses_active_facts_and_clears_flag(isolated_db, monkeypatch):
+    """step_resummarize derives from ACTIVE facts only (obsoleted excluded) and
+    clears the stale flag. Claude is stubbed offline."""
+    from db import get_connection
+    from dream_cycle import cycle as cy
+
+    class _Msg:
+        class _Block:
+            text = "Personne dont l'anniversaire est le 16 juin."
+        content = [_Block()]
+
+    class _Client:
+        class messages:  # noqa: N801 — mimic anthropic client shape
+            @staticmethod
+            def create(**kwargs):
+                # the prompt must carry the active fact, not the obsoleted one
+                user = kwargs["messages"][0]["content"]
+                assert "2026-06-16" in user and "2026-06-19" not in user
+                return _Msg()
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, summary, summary_stale, mention_count, persistence_value) "
+                         "VALUES ('e41','person','Cici Huang','anniversaire la semaine prochaine',1,1,5)")
+            conn.execute("INSERT INTO facts (id, entity_id, predicate, value, confidence) "
+                         "VALUES ('f40','e41','has_birthday','2026-06-16',1.0)")
+            conn.execute("INSERT INTO facts (id, entity_id, predicate, value, confidence, obsoleted_at) "
+                         "VALUES ('f41','e41','has_birthday','2026-06-19',0.6,'2026-06-12T00:00:00')")
+        with conn:
+            regenerated = cy.step_resummarize([], conn, _Client())
+        row = conn.execute("SELECT summary, summary_stale FROM entities WHERE id='e41'").fetchone()
+    finally:
+        conn.close()
+    assert regenerated == ["e41"]
+    assert row[0] == "Personne dont l'anniversaire est le 16 juin."
+    assert row[1] == 0

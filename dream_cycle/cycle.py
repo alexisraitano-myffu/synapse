@@ -91,7 +91,7 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
       "type": "string (un des TYPES D'ENTITÉ ACTIFS fournis en contexte)",
       "type_proposal": null,
       "aliases": ["string"],
-      "summary": "string (1 phrase qui décrit cette entité, ou null si rien de notable)",
+      "summary": "string (1 phrase INTEMPORELLE qui décrit cette entité — dates ABSOLUES uniquement ('anniversaire le 16 juin'), JAMAIS de relatif qui expire ('la semaine prochaine', 'bientôt', 'récemment') ; null si rien de notable)",
       "attributes": {{"clé": "valeur"}},
       "facts": [
         {{
@@ -858,6 +858,97 @@ def step5_validate_pending(
     return promoted
 
 
+# ── SYN-89 — Entity re-summary ────────────────────────────────────────────────
+
+_RESUMMARY_SYSTEM = """\
+Tu écris le résumé d'une fiche d'entité d'un second cerveau personnel.
+
+Contraintes STRICTES :
+- 1 à 2 phrases en français, factuelles, ton neutre.
+- INTEMPOREL : le résumé doit rester vrai dans 6 mois. Dates ABSOLUES uniquement
+  ("anniversaire le 16 juin"), JAMAIS de relatif qui expire ("la semaine prochaine",
+  "bientôt", "récemment", "vient de").
+- Fonde-toi UNIQUEMENT sur les faits et relations fournis — n'invente rien, ne
+  spécule pas. Les faits sont la source de vérité (ceux validés/édités par
+  l'utilisateur font foi).
+- Ignore le bruit : ne mentionne pas tout, garde l'essentiel qui identifie l'entité.
+
+Retourne UNIQUEMENT le texte du résumé, sans préambule ni markdown.\
+"""
+
+
+def step_resummarize(
+    touched_ids: list[str],
+    conn,
+    client,
+    verbose: bool = False,
+) -> list[str]:
+    """SYN-89 — regenerate entity summaries from scratch (derived, never edited).
+
+    Targets = entities touched by this run + entities flagged summary_stale
+    (user fact edits between cycles). The summary is rebuilt from the ACTIVE
+    facts + relations only, so corrections/obsolescence flow in and stale
+    layers never pile up. Returns the regenerated entity ids (to re-vectorize).
+    """
+    stale = [r["id"] for r in cursor_to_dicts(conn.execute(
+        "SELECT id FROM entities WHERE summary_stale = 1 AND merged_into_id IS NULL"
+    ))]
+    targets = list(dict.fromkeys(list(touched_ids) + stale))
+    regenerated: list[str] = []
+    for eid in targets:
+        e = first_row(conn.execute(
+            "SELECT id, canonical_name, type FROM entities "
+            "WHERE id = ? AND merged_into_id IS NULL", (eid,)
+        ))
+        if not e:
+            continue
+        facts = cursor_to_dicts(conn.execute(
+            "SELECT predicate, value FROM facts WHERE entity_id = ? "
+            "AND obsoleted_at IS NULL AND archived_at IS NULL "
+            "ORDER BY confidence DESC LIMIT 30", (eid,)
+        ))
+        relations = cursor_to_dicts(conn.execute(
+            "SELECT r.predicate, x.canonical_name AS target FROM relations r "
+            "JOIN entities x ON x.id = r.entity_to WHERE r.entity_from = ?", (eid,)
+        ))
+        if not facts and not relations:
+            # Nothing to derive from — keep the extraction summary, clear the flag.
+            conn.execute("UPDATE entities SET summary_stale = 0 WHERE id = ?", (eid,))
+            continue
+        lines = [f"Entité : {e['canonical_name']}" + (f" (type {e['type']})" if e.get("type") else "")]
+        if facts:
+            lines.append("Faits :")
+            lines += [f"- {f['predicate']} : {f['value']}" for f in facts]
+        if relations:
+            lines.append("Relations :")
+            lines += [f"- {r['predicate']} → {r['target']}" for r in relations]
+        try:
+            response = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=300,
+                system=_RESUMMARY_SYSTEM,
+                messages=[{"role": "user", "content": "\n".join(lines)}],
+            )
+            summary = response.content[0].text.strip()
+        except anthropic.APIError as exc:
+            # Infra failure — stop here; the stale flags survive for the next run.
+            print(f"  ⚠ re-résumé interrompu ({type(exc).__name__}) — repris au prochain cycle")
+            break
+        except Exception as exc:  # noqa: BLE001 — skip this entity only
+            if verbose:
+                print(f"    [resummary] échec {e['canonical_name']}: {exc}")
+            continue
+        if summary:
+            conn.execute(
+                "UPDATE entities SET summary = ?, summary_stale = 0 WHERE id = ?",
+                (summary, eid),
+            )
+            regenerated.append(eid)
+            if verbose:
+                print(f"    [resummary] {e['canonical_name']}: {summary[:80]!r}")
+    return regenerated
+
+
 # ── Step 6 — Vectorization ────────────────────────────────────────────────────
 
 def step6_vectorize(
@@ -1491,9 +1582,16 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
         ))
 
         if not entries:
-            print("\n  Inbox empty — nothing to process.")
-            print("═" * 60)
-            return
+            # SYN-89: a user fact edit between cycles flags summaries stale —
+            # an empty-inbox run still regenerates them (then exits).
+            stale_count = conn.execute(
+                "SELECT COUNT(*) FROM entities WHERE summary_stale = 1 AND merged_into_id IS NULL"
+            ).fetchone()[0]
+            if not stale_count or dry_run:
+                print("\n  Inbox empty — nothing to process.")
+                print("═" * 60)
+                return
+            print(f"\n  Inbox empty — {stale_count} résumé(s) à régénérer\n")
 
         print(f"\n  {len(entries)} unprocessed entr{'y' if len(entries) == 1 else 'ies'} found\n")
 
@@ -1532,6 +1630,14 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
                 promoted = step5_validate_pending(all_new_facts, conn, dry_run, verbose)
             if promoted:
                 print(f"  → {promoted} pending fact(s) promoted")
+
+        # SYN-89 — Re-summary: entities touched by this run + stale ones (user edits).
+        if not dry_run:
+            with conn:
+                resummed = step_resummarize(all_entity_ids, conn, client, verbose)
+            if resummed:
+                print(f"  → {len(resummed)} résumé(s) d'entité régénéré(s)")
+            all_entity_ids.extend(e for e in resummed if e not in all_entity_ids)
 
         # Step 6 — Vectorize touched entities
         if all_entity_ids:
