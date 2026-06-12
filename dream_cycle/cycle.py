@@ -228,10 +228,17 @@ def step1_classify(
         system_blocks.append({"type": "text", "text": projects_block})
     response = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=1536,
+        # SYN-78: 1536 silently truncated the JSON on long pasted captures
+        # (entity/fact-dense documents) → JSONDecodeError with no diagnosis.
+        max_tokens=4096,
         system=system_blocks,
         messages=[{"role": "user", "content": entry["content"]}],
     )
+    if response.stop_reason == "max_tokens":
+        raise ValueError(
+            "classification tronquée (max_tokens) — capture trop longue/dense "
+            f"({len(entry['content'])} chars)"
+        )
     raw = response.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
@@ -861,6 +868,18 @@ def step6_vectorize(
 
 # ── Intentions ─────────────────────────────────────────────────────────────────
 
+def _intention_text(value) -> str:
+    """Haiku occasionally returns ephemeral_content as an object ({'text': …,
+    'when': …}) or a list instead of a plain string; the INSERT needs TEXT
+    (SYN-78 — apsw raises TypeError on a dict binding and the entry failed)."""
+    if isinstance(value, dict):
+        value = (value.get("content") or value.get("text") or value.get("description")
+                 or value.get("items") or json.dumps(value, ensure_ascii=False))
+    if isinstance(value, (list, tuple)):
+        value = " · ".join(str(v) for v in value if v)
+    return str(value or "").strip()
+
+
 def handle_intentions(
     resolved: dict,
     conn,
@@ -875,7 +894,7 @@ def handle_intentions(
         "DELETE FROM intentions WHERE created_at < ? AND resolved = 0", (cutoff,)
     )
     if resolved.get("is_ephemeral") or resolved.get("input_type") == "ephemeral":
-        content = resolved.get("ephemeral_content") or resolved.get("summary", "")
+        content = _intention_text(resolved.get("ephemeral_content") or resolved.get("summary", ""))
         if content:
             conn.execute(
                 "INSERT INTO intentions (id, content, ttl_hours) VALUES (?,?,?)",

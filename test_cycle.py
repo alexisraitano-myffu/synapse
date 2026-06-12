@@ -212,3 +212,28 @@ def test_nameless_entity_skipped(isolated_db):
     }
     _route(resolved)
     assert _entities() == []
+
+
+# ── Intentions (SYN-78) ──────────────────────────────────────────────────────
+
+def test_intention_object_content_is_coerced_to_text(isolated_db):
+    """Haiku sometimes returns ephemeral_content as an object ({'text': …}) or
+    a list; the INSERT must receive TEXT — a dict binding raised TypeError and
+    the whole entry was marked failed."""
+    from db import get_connection
+    from dream_cycle.cycle import handle_intentions
+
+    conn = get_connection()
+    try:
+        with conn:
+            handle_intentions(
+                {"is_ephemeral": True,
+                 "ephemeral_content": {"text": "aller chercher les croquettes",
+                                       "when": "demain"}},
+                conn,
+            )
+        rows = list(conn.execute("SELECT content FROM intentions"))
+    finally:
+        conn.close()
+    assert len(rows) == 1
+    assert rows[0][0] == "aller chercher les croquettes"
