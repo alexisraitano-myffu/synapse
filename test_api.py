@@ -616,3 +616,58 @@ def test_auth_enforced_when_token_set(client, monkeypatch):
     assert ok.status_code == 200
     # health stays open
     assert client.get("/health").status_code == 200
+
+
+# ── Fiche edits (SYN-82) ─────────────────────────────────────────────────────
+
+def test_entity_rename_keeps_old_name_as_alias(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, aliases, mention_count, persistence_value) "
+                         "VALUES ('e9','animal','Guipsy','[]',3,5)")
+    finally:
+        conn.close()
+
+    r = client.patch("/entity/e9", json={"canonical_name": "Gypsie"})
+    assert r.status_code == 200
+    assert r.json()["canonical_name"] == "Gypsie"
+
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT canonical_name, aliases FROM entities WHERE id='e9'").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "Gypsie"
+    assert "Guipsy" in json.loads(row[1])
+
+    # empty body → 400 ; unknown id → 404
+    assert client.patch("/entity/e9", json={}).status_code == 400
+    assert client.patch("/entity/nope", json={"canonical_name": "X"}).status_code == 404
+
+
+def test_fact_user_edit_sets_confidence_to_one(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e10','person','Marie',1,5)")
+            conn.execute("INSERT INTO facts (id, entity_id, predicate, value, confidence) "
+                         "VALUES ('f9','e10','habite','Lyon',0.6)")
+    finally:
+        conn.close()
+
+    r = client.patch("/fact/f9", json={"value": "Paris"})
+    assert r.status_code == 200
+
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT predicate, value, confidence, last_confirmed FROM facts WHERE id='f9'").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "habite" and row[1] == "Paris"
+    assert row[2] == 1.0
+    assert row[3] is not None
+
+    assert client.patch("/fact/f9", json={}).status_code == 400
+    assert client.patch("/fact/nope", json={"value": "x"}).status_code == 404

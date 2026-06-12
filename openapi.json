@@ -574,7 +574,7 @@
       },
       "patch": {
         "summary": "Update Entity",
-        "description": "Update an entity's type. Closed enum (see EntityType).",
+        "description": "User edit of the fiche (SYN-82): type (closed enum) and/or rename.\n\nA rename keeps the old canonical_name as an alias so the resolver still\nmatches future mentions of the old name.",
         "operationId": "update_entity_entity__entity_id__patch",
         "parameters": [
           {
@@ -1925,6 +1925,70 @@
         }
       }
     },
+    "/fact/{fact_id}": {
+      "patch": {
+        "summary": "Update Fact",
+        "description": "User correction of a fact (SYN-82) — authoritative: confidence → 1.0.",
+        "operationId": "update_fact_fact__fact_id__patch",
+        "parameters": [
+          {
+            "name": "fact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Fact Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/pending": {
       "get": {
         "summary": "Pending",
@@ -2262,23 +2326,66 @@
       "EntityUpdate": {
         "properties": {
           "type": {
-            "type": "string",
-            "enum": [
-              "person",
-              "place",
-              "project",
-              "concept",
-              "organization",
-              "animal"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "person",
+                  "place",
+                  "project",
+                  "concept",
+                  "organization",
+                  "animal"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
             "title": "Type"
+          },
+          "canonical_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Name"
           }
         },
         "type": "object",
-        "required": [
-          "type"
-        ],
         "title": "EntityUpdate"
+      },
+      "FactUpdate": {
+        "properties": {
+          "predicate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Predicate"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "type": "object",
+        "title": "FactUpdate"
       },
       "HTTPValidationError": {
         "properties": {

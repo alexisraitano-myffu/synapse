@@ -11,6 +11,7 @@ Run:  python -m api   (uvicorn on 0.0.0.0:8000)
 
 import contextlib
 import io
+import json
 import os
 import sys
 import threading
@@ -183,7 +184,15 @@ EntityType = Literal["person", "place", "project", "concept", "organization", "a
 
 
 class EntityUpdate(BaseModel):
-    type: EntityType
+    # SYN-82 — user edits on the fiche: both optional, at least one required.
+    type: EntityType | None = None
+    canonical_name: str | None = None
+
+
+class FactUpdate(BaseModel):
+    # SYN-82 — user correction of a fact (predicate and/or value).
+    predicate: str | None = None
+    value: str | None = None
 
 
 class AnthropicKeyIn(BaseModel):
@@ -1322,15 +1331,63 @@ def project_state(project_id: str):
 
 @app.patch("/entity/{entity_id}", dependencies=[Depends(require_auth)])
 def update_entity(entity_id: str, body: EntityUpdate):
-    """Update an entity's type. Closed enum (see EntityType)."""
+    """User edit of the fiche (SYN-82): type (closed enum) and/or rename.
+
+    A rename keeps the old canonical_name as an alias so the resolver still
+    matches future mentions of the old name."""
+    new_name = body.canonical_name.strip() if body.canonical_name else None
+    if body.type is None and not new_name:
+        raise HTTPException(status_code=400, detail="nothing to update")
     conn = get_connection()
     try:
-        e = first_row(conn.execute("SELECT id FROM entities WHERE id=?", (entity_id,)))
+        e = first_row(conn.execute(
+            "SELECT id, canonical_name, aliases FROM entities WHERE id=?", (entity_id,)
+        ))
         if not e:
             raise HTTPException(status_code=404, detail="entity not found")
         with conn:
-            conn.execute("UPDATE entities SET type=? WHERE id=?", (body.type, entity_id))
-        return {"id": entity_id, "type": body.type}
+            if body.type is not None:
+                conn.execute("UPDATE entities SET type=? WHERE id=?", (body.type, entity_id))
+            if new_name and new_name != e["canonical_name"]:
+                try:
+                    aliases = json.loads(e["aliases"] or "[]")
+                except (ValueError, TypeError):
+                    aliases = []
+                if e["canonical_name"] and e["canonical_name"] not in aliases:
+                    aliases.append(e["canonical_name"])
+                aliases = [a for a in aliases if a.lower() != new_name.lower()]
+                conn.execute(
+                    "UPDATE entities SET canonical_name=?, aliases=? WHERE id=?",
+                    (new_name, json.dumps(aliases, ensure_ascii=False), entity_id),
+                )
+        return {"id": entity_id, "type": body.type,
+                "canonical_name": new_name or e["canonical_name"]}
+    finally:
+        conn.close()
+
+
+@app.patch("/fact/{fact_id}", dependencies=[Depends(require_auth)])
+def update_fact(fact_id: str, body: FactUpdate):
+    """User correction of a fact (SYN-82) — authoritative: confidence → 1.0."""
+    predicate = body.predicate.strip() if body.predicate else None
+    value = body.value.strip() if body.value else None
+    if not predicate and not value:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    conn = get_connection()
+    try:
+        f = first_row(conn.execute("SELECT id FROM facts WHERE id=?", (fact_id,)))
+        if not f:
+            raise HTTPException(status_code=404, detail="fact not found")
+        sets, params = ["confidence=1.0", "last_confirmed=?"], [
+            datetime.now(timezone.utc).isoformat()]
+        if predicate:
+            sets.append("predicate=?"); params.append(predicate)
+        if value:
+            sets.append("value=?"); params.append(value)
+        params.append(fact_id)
+        with conn:
+            conn.execute(f"UPDATE facts SET {', '.join(sets)} WHERE id=?", params)
+        return {"id": fact_id, "predicate": predicate, "value": value, "confidence": 1.0}
     finally:
         conn.close()
 
