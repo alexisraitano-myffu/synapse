@@ -115,6 +115,13 @@ SQLite (`~/.synapse/synapse.db`), ouvert via `apsw`, extension `sqlite-vec`. Sch
 
 Colonnes de cycle de vie : `entities.status` (active/pending/archived) + `archived_at` ; `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/58/59) ; `atomic_notes.last_reactivated_at` (decay SYN-19). Vues de lecture filtrent par défaut (`status='active'`, `archived_at IS NULL`, `obsoleted_at IS NULL`).
 
+**Extensions du 2026-06-12 (batch dogfood)** :
+- `inbox.error` — raison d'échec d'une entrée `failed` (exposée sur `/feed`) ; `POST /inbox/{id}/requeue` la remet en file. (SYN-77)
+- `atomic_notes.kind` ∈ `note|task|event` + `event_date` (date **absolue** résolue par le classifieur), `event_recurring` (récurrence annuelle), `archived_at` (geste user « rendre obsolète », réversible). Une **tâche** est un backlog retrouvable — volontairement sans due date ni coche : le decay oublie, l'archive expédie. Les notes durables (task/event) traversent les gates éphémères ; une note routée projet mentionne toujours son projet ; une entité qui ancre une note durable passe le garde-fou anti-bruit. (SYN-85/86)
+- `facts.category` ∈ `identity|dates|work|places|relations|preferences|health|other` — thème attribué à l'extraction, propagé par `insert_fact` sur tous les chemins ; les clients groupent les faits en sections repliables. (SYN-88)
+- `entities.summary_stale` — posé à chaque écriture de fait ; le step `step_resummarize` du cycle régénère le résumé **from scratch depuis les faits ACTIFS + relations** (le résumé est dérivé, jamais éditable ; règle : **intemporel**, dates absolues uniquement). Le cycle et le scheduler tournent aussi sur inbox vide si des résumés sont stale. (SYN-89)
+- Édition utilisateur = source de vérité : rename d'entité (ancien nom conservé en **alias**), correction de fait (`confidence → 1.0`), CRUD relations (`POST/PATCH/DELETE /relation`). La promotion des pending résout par alias (`_find_existing_entity`) — plus de coquilles dupliquées. (SYN-82/84/87)
+
 Embeddings : **fastembed local** (ONNX, `paraphrase-multilingual-MiniLM-L12-v2`, 384-d, L2-normalisé). Pas d'appel API pour embedder. Notes dans `atomic_notes_vec` (vec0) ; entités en BLOB (`entities.embedding`) recherchées par cosinus manuel.
 
 ---

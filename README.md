@@ -10,13 +10,15 @@ Synapse runs on a Mac (the "brain"), exposes its memory to AI agents over **MCP*
 
 ```
 Capture → inbox → Dream Cycle ─┬─ fact      → entities / facts / relations  (semantic memory)
-                               ├─ episodic  → atomic_notes (vectorized)      (episodic memory)
+                               ├─ episodic  → atomic_notes (note | task | event)  (episodic memory)
                                └─ ephemeral → intentions (48h TTL)
                                         ↓
                          MCP tools  ·  HTTP API  ·  web visualizer
 ```
 
-- **Entities** are created on mention; **facts** are confidence-scored and either consolidated, queued for validation, or sent to a review queue.
+- **Entities** are created on mention; **facts** are confidence-scored and either consolidated, queued for validation, or sent to a review queue — each fact carries a thematic **category** so clients can group long lists.
+- **Notes have kinds**: free reflections, retrievable **tasks** (deliberately no due dates or checkboxes — memory decay forgets them, a one-tap archive dismisses them), and dated **events** (absolute dates, yearly recurrence).
+- **Entity summaries are derived, never stored opinions**: regenerated from the active facts whenever they change, under a hard *timeless* rule (absolute dates only — never "next week"). User edits (rename → old name kept as alias, fact corrections, relation CRUD) are authoritative and flow into the next regeneration.
 - **Embeddings**: local `fastembed` (ONNX, multilingual, 384-d) → SQLite + `sqlite-vec`. No PyTorch, no embedding server, no network.
 - Full design + diagrams: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
@@ -53,7 +55,9 @@ python visualizer/app.py
 
 Bearer auth (`SYNAPSE_API_TOKEN`; disabled if unset = dev). Contract: [`openapi.json`](openapi.json).
 
-`GET /health` · `POST /capture` (idempotent on a client UUID) · `GET /feed` · `GET /graph` (entity graph + opt-in **living-map** layers: atomic-note nodes, Louvain clusters, ForceAtlas2 positions, labelled regions, anti-hairball filters) · `GET /entity/{id}` · `GET /pending` · `POST /pending/{id}/validate` · `POST /dream-cycle/run` · `GET /dream-cycle/last` · `GET /changes` (pull-replication).
+`GET /health` · `POST /capture` (idempotent on a client UUID) · `GET /feed` (incl. per-entry failure reason) · `POST /inbox/{id}/requeue` · `GET /graph` (entity graph + opt-in **living-map** layers: atomic-note nodes, Louvain clusters, ForceAtlas2 positions, labelled regions, anti-hairball filters) · `GET /entity/{id}` · `PATCH /entity/{id}` (rename/type) · `PATCH /fact/{id}` · `POST/PATCH/DELETE /relation` · `GET /atomic-notes?kind=` · `POST /atomic-note/{id}/archive|unarchive` · `GET /pending` · `POST /pending/{id}/validate` · `POST /dream-cycle/run` · `GET /dream-cycle/last` · `GET /changes` (pull-replication).
+
+**Run it as a service**: on macOS, a user LaunchAgent with `RunAtLoad` + `KeepAlive` pointing at `.venv/bin/python -m api` (working directory = this repo so `.env` is picked up) gives auto-start at login and auto-restart on crash; redirect stdout/stderr to a log file for the Dream Cycle's output.
 
 Designed for LAN / private mesh (Tailscale). Captures carry a client UUID + device id (idempotent, offline-safe); validations are recorded as append-only events; derived state is rebuildable → multi-device replication without a multi-master database.
 

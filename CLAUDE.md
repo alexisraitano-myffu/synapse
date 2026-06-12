@@ -51,6 +51,20 @@ python -m api                      # env: SYNAPSE_API_TOKEN (bearer auth), SYNAP
                                    # SYNAPSE_CYCLE_DEBOUNCE_SECONDS (default 120)
 ```
 
+**Production on this Mac — launchd (since 2026-06-12).** The API runs as a user LaunchAgent
+(`~/Library/LaunchAgents/fr.myffu.synapse.backend.plist`, NOT in this repo — machine-specific):
+`RunAtLoad` + `KeepAlive` (auto-start at login, auto-restart on crash), `WorkingDirectory` = this
+repo (so `.env` provides `ANTHROPIC_API_KEY` + `SYNAPSE_AUTO_CYCLE=1`), program = `.venv/bin/python -m api`.
+This replaced ad-hoc manual runs — a machine reboot used to silently kill processing (the
+original dogfood incident: a cycle died mid-run and nothing processed for a day).
+```bash
+tail -f ~/.synapse/api.log                                        # logs (stdout+stderr)
+launchctl kickstart -k gui/$(id -u)/fr.myffu.synapse.backend      # restart (ALWAYS after a backend code change)
+launchctl bootout gui/$(id -u)/fr.myffu.synapse.backend           # stop/disable
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/fr.myffu.synapse.backend.plist  # (re)enable
+curl -s http://localhost:8000/health                              # liveness + counters
+```
+
 **Run web visualizer** (knowledge graph at http://127.0.0.1:8080):
 ```bash
 python visualizer/app.py
@@ -105,6 +119,15 @@ Per-entry resilience: each entry is processed in isolation. An `anthropic.APIErr
 **Lifecycle (SYN-37/59)**: `facts` and `entities` carry `archived_at` (user "filed away") and facts also `obsoleted_at`/`obsoleted_by` ("no longer true" — auto by SYN-37 supersede or manual). Read views hide them by default; `?include=archived,obsolete` (entity facts) and `?include_archived=true` (graph) opt them back in.
 
 **Shared modules**: `entity_search.py` (entity/resource cosine search + composite-text helper, used by MCP search, merge fallback, `/similar`), `facts_store.py` (single source of fact writes + supersede), `dream_cycle/decay.py`, `dream_cycle/resources.py`, `graph_layout.py` (ForceAtlas2 + `node_positions`, SYN-69), `graph_clusters.py` (Haiku labels + hulls, SYN-70).
+
+### Update 2026-06-12 — dogfood batch (SYN-77 → SYN-89)
+
+- **Inbox diagnosability (SYN-77/78)**: `inbox.error` stores the per-entry failure reason (exposed on `/feed`); `POST /inbox/{id}/requeue` retries a failed entry; API startup marks orphan `running` cycle_runs as `error` (process died mid-run, guarded by `cycle.lock` freshness). Cycle fixes: `_intention_text()` coerces object/list `ephemeral_content`; classify `max_tokens` 1536→4096 + explicit `stop_reason` check.
+- **Fiche edits (SYN-82/84)**: `PATCH /entity/{id}` also renames (old canonical_name kept as **alias** so the resolver still matches); `PATCH /fact/{id}` = user correction → `confidence 1.0` + `last_confirmed`; relation CRUD `POST/PATCH/DELETE /relation` (optional client id; `/entity` exposes `relations[].id`). User edits are **source of truth**.
+- **Note kinds (SYN-85)**: `atomic_notes.kind` ∈ `note|task|event` + `event_date` (absolute, classifier-resolved), `event_recurring` (yearly), `archived_at` (user « rendre obsolète », `POST /atomic-note/{id}/archive|unarchive`). Tasks = retrievable backlog, **no due date/checkbox** — decay forgets them. Durable (task/event) notes **bypass the ephemeral gates** (pure-intention fast exit + SYN-58 anti-double-store), a project-routed note always **mentions its project**, and an entity anchoring a durable note passes the noise garde-fou (`anchors_durable_note`).
+- **Fact categories (SYN-88)**: `facts.category` ∈ `identity|dates|work|places|relations|preferences|health|other`, assigned by the classifier, propagated through every write path via `insert_fact`. Clients group facts into collapsible sections.
+- **Entity re-summary (SYN-89)**: the summary is **purely derived** (never user-edited). `entities.summary_stale` is set by every fact write (`insert_fact`) and fact-edit/lifecycle endpoints; `step_resummarize` rebuilds summaries from the **active** facts + relations (Haiku, `_RESUMMARY_SYSTEM`) for touched ∪ stale entities, then they're re-vectorized. Hard rule: summaries are **timeless** (absolute dates only — never « la semaine prochaine »); same rule in the extraction prompt. The cycle and the auto-scheduler also run on an empty inbox when stale summaries exist.
+- **Alias-aware promotion (SYN-87)**: both pending-fact promotion paths (step5 + `validation.py`) resolve entities through `_find_existing_entity` (aliases included) — canonical-only lookup used to spawn duplicate shells.
 
 ### MCP tools (`mcp_server/server.py`)
 
