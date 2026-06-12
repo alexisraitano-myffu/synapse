@@ -262,3 +262,29 @@ def test_durable_note_anchor_creates_factless_entity(isolated_db):
         conn.close()
     assert len(ids) == 1
     assert rows[0][0] == "Vivatech"
+
+
+def test_validation_resolves_entity_by_alias(isolated_db):
+    """SYN-87: confirming a pending fact whose entity_canonical is an ALIAS must
+    land on the canonical entity, not spawn a duplicate shell."""
+    import json as _json
+    from db import get_connection
+    from dream_cycle.validation import record_and_apply_validation
+
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, aliases, mention_count, persistence_value) "
+                         "VALUES ('e-ch','person','Cici Huang','[\"Cici\"]',2,5)")
+            conn.execute("INSERT INTO pending_facts (id, fact_data, validation_strategy) VALUES (?,?,?)",
+                         ("p1", _json.dumps({"entity_canonical": "Cici", "predicate": "has_birthday",
+                                             "value": "2026-06-16", "persistence_value": 5}), "passive"))
+        with conn:
+            res = record_and_apply_validation(conn, "p1", confirmed=True)
+        assert res["status"] != "error"
+        n_entities = conn.execute("SELECT COUNT(*) FROM entities").fetchone()[0]
+        owner = conn.execute("SELECT entity_id FROM facts WHERE predicate='has_birthday'").fetchone()[0]
+    finally:
+        conn.close()
+    assert n_entities == 1          # no duplicate shell
+    assert owner == "e-ch"          # fact landed on the canonical entity

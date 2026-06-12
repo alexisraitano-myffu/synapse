@@ -823,9 +823,10 @@ def step5_validate_pending(
 
         if not dry_run:
             entity_name = pf.get("entity_canonical", "unknown")
-            row = conn.execute(
-                "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (entity_name,)
-            ).fetchone()
+            # SYN-87: alias-aware lookup — resolving by canonical_name only spawned
+            # duplicate shells (dogfood: 'Cici' recreated although it is an alias
+            # of 'Cici Huang').
+            row = _find_existing_entity(entity_name, [], conn)
             # SYN-41: provenance traces back to the original capture that spawned
             # the pending fact (or whichever corroborator promoted it).
             try:
@@ -833,7 +834,7 @@ def step5_validate_pending(
             except (TypeError, ValueError):
                 prov_id = None
             if row:
-                entity_id = row[0]
+                entity_id = row["id"]
             else:
                 entity_id = str(uuid.uuid4())
                 conn.execute(

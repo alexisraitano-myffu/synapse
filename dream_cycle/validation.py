@@ -54,9 +54,11 @@ def record_and_apply_validation(
         fact_data["value"] = correction
 
     entity_name = fact_data.get("entity_canonical", "unknown")
-    row = conn.execute(
-        "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (entity_name,)
-    ).fetchone()
+    # SYN-87: alias-aware lookup (lazy import — validation.py loads before cycle.py
+    # in some entrypoints). Canonical-only matching spawned duplicate shells when
+    # the pending fact carried an alias ('Cici' vs 'Cici Huang').
+    from dream_cycle.cycle import _find_existing_entity
+    row = _find_existing_entity(entity_name, [], conn)
     # SYN-41: provenance traces back to the capture that spawned the pending.
     try:
         prov_id = int(fact_data.get("source_inbox_id")) if fact_data.get("source_inbox_id") else None
@@ -64,7 +66,7 @@ def record_and_apply_validation(
         prov_id = None
 
     if row:
-        entity_id = row[0]
+        entity_id = row["id"]
     else:
         entity_id = str(uuid.uuid4())
         conn.execute(
