@@ -1925,6 +1925,177 @@
         }
       }
     },
+    "/relation": {
+      "post": {
+        "summary": "Create Relation",
+        "description": "SYN-84 — user-created relation (the cycle only extracts from new notes;\na fact edit never regenerates relations, so wrong/missing ones are fixed here).\nBoth entities must already exist; user origin → confidence 1.0.",
+        "operationId": "create_relation_relation_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/relation/{relation_id}": {
+      "patch": {
+        "summary": "Update Relation",
+        "description": "SYN-84 — user correction of a relation's predicate (authoritative → 1.0).",
+        "operationId": "update_relation_relation__relation_id__patch",
+        "parameters": [
+          {
+            "name": "relation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Relation Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelationUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Relation",
+        "description": "SYN-84 — remove a wrongly-extracted relation (provenance stays in the capture).",
+        "operationId": "delete_relation_relation__relation_id__delete",
+        "parameters": [
+          {
+            "name": "relation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Relation Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/fact/{fact_id}": {
       "patch": {
         "summary": "Update Fact",
@@ -2453,6 +2624,53 @@
           "project_id"
         ],
         "title": "ProjectEntryMoveIn"
+      },
+      "RelationCreate": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "entity_from": {
+            "type": "string",
+            "title": "Entity From"
+          },
+          "predicate": {
+            "type": "string",
+            "title": "Predicate"
+          },
+          "entity_to": {
+            "type": "string",
+            "title": "Entity To"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entity_from",
+          "predicate",
+          "entity_to"
+        ],
+        "title": "RelationCreate"
+      },
+      "RelationUpdate": {
+        "properties": {
+          "predicate": {
+            "type": "string",
+            "title": "Predicate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "predicate"
+        ],
+        "title": "RelationUpdate"
       },
       "TypeProposalAcceptIn": {
         "properties": {

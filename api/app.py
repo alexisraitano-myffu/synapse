@@ -195,6 +195,20 @@ class FactUpdate(BaseModel):
     value: str | None = None
 
 
+class RelationCreate(BaseModel):
+    # SYN-84 — manual relation between two EXISTING entities. Optional client id
+    # (offline action log) so replica and master agree on the row identity.
+    id: str | None = None
+    entity_from: str
+    predicate: str
+    entity_to: str
+
+
+class RelationUpdate(BaseModel):
+    # SYN-84 — user correction of a relation's predicate.
+    predicate: str
+
+
 class AnthropicKeyIn(BaseModel):
     key: str
 
@@ -610,7 +624,7 @@ def entity_detail(entity_id: str, include: str | None = None):
             (entity_id,),
         ))
         relations = cursor_to_dicts(conn.execute(
-            "SELECT r.predicate, e.canonical_name AS entity_to, r.confidence, "
+            "SELECT r.id, r.predicate, e.canonical_name AS entity_to, r.confidence, "
             "       r.provenance_capture_id "
             "FROM relations r JOIN entities e ON e.id=r.entity_to WHERE r.entity_from=?",
             (entity_id,),
@@ -1362,6 +1376,68 @@ def update_entity(entity_id: str, body: EntityUpdate):
                 )
         return {"id": entity_id, "type": body.type,
                 "canonical_name": new_name or e["canonical_name"]}
+    finally:
+        conn.close()
+
+
+@app.post("/relation", dependencies=[Depends(require_auth)])
+def create_relation(body: RelationCreate):
+    """SYN-84 — user-created relation (the cycle only extracts from new notes;
+    a fact edit never regenerates relations, so wrong/missing ones are fixed here).
+    Both entities must already exist; user origin → confidence 1.0."""
+    predicate = body.predicate.strip()
+    if not predicate:
+        raise HTTPException(status_code=400, detail="predicate required")
+    conn = get_connection()
+    try:
+        for eid in (body.entity_from, body.entity_to):
+            if not first_row(conn.execute(
+                    "SELECT id FROM entities WHERE id=? AND merged_into_id IS NULL", (eid,))):
+                raise HTTPException(status_code=404, detail=f"entity not found: {eid}")
+        rel_id = body.id or str(uuid.uuid4())
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO relations (id, entity_from, predicate, entity_to, confidence) "
+                "VALUES (?,?,?,?,1.0)",
+                (rel_id, body.entity_from, predicate, body.entity_to),
+            )
+        return {"id": rel_id, "entity_from": body.entity_from,
+                "predicate": predicate, "entity_to": body.entity_to, "confidence": 1.0}
+    finally:
+        conn.close()
+
+
+@app.patch("/relation/{relation_id}", dependencies=[Depends(require_auth)])
+def update_relation(relation_id: str, body: RelationUpdate):
+    """SYN-84 — user correction of a relation's predicate (authoritative → 1.0)."""
+    predicate = body.predicate.strip()
+    if not predicate:
+        raise HTTPException(status_code=400, detail="predicate required")
+    conn = get_connection()
+    try:
+        if not first_row(conn.execute("SELECT id FROM relations WHERE id=?", (relation_id,))):
+            raise HTTPException(status_code=404, detail="relation not found")
+        with conn:
+            conn.execute(
+                "UPDATE relations SET predicate=?, confidence=1.0 WHERE id=?",
+                (predicate, relation_id),
+            )
+        return {"id": relation_id, "predicate": predicate, "confidence": 1.0}
+    finally:
+        conn.close()
+
+
+@app.delete("/relation/{relation_id}", dependencies=[Depends(require_auth)])
+def delete_relation(relation_id: str):
+    """SYN-84 — remove a wrongly-extracted relation (provenance stays in the capture)."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM relations WHERE id=?", (relation_id,))
+            deleted = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not deleted:
+            raise HTTPException(status_code=404, detail="relation not found")
+        return {"id": relation_id, "deleted": True}
     finally:
         conn.close()
 

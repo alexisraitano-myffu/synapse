@@ -671,3 +671,41 @@ def test_fact_user_edit_sets_confidence_to_one(client):
 
     assert client.patch("/fact/f9", json={}).status_code == 400
     assert client.patch("/fact/nope", json={"value": "x"}).status_code == 404
+
+
+# ── Relations (SYN-84) ───────────────────────────────────────────────────────
+
+def test_relation_create_update_delete(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e20','person','Mathieu',1,5)")
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e21','organization','Insyco',1,5)")
+    finally:
+        conn.close()
+
+    # create (client-provided id, both entities exist)
+    r = client.post("/relation", json={
+        "id": "rel-x", "entity_from": "e20", "predicate": "travaille_chez", "entity_to": "e21"})
+    assert r.status_code == 200
+    assert r.json()["confidence"] == 1.0
+
+    # exposed on the entity detail, with its id
+    rels = client.get("/entity/e20").json()["relations"]
+    rel = next(x for x in rels if x["id"] == "rel-x")
+    assert rel["predicate"] == "travaille_chez" and rel["entity_to"] == "Insyco"
+
+    # patch predicate
+    r = client.patch("/relation/rel-x", json={"predicate": "recrute_pour"})
+    assert r.status_code == 200
+    rels = client.get("/entity/e20").json()["relations"]
+    assert any(x["predicate"] == "recrute_pour" for x in rels)
+
+    # unknown target entity → 404 ; delete → gone ; double delete → 404
+    assert client.post("/relation", json={
+        "entity_from": "e20", "predicate": "x", "entity_to": "nope"}).status_code == 404
+    assert client.delete("/relation/rel-x").status_code == 200
+    assert client.get("/entity/e20").json()["relations"] == []
+    assert client.delete("/relation/rel-x").status_code == 404
