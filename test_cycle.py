@@ -237,3 +237,28 @@ def test_intention_object_content_is_coerced_to_text(isolated_db):
         conn.close()
     assert len(rows) == 1
     assert rows[0][0] == "aller chercher les croquettes"
+
+
+def test_durable_note_anchor_creates_factless_entity(isolated_db):
+    """SYN-86: an entity anchoring a task/event note is created even with zero
+    facts (a salon's date lives in the event note, not in a fact)."""
+    from db import get_connection
+    from dream_cycle.cycle import step4_route
+
+    resolved = {
+        "resolved_entities": [{
+            "canonical_name": "Vivatech", "type": "concept",
+            "aliases": [], "summary": None, "attributes": {},
+            "facts": [], "existing_entity": None,
+        }],
+        "relations": [],
+    }
+    conn = get_connection()
+    try:
+        with conn:
+            ids = step4_route(resolved, 1, conn, anchors_durable_note=True)
+        rows = list(conn.execute("SELECT canonical_name FROM entities"))
+    finally:
+        conn.close()
+    assert len(ids) == 1
+    assert rows[0][0] == "Vivatech"

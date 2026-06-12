@@ -597,6 +597,7 @@ def step4_route(
     conn,
     dry_run: bool = False,
     verbose: bool = False,
+    anchors_durable_note: bool = False,
 ) -> list[str]:
     entity_ids: list[str] = []
 
@@ -669,6 +670,10 @@ def step4_route(
             bool(existing)
             or canonical.lower() in relation_names
             or max_persistence >= MIN_ENTITY_PERSISTENCE
+            # SYN-86: an entity anchoring a durable task/event note is real signal,
+            # even with zero facts (dogfood: 'salon Vivatech' had its date in the
+            # event note, no fact → dropped as noise → no fiche to link the note to).
+            or anchors_durable_note
         )
 
         entity_id: str | None = None
@@ -1386,7 +1391,8 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
 
     with conn:
         if resolved:
-            entity_ids = step4_route(resolved, capture_id, conn, dry_run=False, verbose=verbose)
+            entity_ids = step4_route(resolved, capture_id, conn, dry_run=False, verbose=verbose,
+                                     anchors_durable_note=durable_note)
 
         # 2. Atomic note — free-form thought that mentions entities without being one.
         # SYN-56: no fallback on input_type=='episodic'. We trust the classifier's
