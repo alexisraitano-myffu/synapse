@@ -137,6 +137,8 @@ une affirmation factuelle sur des tiers.
      Anniversaire / récurrence annuelle → event_recurring=true (et émettre AUSSI le fact
      has_birthday sur la personne). Un événement passé raconté ("hier j'ai vu X") n'est PAS
      un event — seules les occurrences à venir ou récurrentes en sont.
+     IMPORTANT : émets l'atomic_note kind="event" MÊME si is_ephemeral=true — le rappel
+     court terme (intention) et l'événement durable coexistent dans le même JSON.
 
 Sinon atomic_note = null. En particulier, atomic_note = null pour TOUS ces cas :
  - "X a/est/fait Y" → fact sur X (ex : "Karim a un projet appelé Atlas", "Marie a un chat Gipsy",
@@ -1337,6 +1339,14 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     # so the recipe entity (+ its type proposal, SYN-58) is captured. Only a
     # *pure* intention (no entities, no project) takes the fast exit here.
     is_ephemeral = classified.get("is_ephemeral") or classified.get("input_type") == "ephemeral"
+    # SYN-85: tasks and dated events are DURABLE notes — they must survive the
+    # ephemeral gates below (dogfood: "salon Vivatech le 20 juin" became a 48h
+    # intention and vanished; the event note was silently dropped).
+    note_kind = str(classified.get("atomic_note_kind") or "note")
+    durable_note = bool(
+        classified.get("atomic_note") and str(classified["atomic_note"]).strip()
+        and note_kind in ("task", "event")
+    )
 
     # SYN-21: resource fetch is URL-driven and independent of routing — run it
     # for ANY capture, even a pure intention ("à lire : https://…"). Network +
@@ -1345,7 +1355,8 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
         process_capture_resources(entry["content"], conn, client,
                                   capture_id=entry["id"], verbose=verbose)
 
-    if is_ephemeral and not (classified.get("entities") or classified.get("project_entries")):
+    if is_ephemeral and not (classified.get("entities") or classified.get("project_entries")
+                             or durable_note):
         with conn:
             handle_intentions(classified, conn, dry_run, verbose)
             _mark(conn, entry["id"], now, "processed", dry_run)
@@ -1383,8 +1394,11 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
         # diary entries / fact restatements ("X a Y") that bypass the explicit rules.
         # SYN-58: skip on ephemeral — the expiring intention already carries that
         # thought; persisting it again as a durable note would double-store it.
+        # SYN-85: a task/event note is durable and bypasses the ephemeral skip —
+        # the short-term intention and the durable note legitimately coexist
+        # ("salon X le 20 juin" = reminder now + dated event note that stays).
         atomic = classified.get("atomic_note")
-        if atomic and atomic.strip() and not is_ephemeral:
+        if atomic and atomic.strip() and (not is_ephemeral or durable_note):
             mentioned = [
                 e["canonical_name"]
                 for e in classified.get("entities", [])
