@@ -737,6 +737,7 @@ def atomic_notes_list(
     limit: int = 50,
     q: str | None = None,
     entity: str | None = None,
+    kind: str | None = None,
 ):
     """List atomic_notes for the Notes view (SYN-52).
 
@@ -744,11 +745,13 @@ def atomic_notes_list(
     - q: substring match on title or content (case-insensitive)
     - entity: matches any note whose entities_mentioned JSON array contains
       the canonical name (LIKE on the serialized list — cheap, no JSON1)
+    - kind: note | task | event (SYN-85)
+    User-archived notes are hidden (SYN-85 "rendre obsolète").
     """
     limit = min(max(1, limit), 200)
     conn = get_connection()
     try:
-        clauses = []
+        clauses = ["archived_at IS NULL"]
         params: list = []
         if q:
             clauses.append("(LOWER(title) LIKE ? OR LOWER(content) LIKE ?)")
@@ -757,11 +760,17 @@ def atomic_notes_list(
         if entity:
             clauses.append("entities_mentioned LIKE ?")
             params.append(f'%"{entity}"%')
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        if kind:
+            if kind not in ("note", "task", "event"):
+                raise HTTPException(status_code=400, detail="invalid kind filter")
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = "WHERE " + " AND ".join(clauses)
         params.append(limit)
         rows = cursor_to_dicts(conn.execute(
             f"SELECT id, title, content, summary, entities_mentioned, memory_strength, "
-            f"       provenance_capture_id, created_at, updated_at "
+            f"       provenance_capture_id, created_at, updated_at, "
+            f"       kind, event_date, event_recurring, archived_at "
             f"FROM atomic_notes {where} ORDER BY created_at DESC LIMIT ?",
             tuple(params),
         ))
@@ -787,7 +796,8 @@ def atomic_note_detail(note_id: int):
     try:
         rows = cursor_to_dicts(conn.execute(
             "SELECT id, title, content, summary, entities_mentioned, memory_strength, "
-            "       provenance_capture_id, created_at, updated_at "
+            "       provenance_capture_id, created_at, updated_at, "
+            "       kind, event_date, event_recurring, archived_at "
             "FROM atomic_notes WHERE id = ?",
             (note_id,),
         ))
@@ -804,6 +814,39 @@ def atomic_note_detail(note_id: int):
                 "SELECT content FROM inbox WHERE id = ?", (r["provenance_capture_id"],)))
             r["provenance_content"] = cap[0]["content"] if cap else None
         return r
+    finally:
+        conn.close()
+
+
+@app.post("/atomic-note/{note_id}/archive", dependencies=[Depends(require_auth)])
+def atomic_note_archive(note_id: int):
+    """SYN-85 — user gesture « rendre obsolète » : hide a note (task done /
+    event passé / pensée périmée) without deleting it (reversible)."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE atomic_notes SET archived_at=? WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), note_id),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not changed:
+            raise HTTPException(status_code=404, detail="note not found")
+        return {"id": note_id, "archived": True}
+    finally:
+        conn.close()
+
+
+@app.post("/atomic-note/{note_id}/unarchive", dependencies=[Depends(require_auth)])
+def atomic_note_unarchive(note_id: int):
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("UPDATE atomic_notes SET archived_at=NULL WHERE id=?", (note_id,))
+            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not changed:
+            raise HTTPException(status_code=404, detail="note not found")
+        return {"id": note_id, "archived": False}
     finally:
         conn.close()
 

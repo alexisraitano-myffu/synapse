@@ -410,5 +410,20 @@ def init_db() -> None:
             conn.execute("ALTER TABLE inbox ADD COLUMN error TEXT")
         except apsw.SQLError:
             pass  # column already present
+
+        # Migration: SYN-85 — note kinds. 'note' (réflexion) | 'task' (backlog
+        # retrouvable — pas de due date / coche, le decay oublie pour nous) |
+        # 'event' (occurrence datée, event_date absolue + récurrence annuelle).
+        # archived_at = "rendre obsolète rapidement" (geste utilisateur).
+        for ddl in [
+            "ALTER TABLE atomic_notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'",
+            "ALTER TABLE atomic_notes ADD COLUMN event_date TIMESTAMP",
+            "ALTER TABLE atomic_notes ADD COLUMN event_recurring INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE atomic_notes ADD COLUMN archived_at TIMESTAMP",
+        ]:
+            try:
+                conn.execute(ddl)
+            except apsw.SQLError:
+                pass  # column already present
     finally:
         conn.close()

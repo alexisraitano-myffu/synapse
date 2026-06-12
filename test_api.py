@@ -709,3 +709,36 @@ def test_relation_create_update_delete(client):
     assert client.delete("/relation/rel-x").status_code == 200
     assert client.get("/entity/e20").json()["relations"] == []
     assert client.delete("/relation/rel-x").status_code == 404
+
+
+# ── Note kinds (SYN-85) ──────────────────────────────────────────────────────
+
+def test_note_kinds_filter_and_archive(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO atomic_notes (content, kind) VALUES ('une pensée','note')")
+            conn.execute("INSERT INTO atomic_notes (content, kind) VALUES ('ajouter un type de note','task')")
+            conn.execute("INSERT INTO atomic_notes (content, kind, event_date, event_recurring) "
+                         "VALUES ('anniversaire de Marie','event','2026-03-03',1)")
+    finally:
+        conn.close()
+
+    # kind filter
+    tasks = client.get("/atomic-notes", params={"kind": "task"}).json()
+    assert [n["content"] for n in tasks] == ["ajouter un type de note"]
+    events = client.get("/atomic-notes", params={"kind": "event"}).json()
+    assert events[0]["event_date"] == "2026-03-03" and events[0]["event_recurring"] == 1
+    assert client.get("/atomic-notes", params={"kind": "nope"}).status_code == 400
+
+    # archive ("rendre obsolète") hides the note; unarchive brings it back
+    task_id = tasks[0]["id"]
+    assert client.post(f"/atomic-note/{task_id}/archive").status_code == 200
+    assert client.get("/atomic-notes", params={"kind": "task"}).json() == []
+    assert client.post(f"/atomic-note/{task_id}/unarchive").status_code == 200
+    assert len(client.get("/atomic-notes", params={"kind": "task"}).json()) == 1
+    assert client.post("/atomic-note/99999/archive").status_code == 404
+
+    # /changes carries the new columns for the replica
+    notes = {n["content"]: n for n in client.get("/changes").json()["atomic_notes"]}
+    assert notes["anniversaire de Marie"]["kind"] == "event"

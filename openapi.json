@@ -767,7 +767,7 @@
     "/atomic-notes": {
       "get": {
         "summary": "Atomic Notes List",
-        "description": "List atomic_notes for the Notes view (SYN-52).\n\nFilters are AND-combined and best-effort:\n- q: substring match on title or content (case-insensitive)\n- entity: matches any note whose entities_mentioned JSON array contains\n  the canonical name (LIKE on the serialized list — cheap, no JSON1)",
+        "description": "List atomic_notes for the Notes view (SYN-52).\n\nFilters are AND-combined and best-effort:\n- q: substring match on title or content (case-insensitive)\n- entity: matches any note whose entities_mentioned JSON array contains\n  the canonical name (LIKE on the serialized list — cheap, no JSON1)\n- kind: note | task | event (SYN-85)\nUser-archived notes are hidden (SYN-85 \"rendre obsolète\").",
         "operationId": "atomic_notes_list_atomic_notes_get",
         "parameters": [
           {
@@ -810,6 +810,22 @@
                 }
               ],
               "title": "Entity"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
             }
           },
           {
@@ -856,6 +872,113 @@
         "summary": "Atomic Note Detail",
         "description": "A single atomic_note for the map / notes detail (SYN-64).\n\nSame shape as the list rows, plus the source capture's content when the\nprovenance link resolves — so the client can show where the note came from.",
         "operationId": "atomic_note_detail_atomic_note__note_id__get",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/atomic-note/{note_id}/archive": {
+      "post": {
+        "summary": "Atomic Note Archive",
+        "description": "SYN-85 — user gesture « rendre obsolète » : hide a note (task done /\nevent passé / pensée périmée) without deleting it (reversible).",
+        "operationId": "atomic_note_archive_atomic_note__note_id__archive_post",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/atomic-note/{note_id}/unarchive": {
+      "post": {
+        "summary": "Atomic Note Unarchive",
+        "operationId": "atomic_note_unarchive_atomic_note__note_id__unarchive_post",
         "parameters": [
           {
             "name": "note_id",

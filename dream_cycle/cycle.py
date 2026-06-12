@@ -75,6 +75,9 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
 {{
   "input_type": "fact|episodic|ephemeral|resource",
   "atomic_note": "string ou null (réflexion libre / pensée non-factuelle ; on la garde comme nœud à part qui MENTIONNE des entités sans en devenir une)",
+  "atomic_note_kind": "note|task|event (qualifie atomic_note quand il est non-null ; défaut: note)",
+  "event_date": "YYYY-MM-DD ou null (si atomic_note_kind=event : la date de l'occurrence, résolue en ABSOLU)",
+  "event_recurring": false,
   "project_entries": [
     {{
       "project_canonical": "string (nom du projet auquel rattacher ; si 'nouveau projet : X', mets X)",
@@ -119,11 +122,21 @@ une affirmation factuelle sur des tiers.
 
 Émettre atomic_note SEULEMENT si AU MOINS UN critère positif est rempli :
  (a) Première personne réflexive : "je pense que…", "j'ai réalisé que…", "je me demande si…",
-     "il faut que je…", "je vais essayer de…", "je veux arrêter de…".
+     "je vais essayer de…", "je veux arrêter de…".
  (b) Citation ou référence à une œuvre / un auteur / une idée externe sur laquelle l'auteur
      se positionne ("Schopenhauer dit X, mais je trouve que Y").
  (c) Observation contemplative non-actionnable : "c'est marrant comme…", "j'ai remarqué que…",
      une intuition générale qui ne se réduit pas à un fait sur une personne.
+ (d) TÂCHE / BACKLOG (kind="task") : une chose à faire dont le CONTENU mérite d'être retrouvé
+     plus tard — idée de backlog, amélioration à apporter, démarche à entreprendre ("il faut
+     qu'on ajoute un type de note dans les projets…", "penser à proposer X à Y"). Souvent
+     rattachée à un projet (émettre AUSSI le project_entry). kind="task" même si la phrase
+     est réflexive ("il faut que je…" actionnable → task, pas note).
+ (e) ÉVÉNEMENT DATÉ (kind="event") : rendez-vous, salon, anniversaire, échéance — toute
+     occurrence avec une date. event_date = date ABSOLUE (résoudre "mardi" via {today}).
+     Anniversaire / récurrence annuelle → event_recurring=true (et émettre AUSSI le fact
+     has_birthday sur la personne). Un événement passé raconté ("hier j'ai vu X") n'est PAS
+     un event — seules les occurrences à venir ou récurrentes en sont.
 
 Sinon atomic_note = null. En particulier, atomic_note = null pour TOUS ces cas :
  - "X a/est/fait Y" → fact sur X (ex : "Karim a un projet appelé Atlas", "Marie a un chat Gipsy",
@@ -132,7 +145,9 @@ Sinon atomic_note = null. En particulier, atomic_note = null pour TOUS ces cas :
    pas en atomic_note (sauf si l'auteur en tire explicitement une réflexion, cf. (a)).
  - Compte-rendu projet ("j'ai avancé sur X aujourd'hui, j'ai testé Y") → project_entries, pas
    atomic_note (sauf réflexion explicite en plus).
- - Énoncé d'intention ("RDV dentiste mardi", "il faut que j'achète du pain") → intention.
+ - Micro-course triviale SANS contenu durable ni date ("il faut que j'achète du pain") →
+   intention éphémère uniquement, pas de note. Avec une date → event (e) ; avec du contenu
+   à retrouver → task (d).
 
 Fail-safe SVO : si la capture peut intégralement se reformuler en (sujet, prédicat, objet) ou
 en liste de tels triplets, c'est un fact, pas une note. Une note contient toujours un
@@ -958,6 +973,9 @@ def _persist_atomic_note(
     capture_id: int,
     conn,
     verbose: bool = False,
+    kind: str = "note",
+    event_date: str | None = None,
+    event_recurring: bool = False,
 ) -> int | None:
     """Persist a free-form thought as an atomic_note with provenance.
 
@@ -965,15 +983,24 @@ def _persist_atomic_note(
     `classified` dict, accepts an explicit content (so the multi-output router
     can pass either the raw capture or a Claude-extracted excerpt), and carries
     the provenance_capture_id from SYN-41.
+
+    SYN-85: `kind` partitions the notes view (note | task | event). Tasks are
+    durable retrievable to-dos (no due date / no checkbox — decay handles
+    forgetting); events carry an absolute `event_date` (+ yearly recurrence).
     """
+    if kind not in ("note", "task", "event"):
+        kind = "note"
     title = (summary or content)[:60]
     conn.execute(
         "INSERT INTO atomic_notes "
-        "(title, content, summary, entities_mentioned, memory_strength, provenance_capture_id) "
-        "VALUES (?,?,?,?,?,?)",
+        "(title, content, summary, entities_mentioned, memory_strength, provenance_capture_id, "
+        " kind, event_date, event_recurring) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (title, content, summary,
          json.dumps(entities_mentioned, ensure_ascii=False),
-         1.0, capture_id),
+         1.0, capture_id,
+         kind, event_date if kind == "event" else None,
+         1 if (kind == "event" and event_recurring) else 0),
     )
     note_id = conn.last_insert_rowid()
     try:
@@ -1370,6 +1397,10 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 capture_id=capture_id,
                 conn=conn,
                 verbose=verbose,
+                # SYN-85 — note kinds: task (backlog retrouvable) / event (occurrence datée).
+                kind=str(classified.get("atomic_note_kind") or "note"),
+                event_date=classified.get("event_date") or None,
+                event_recurring=bool(classified.get("event_recurring")),
             )
 
         # 3. Project entries — N rattachements possibles (SYN-57). Une même
