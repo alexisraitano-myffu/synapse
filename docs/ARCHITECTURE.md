@@ -117,12 +117,12 @@ Colonnes de cycle de vie : `entities.status` (active/pending/archived) + `archiv
 
 **Extensions du 2026-06-12 (batch dogfood)** :
 - `inbox.error` — raison d'échec d'une entrée `failed` (exposée sur `/feed`) ; `POST /inbox/{id}/requeue` la remet en file. (SYN-77)
-- `atomic_notes.kind` ∈ `note|task|event` + `event_date` (date **absolue** résolue par le classifieur), `event_recurring` (récurrence annuelle), `archived_at` (geste user « rendre obsolète », réversible). Une **tâche** est un backlog retrouvable — volontairement sans due date ni coche : le decay oublie, l'archive expédie. Les notes durables (task/event) traversent les gates éphémères ; une note routée projet mentionne toujours son projet ; une entité qui ancre une note durable passe le garde-fou anti-bruit. (SYN-85/86)
+- `atomic_notes.kind` ∈ `note|task|event|digest` + `event_date` (date **absolue** résolue par le classifieur), `event_recurring` (récurrence annuelle), `archived_at` (geste user « rendre obsolète », réversible). Une **tâche** est un backlog retrouvable ; depuis SYN-23 elle peut porter une **échéance** (`event_date` sur `kind=task`) **sans devenir un événement** (event = ce qui *se produit* ; task = ce qu'on *fait*). `POST /atomic-note/{id}/reinforce` = 👍 « garder » (réactivation). `kind=digest` = synthèse hebdo (cf. §6). Les notes durables (task/event) traversent les gates éphémères ; une note routée projet mentionne toujours son projet ; une entité qui ancre une note durable passe le garde-fou anti-bruit. (SYN-85/86/23)
 - `facts.category` ∈ `identity|dates|work|places|relations|preferences|health|other` — thème attribué à l'extraction, propagé par `insert_fact` sur tous les chemins ; les clients groupent les faits en sections repliables. (SYN-88)
 - `entities.summary_stale` — posé à chaque écriture de fait ; le step `step_resummarize` du cycle régénère le résumé **from scratch depuis les faits ACTIFS + relations** (le résumé est dérivé, jamais éditable ; règle : **intemporel**, dates absolues uniquement). Le cycle et le scheduler tournent aussi sur inbox vide si des résumés sont stale. (SYN-89)
 - Édition utilisateur = source de vérité : rename d'entité (ancien nom conservé en **alias**), correction de fait (`confidence → 1.0`), CRUD relations (`POST/PATCH/DELETE /relation`). La promotion des pending résout par alias (`_find_existing_entity`) — plus de coquilles dupliquées. (SYN-82/84/87)
 
-Embeddings : **fastembed local** (ONNX, `paraphrase-multilingual-MiniLM-L12-v2`, 384-d, L2-normalisé). Pas d'appel API pour embedder. Notes dans `atomic_notes_vec` (vec0) ; entités en BLOB (`entities.embedding`) recherchées par cosinus manuel.
+Embeddings : **fastembed local** (ONNX, `paraphrase-multilingual-MiniLM-L12-v2`, 384-d, L2-normalisé). Pas d'appel API pour embedder. Notes dans `atomic_notes_vec` (vec0) ; entités en BLOB (`entities.embedding`) recherchées par cosinus manuel. Depuis **SYN-91**, `GET /changes` réplique l'embedding entité en base64 (`embedding_b64`) → le mobile calcule les « entités liées » (cosinus) **hors-ligne**.
 
 ---
 
@@ -157,13 +157,14 @@ flowchart LR
 | Couleur de zone | `community_id` (Louvain) |
 | Saturation / vivacité | `memory_strength` (decay Ebbinghaus, SYN-19/68) |
 | Forme | `kind` (entity / atomic_note) + `type` |
-| Position (x, y) | `node_positions` (ForceAtlas2, persisté) |
+| Position (x, y) | mobile : **calculée côté client** (`ForceLayout.kt`, portage vis-network forceAtlas2Based, SYN-64) ; backend `node_positions` (ForceAtlas2) = advisory |
 | Épaisseur d'arête | `confidence` |
-| Région nommée | `cluster_labels.label` + `hull` |
+| Région nommée | retiré sur mobile (Voronoï supprimé, SYN-64) — couleur de communauté seule ; backend `cluster_labels.label` + `hull` toujours servis |
 
 **Décisions de modèle** :
 - **Projection, pas source** — tout vient de `entities`/`atomic_notes`/`relations`. Les deux caches accélèrent, ils ne font pas autorité ; `relayout=true` reconstruit tout.
 - **Stabilité avant tout** — `node_positions` est relu tel quel → la carte ne « saute » pas entre deux ouvertures ; un nouveau nœud est placé près du barycentre de son cluster (jitter déterministe) sans réorganiser le reste.
+- **Layout client sur mobile (SYN-64)** — l'app calcule désormais le layout elle-même (`ForceLayout.kt`, portage fidèle de `forceAtlas2Based` de vis-network), **une fois puis figé** → zoom = pur affine (zéro gigue) et **offline**. Le `GET /graph` backend reste le contrat (il sert toujours `x`/`y` + clusters), mais ses positions sont advisory pour le rendu mobile.
 - **Coût LLM négligeable** — labels batchés (1 appel) + cachés par **signature des entités définissantes** d'un cluster → Haiku n'est rappelé que quand un cluster change vraiment. Fallback `Cluster N` non caché si pas de clé.
 - **Anti-hairball côté serveur** — `max_nodes` (déf. 1000) plafonne toujours la réponse par saillance (`memory_strength × degree`) ; l'app resserre/relâche les autres filtres à la demande.
 - **Pas de cluster forcé** — une communauté < `MIN_CLUSTER_SIZE` (3, `graph_clusters.py`) ne devient pas une région : un hull a besoin de ≥3 points et un label à 1 nœud retomberait sur le nœud. En dessous, le nœud reste **orphelin** (rendu flottant, sans zone, par le frontend SYN-64).
@@ -193,7 +194,7 @@ flowchart TD
 
 - **Sur arrivée de captures** (principal) : ✅ implémenté — scheduler interne à l'API, debounce `SYNAPSE_CYCLE_DEBOUNCE_SECONDS` (déf. 120s), activé par `SYNAPSE_AUTO_CYCLE=1`. Un batch synchronisé = un cycle. Sert aussi de rattrapage au démarrage (entrées en file → run après le debounce).
 - **Filet périodique** (`launchd` ~3h) : complément hors-process, no-op si inbox vide → rattrapage si l'API n'a pas tourné.
-- **Maintenance nocturne** (futur) : 1×/jour (decay, compression, digest) ; inoffensif si manqué.
+- **Maintenance nocturne** : `decay` 1×/jour (`launchd`, inoffensif si manqué). **Digest hebdo livré (SYN-23)** : LaunchAgent `fr.myffu.synapse.digest` (dimanche 23h) → `python -m dream_cycle.digest` écrit une note `kind=digest` par semaine ISO. Compression = futur.
 - **Manuel** : bouton « Déclencher maintenant ».
 - Verrous : **lock mono-instance** + **`cycle_runs.last_run`**. Sur macOS, `launchd` > `cron` (rattrape au réveil). Seul le Mini planifie.
 
@@ -207,7 +208,7 @@ flowchart TD
 
 ## 8. API HTTP (implémentée — `api/app.py`, `python -m api`)
 
-Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; auth désactivée si non défini = dev), LAN/Tailscale. 34 endpoints implémentés. Contrat machine : [`openapi.json`](../openapi.json).
+Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; auth désactivée si non défini = dev), LAN/Tailscale. ~38 endpoints implémentés. Contrat machine : [`openapi.json`](../openapi.json).
 
 | Endpoint | Rôle |
 |---|---|
@@ -221,7 +222,10 @@ Sur le Mini (FastAPI, port 8000), auth **bearer token** (`SYNAPSE_API_TOKEN` ; a
 | `POST /pending/{id}/validate` | `{confirmed, correction?}` → stocké comme **événement** |
 | `POST /dream-cycle/run` | déclenche le cycle (avec lock) |
 | `GET /dream-cycle/last` | dernier run : date, nb notes, nb entités, nb pending (écran Réglages) |
-| `GET /changes?since=<cursor>` | réplication : descend l'état dérivé mis à jour vers les répliques |
+| `GET /changes?since=<cursor>` | réplication : descend l'état dérivé vers les répliques ; porte `embedding_b64` par entité (entités liées offline, SYN-91) |
+| `POST /digest/run` · `GET /digest/latest` | digest hebdo : générer maintenant / lire le dernier (SYN-23) |
+| `POST /atomic-note/{id}/reinforce` | 👍 « garder » une note en cours d'oubli → réactivation (SYN-23) |
+| `POST /atomic-note/{id}/date` | pose/efface une échéance (`event_date`) sur une note ; une tâche datée reste une tâche (SYN-23) |
 
 ---
 
@@ -252,7 +256,7 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 
 ## 10. État d'implémentation
 
-**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (34 endpoints) + modèle de sync · résilience par entrée · tests hors-ligne (85 verts).
+**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · création d'entités sur mention + garde-fou · embeddings locaux · `search_memory` notes + entités + **ressources** · API HTTP (~38 endpoints) + modèle de sync · résilience par entrée · **digest hebdo** (SYN-23) · **entités liées offline** (embeddings répliqués, SYN-91) · tests hors-ligne (verts).
 
 **Batch carte vivante (API graphe, shippé 2026-06-01)** — voir §5 :
 
