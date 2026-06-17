@@ -118,27 +118,28 @@ def gather_week(conn, *, now: datetime | None = None, days: int = 7) -> dict:
         "SELECT COUNT(*) AS n FROM inbox WHERE created_at >= ?", (since,)
     ))["n"]
 
-    # Forward-looking — dated events not archived, within the horizon. Recurring
-    # (birthdays) compared on month-day; one-shots on the absolute date. Filtered
-    # in Python so the year-boundary case stays correct.
-    events_raw = cursor_to_dicts(conn.execute(
-        "SELECT title, content, event_date, event_recurring FROM atomic_notes "
-        "WHERE kind = 'event' AND archived_at IS NULL AND event_date IS NOT NULL"
+    # Forward-looking — dated events AND dated tasks (SYN-23) not archived, within
+    # the horizon. Recurring (birthdays) compared on month-day; one-shots on the
+    # absolute date. Filtered in Python so the year-boundary case stays correct.
+    dated_raw = cursor_to_dicts(conn.execute(
+        "SELECT title, content, kind, event_date, event_recurring FROM atomic_notes "
+        "WHERE kind IN ('event', 'task') AND archived_at IS NULL AND event_date IS NOT NULL"
     ))
     upcoming_events = []
-    for ev in events_raw:
+    for ev in dated_raw:
         occ = _next_occurrence(ev["event_date"], bool(ev["event_recurring"]), today)
         if occ is not None and today <= occ <= horizon:
             upcoming_events.append({
-                "title": ev["title"], "content": ev["content"],
+                "title": ev["title"], "content": ev["content"], "kind": ev["kind"],
                 "date": occ.strftime("%Y-%m-%d"),
                 "recurring": bool(ev["event_recurring"]),
             })
     upcoming_events.sort(key=lambda e: e["date"])
 
+    # Open tasks WITHOUT a date (dated ones already surface under « à venir »).
     open_tasks = cursor_to_dicts(conn.execute(
         "SELECT title, content FROM atomic_notes "
-        "WHERE kind = 'task' AND archived_at IS NULL "
+        "WHERE kind = 'task' AND archived_at IS NULL AND event_date IS NULL "
         "ORDER BY created_at DESC LIMIT ?",
         (_MAX_TASKS,),
     ))
@@ -202,8 +203,9 @@ nouvelles entités notables, les faits marquants et les notes/réflexions. Mets 
 avant les TENDANCES (entités les plus actives).
 
 ## À venir
-Les événements datés des 7 prochains jours (avec leur date) et les tâches
-ouvertes à ne pas oublier. Si rien n'est à venir, écris une ligne sobre.
+Les éléments datés des 7 prochains jours (événements ET tâches à échéance, avec
+leur date — `upcoming_events`) puis les tâches ouvertes sans date à ne pas
+oublier (`open_tasks`). Si rien n'est à venir, écris une ligne sobre.
 
 RÈGLES STRICTES :
 - INTEMPOREL : uniquement des dates ABSOLUES (« le 24 juin »), jamais de relatif

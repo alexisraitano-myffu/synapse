@@ -859,6 +859,47 @@ def atomic_note_unarchive(note_id: int):
         conn.close()
 
 
+@app.post("/atomic-note/{note_id}/reinforce", dependencies=[Depends(require_auth)])
+def atomic_note_reinforce(note_id: int):
+    """SYN-23 (digest) — user gesture 👍 « garder ça » on a fading note: full
+    reactivation. Moves last_reactivated_at to now so Ebbinghaus springs the
+    memory_strength back up; sets it to 1.0 immediately for the UI."""
+    now = datetime.now(timezone.utc)
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE atomic_notes SET last_reactivated_at=?, memory_strength=1.0 WHERE id=?",
+                (now.strftime("%Y-%m-%d %H:%M:%S"), note_id),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not changed:
+            raise HTTPException(status_code=404, detail="note not found")
+        return {"id": note_id, "memory_strength": 1.0}
+    finally:
+        conn.close()
+
+
+@app.post("/atomic-note/{note_id}/date", dependencies=[Depends(require_auth)])
+def atomic_note_set_date(note_id: int, event_date: str | None = None, recurring: bool = False):
+    """SYN-23 (dated tasks) — set (or clear) a note's date. Lets a task carry an
+    `event_date` without becoming an event, so it surfaces in « À venir » like an
+    event. `event_date=null` clears it. Absolute date (YYYY-MM-DD) expected."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE atomic_notes SET event_date=?, event_recurring=? WHERE id=?",
+                (event_date or None, 1 if (event_date and recurring) else 0, note_id),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not changed:
+            raise HTTPException(status_code=404, detail="note not found")
+        return {"id": note_id, "event_date": event_date or None, "event_recurring": bool(event_date and recurring)}
+    finally:
+        conn.close()
+
+
 @app.get("/merge-proposals", dependencies=[Depends(require_auth)])
 def merge_proposals_list(status: str = "pending"):
     """List entity merge proposals filtered by status (SYN-39).

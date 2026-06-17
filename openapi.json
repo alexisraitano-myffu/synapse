@@ -1028,6 +1028,140 @@
         }
       }
     },
+    "/atomic-note/{note_id}/reinforce": {
+      "post": {
+        "summary": "Atomic Note Reinforce",
+        "description": "SYN-23 (digest) — user gesture 👍 « garder ça » on a fading note: full\nreactivation. Moves last_reactivated_at to now so Ebbinghaus springs the\nmemory_strength back up; sets it to 1.0 immediately for the UI.",
+        "operationId": "atomic_note_reinforce_atomic_note__note_id__reinforce_post",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/atomic-note/{note_id}/date": {
+      "post": {
+        "summary": "Atomic Note Set Date",
+        "description": "SYN-23 (dated tasks) — set (or clear) a note's date. Lets a task carry an\n`event_date` without becoming an event, so it surfaces in « À venir » like an\nevent. `event_date=null` clears it. Absolute date (YYYY-MM-DD) expected.",
+        "operationId": "atomic_note_set_date_atomic_note__note_id__date_post",
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "event_date",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event Date"
+            }
+          },
+          {
+            "name": "recurring",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Recurring"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/merge-proposals": {
       "get": {
         "summary": "Merge Proposals List",

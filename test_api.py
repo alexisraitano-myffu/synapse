@@ -760,3 +760,79 @@ def test_entity_facts_expose_category(client):
         conn.close()
     facts = client.get("/entity/e30").json()["facts"]
     assert facts[0]["category"] == "work"
+
+
+# ── SYN-23 — reinforce + dated tasks ─────────────────────────────────────────
+
+def test_reinforce_resets_memory_strength(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO atomic_notes (id, content, kind, memory_strength, last_reactivated_at) "
+                "VALUES (?,?,?,?,?)",
+                (501, "une note qui s'efface", "note", 0.18, "2026-01-01 10:00:00"),
+            )
+    finally:
+        conn.close()
+    r = client.post("/atomic-note/501/reinforce")
+    assert r.status_code == 200 and r.json()["memory_strength"] == 1.0
+    conn = _conn()
+    try:
+        ms = conn.execute("SELECT memory_strength FROM atomic_notes WHERE id=501").fetchone()[0]
+    finally:
+        conn.close()
+    assert ms == 1.0
+    assert client.post("/atomic-note/999/reinforce").status_code == 404
+
+
+def test_set_date_on_task_keeps_kind(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO atomic_notes (id, content, kind) VALUES (?,?,?)",
+                (502, "finir le deck", "task"),
+            )
+    finally:
+        conn.close()
+    r = client.post("/atomic-note/502/date", params={"event_date": "2026-06-25"})
+    assert r.status_code == 200 and r.json()["event_date"] == "2026-06-25"
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT kind, event_date FROM atomic_notes WHERE id=502"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "task" and row[1] == "2026-06-25"   # dated task stays a task
+    # Clearing the date.
+    client.post("/atomic-note/502/date")
+    conn = _conn()
+    try:
+        ed = conn.execute("SELECT event_date FROM atomic_notes WHERE id=502").fetchone()[0]
+    finally:
+        conn.close()
+    assert ed is None
+
+
+def test_digest_gather_includes_dated_task_in_upcoming(isolated_db):
+    from datetime import datetime, timedelta, timezone
+    from dream_cycle.digest import gather_week
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    soon = (now.date() + timedelta(days=3)).strftime("%Y-%m-%d")
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO atomic_notes (id, title, content, kind, event_date, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (503, "rappeler le dentiste", "rappeler le dentiste", "task", soon,
+                 now.strftime("%Y-%m-%d %H:%M:%S")),
+            )
+        week = gather_week(conn, now=now, days=7)
+    finally:
+        conn.close()
+    titles = [e["title"] for e in week["upcoming_events"]]
+    assert "rappeler le dentiste" in titles
+    assert all(t["title"] != "rappeler le dentiste" for t in week["open_tasks"])  # not double-counted

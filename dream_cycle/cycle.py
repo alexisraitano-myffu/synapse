@@ -76,7 +76,7 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
   "input_type": "fact|episodic|ephemeral|resource",
   "atomic_note": "string ou null (réflexion libre / pensée non-factuelle ; on la garde comme nœud à part qui MENTIONNE des entités sans en devenir une)",
   "atomic_note_kind": "note|task|event (qualifie atomic_note quand il est non-null ; défaut: note)",
-  "event_date": "YYYY-MM-DD ou null (si atomic_note_kind=event : la date de l'occurrence, résolue en ABSOLU)",
+  "event_date": "YYYY-MM-DD ou null (date ABSOLUE — pour un event: la date de l'occurrence ; pour une task: l'échéance si elle en a une)",
   "event_recurring": false,
   "project_entries": [
     {{
@@ -128,13 +128,20 @@ une affirmation factuelle sur des tiers.
      se positionne ("Schopenhauer dit X, mais je trouve que Y").
  (c) Observation contemplative non-actionnable : "c'est marrant comme…", "j'ai remarqué que…",
      une intuition générale qui ne se réduit pas à un fait sur une personne.
- (d) TÂCHE / BACKLOG (kind="task") : une chose à faire dont le CONTENU mérite d'être retrouvé
+ (d) TÂCHE / BACKLOG (kind="task") : une chose à FAIRE dont le CONTENU mérite d'être retrouvé
      plus tard — idée de backlog, amélioration à apporter, démarche à entreprendre ("il faut
      qu'on ajoute un type de note dans les projets…", "penser à proposer X à Y"). Souvent
      rattachée à un projet (émettre AUSSI le project_entry). kind="task" même si la phrase
      est réflexive ("il faut que je…" actionnable → task, pas note).
- (e) ÉVÉNEMENT DATÉ (kind="event") : rendez-vous, salon, anniversaire, échéance — toute
-     occurrence avec une date. event_date = date ABSOLUE (résoudre "mardi" via {today}).
+     Une tâche PEUT porter une échéance : si elle a une date limite ("finir le deck pour
+     vendredi", "rappeler le dentiste avant le 20"), garde kind="task" ET renseigne event_date
+     (date ABSOLUE). Une tâche datée N'EST PAS un événement — c'est une chose à faire, pas une
+     occurrence qui se produit.
+ (e) ÉVÉNEMENT DATÉ (kind="event") : une occurrence qui SE PRODUIT à une date — rendez-vous,
+     salon, anniversaire, échéance d'agenda. La distinction avec une tâche datée : un event tu
+     y ASSISTES / il ARRIVE (passif) ; une tâche tu la FAIS (actif). "Salon Vivatech le 24" →
+     event ; "préparer la démo pour le salon" → task. event_date = date ABSOLUE (résoudre
+     "mardi" via {today}).
      Anniversaire / récurrence annuelle → event_recurring=true (et émettre AUSSI le fact
      has_birthday sur la personne). Un événement passé raconté ("hier j'ai vu X") n'est PAS
      un event — seules les occurrences à venir ou récurrentes en sont.
@@ -1102,8 +1109,9 @@ def _persist_atomic_note(
         (title, content, summary,
          json.dumps(entities_mentioned, ensure_ascii=False),
          1.0, capture_id,
-         kind, event_date if kind == "event" else None,
-         1 if (kind == "event" and event_recurring) else 0),
+         # SYN-23: a task may also carry a date (échéance) without being an event.
+         kind, event_date if kind in ("event", "task") else None,
+         1 if (kind in ("event", "task") and event_recurring) else 0),
     )
     note_id = conn.last_insert_rowid()
     try:
