@@ -528,7 +528,9 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
             for n in cursor_to_dicts(conn.execute(
                 "SELECT id, title, summary, content, memory_strength, "
                 "       last_reactivated_at, created_at, entities_mentioned "
-                "FROM atomic_notes"
+                # Digests are global weekly summaries (mention many entities) — they'd
+                # hairball the map; archived notes are hidden everywhere else too.
+                "FROM atomic_notes WHERE archived_at IS NULL AND kind != 'digest'"
             )):
                 nid = f"n:{n['id']}"
                 preview = n.get("title") or n.get("summary") or (n.get("content") or "")
