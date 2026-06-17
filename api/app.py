@@ -1750,9 +1750,13 @@ def changes(since: str | None = None):
     """
     conn = get_connection()
     try:
+        import base64
         entities = cursor_to_dicts(conn.execute("SELECT * FROM entities"))
         for e in entities:
-            e.pop("embedding", None)          # BLOB — not JSON-serializable, and replicas don't need it
+            # SYN-91: ship the embedding (raw float32 BLOB) as base64 so the replica can compute
+            # « entités liées » (cosine) offline. JSON can't hold bytes; the raw BLOB is dropped.
+            emb = e.pop("embedding", None)
+            e["embedding_b64"] = base64.b64encode(emb).decode("ascii") if emb else None
         relations = cursor_to_dicts(conn.execute("SELECT * FROM relations"))
         if since:
             facts = cursor_to_dicts(conn.execute(
