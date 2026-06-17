@@ -1664,6 +1664,38 @@ def dream_cycle_last():
     return _last_run() or {"status": "never_run"}
 
 
+# ── SYN-23 — Weekly digest ───────────────────────────────────────────────────────
+
+@app.post("/digest/run", dependencies=[Depends(require_auth)])
+def digest_run(days: int = 7, dry_run: bool = False):
+    """Generate the weekly digest now (manual / testing — production is the
+    weekly launchd job). Returns the digest markdown + the note id."""
+    from dream_cycle.digest import generate_weekly_digest
+    try:
+        return generate_weekly_digest(days=days, dry_run=dry_run)
+    except EnvironmentError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
+
+@app.get("/digest/latest", dependencies=[Depends(require_auth)])
+def digest_latest():
+    """The most recent stored digest (kind='digest' atomic_note)."""
+    conn = get_connection()
+    try:
+        row = first_row(conn.execute(
+            "SELECT id, title, content, summary, created_at FROM atomic_notes "
+            "WHERE kind = 'digest' AND archived_at IS NULL "
+            "ORDER BY created_at DESC LIMIT 1"
+        ))
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Aucun digest généré pour l'instant.")
+    return row
+
+
 @app.get("/changes", dependencies=[Depends(require_auth)])
 def changes(since: str | None = None):
     """

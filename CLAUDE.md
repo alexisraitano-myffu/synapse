@@ -44,6 +44,13 @@ python reembed.py
 python -m dream_cycle.decay        # env: SYNAPSE_DECAY_TAU_DAYS (default 30)
 ```
 
+**Run the weekly digest** (SYN-23 — condense the past week + the week ahead into one durable `atomic_note` of `kind='digest'`; retrospective new entities/facts/notes/trends + forward-looking dated events & open tasks, rendered by Haiku, idempotent per ISO week):
+```bash
+python -m dream_cycle.digest                 # generate + store this week's digest
+python -m dream_cycle.digest --dry-run --verbose   # preview the markdown without writing
+```
+On-demand from a client: `POST /digest/run` (`?dry_run=true` to preview); `GET /digest/latest` returns the last stored digest. Production trigger = a weekly LaunchAgent (Sunday 23h), machine-specific — see the launchd note below.
+
 **Run the HTTP API** (backend for the mobile/desktop apps; FastAPI on `0.0.0.0:8000`):
 ```bash
 python -m api                      # env: SYNAPSE_API_TOKEN (bearer auth), SYNAPSE_API_PORT,
@@ -63,6 +70,17 @@ launchctl kickstart -k gui/$(id -u)/fr.myffu.synapse.backend      # restart (ALW
 launchctl bootout gui/$(id -u)/fr.myffu.synapse.backend           # stop/disable
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/fr.myffu.synapse.backend.plist  # (re)enable
 curl -s http://localhost:8000/health                              # liveness + counters
+```
+
+**Weekly digest LaunchAgent (SYN-23).** Like the backend agent, the schedule lives in a
+machine-specific plist outside this repo (`~/Library/LaunchAgents/fr.myffu.synapse.digest.plist`):
+`StartCalendarInterval` Sunday (`Weekday 0`) 23:00, `WorkingDirectory` = this repo (so `.env`
+provides `ANTHROPIC_API_KEY`), program = `.venv/bin/python -m dream_cycle.digest`, logs to
+`~/.synapse/digest.log`. It writes one `kind='digest'` note per ISO week (re-running overwrites it).
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/fr.myffu.synapse.digest.plist   # enable
+launchctl kickstart -k gui/$(id -u)/fr.myffu.synapse.digest                              # run now
+launchctl bootout   gui/$(id -u)/fr.myffu.synapse.digest                                 # disable
 ```
 
 **Run web visualizer** (knowledge graph at http://127.0.0.1:8080):
