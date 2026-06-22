@@ -163,6 +163,23 @@ Fail-safe SVO : si la capture peut intégralement se reformuler en (sujet, préd
 en liste de tels triplets, c'est un fact, pas une note. Une note contient toujours un
 mouvement réflexif qui ne tient pas dans un triplet.
 
+Règle PROJET vs TÂCHE (priorité haute — tranche AVANT d'émettre kind="task") :
+Un PROJET est une entreprise à PLUSIEURS étapes ou qui s'étale dans le TEMPS, portée par un
+objectif (apprendre X, atteindre un niveau, construire/rénover Y, organiser un voyage). Une
+TÂCHE est une action unique et bornée ("rappeler le dentiste", "acheter du pain").
+- Si la capture qualifie explicitement quelque chose de « projet » ("j'ai un projet de…",
+  "mon projet X", "nouveau projet : X") → c'est un PROJET, JAMAIS une simple tâche. Émets un
+  project_entry (is_new=true s'il est absent des PROJETS EXISTANTS) ET une entité type="project".
+- Si l'objectif implique PLUSIEURS étapes ou une LONGUE durée ("faire une 7a en escalade",
+  "apprendre le japonais", "rénover l'appartement", "courir un marathon") → traite-le comme un
+  PROJET même sans le mot « projet » : crée le projet (is_new) et mets l'objectif dans `content`.
+- Nomme le projet par son DOMAINE durable plutôt que par l'action ponctuelle (ex : « j'ai un
+  projet d'escalade de faire une 7a » → project_canonical="Escalade", content="Objectif : faire
+  une 7a") — ainsi les avancées futures ("j'ai fait une 6a") se rattachent au même projet.
+- Le projet est un PARAPLUIE : les sous-tâches et avancées ultérieures du domaine s'y rattachent
+  via project_entries plutôt que de vivre comme des tâches isolées.
+- Une vraie action isolée, sans projet parent évident, reste kind="task" (cf. règle (d)).
+
 Règles project_entries :
 - Si la capture est explicitement liée à un OU PLUSIEURS projets (déclarés ou nommés), produire UNE entrée par projet dans le tableau project_entries.
 - Une même capture peut mentionner plusieurs projets ("j'ai avancé Synapse et Atlas aujourd'hui") → 2 items, un pour chaque projet, avec un `content` propre qui reprend uniquement l'extrait pertinent à ce projet.
