@@ -1260,6 +1260,48 @@ def capture_detail(capture_id: int):
         conn.close()
 
 
+@app.get("/capture/{capture_id}/generated", dependencies=[Depends(require_auth)])
+def capture_generated(capture_id: int):
+    """SYN-92 — the reverse provenance index: what the Dream Cycle produced from
+    one capture. Every derived table carries provenance_capture_id (the inbox row
+    that first created the entity / fact / relation / note), so this is a uniform
+    fan-out. Powers the app's "ce qui en est sorti" panel under a journal line.
+
+    Entities are listed only when this capture *created* them (a capture that merely
+    re-mentions an existing entity won't appear) — which is exactly "ce qui a été créé".
+    Facts/relations carry resolved entity names so the client can render readable lines."""
+    conn = get_connection()
+    try:
+        entities = cursor_to_dicts(conn.execute(
+            "SELECT id, canonical_name, type FROM entities "
+            "WHERE provenance_capture_id = ? AND merged_into_id IS NULL "
+            "ORDER BY created_at", (capture_id,)
+        ))
+        facts = cursor_to_dicts(conn.execute(
+            "SELECT f.id, f.predicate, f.value, f.entity_id, f.confidence, f.category, "
+            "       e.canonical_name AS entity_name, f.archived_at, f.obsoleted_at "
+            "FROM facts f LEFT JOIN entities e ON e.id = f.entity_id "
+            "WHERE f.provenance_capture_id = ? ORDER BY f.created_at", (capture_id,)
+        ))
+        relations = cursor_to_dicts(conn.execute(
+            "SELECT r.id, r.entity_from, r.predicate, r.entity_to, r.confidence, "
+            "       ef.canonical_name AS entity_from_name, et.canonical_name AS entity_to_name "
+            "FROM relations r "
+            "LEFT JOIN entities ef ON ef.id = r.entity_from "
+            "LEFT JOIN entities et ON et.id = r.entity_to "
+            "WHERE r.provenance_capture_id = ? ORDER BY r.created_at", (capture_id,)
+        ))
+        notes = cursor_to_dicts(conn.execute(
+            "SELECT id, title, content, summary, kind, archived_at "
+            "FROM atomic_notes WHERE provenance_capture_id = ? ORDER BY created_at",
+            (capture_id,)
+        ))
+        return {"entities": entities, "facts": facts,
+                "relations": relations, "notes": notes}
+    finally:
+        conn.close()
+
+
 @app.post("/project-entries/{entry_id}/move", dependencies=[Depends(require_auth)])
 def move_project_entry(entry_id: str, body: ProjectEntryMoveIn):
     """Reassign a project_entry to a different project.
