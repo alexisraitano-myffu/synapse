@@ -477,9 +477,12 @@ def _propose_merge_by_embedding(
 
 
 # Point 1 (C): how close a task/intention must sit to an existing project before we
-# *propose* attaching it (soft, via « À valider » — never auto-attached). Lower than the
-# merge bar (0.85): this is topical relatedness, not identity. Tunable per-run.
-_PROJECT_ATTACH_THRESHOLD_DEFAULT = 0.55
+# *propose* attaching it (soft, via « À valider » — never auto-attached). Far below the
+# merge bar (0.85): the `1 - dist/2` score tops out ~0.3-0.4 for topical relatedness on
+# short captures (measured), not identity. The MARGIN guards against "all projects equally
+# vaguely related" noise — the top project must clearly beat the runner-up. Both tunable.
+_PROJECT_ATTACH_THRESHOLD_DEFAULT = 0.30
+_PROJECT_ATTACH_MARGIN_DEFAULT = 0.03
 
 
 def _propose_project_attach_if_similar(
@@ -503,6 +506,8 @@ def _propose_project_attach_if_similar(
         return False
     threshold = float(os.getenv(
         "SYNAPSE_PROJECT_ATTACH_THRESHOLD", str(_PROJECT_ATTACH_THRESHOLD_DEFAULT)))
+    margin = float(os.getenv(
+        "SYNAPSE_PROJECT_ATTACH_MARGIN", str(_PROJECT_ATTACH_MARGIN_DEFAULT)))
     try:
         vec = embed_text(content)
     except Exception as exc:
@@ -510,8 +515,14 @@ def _propose_project_attach_if_similar(
             print(f"    [attach?] embedding skipped: {exc}")
         return False
     matches = search_entities_by_vector(
-        conn, vec, limit=1, min_score=threshold, type_filter="project")
-    if not matches:
+        conn, vec, limit=2, min_score=0.0, type_filter="project")
+    if not matches or matches[0]["score"] < threshold:
+        return False
+    # The top project must clearly lead — else the capture isn't really "about" any project.
+    if len(matches) > 1 and (matches[0]["score"] - matches[1]["score"]) < margin:
+        if verbose:
+            print(f"    [attach?] ambiguous (top {matches[0]['score']:.2f} vs "
+                  f"{matches[1]['score']:.2f}) — skipped")
         return False
     m = matches[0]
     if first_row(conn.execute(
