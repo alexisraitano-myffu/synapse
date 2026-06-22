@@ -476,6 +476,62 @@ def _propose_merge_by_embedding(
     return False
 
 
+# Point 1 (C): how close a task/intention must sit to an existing project before we
+# *propose* attaching it (soft, via « À valider » — never auto-attached). Lower than the
+# merge bar (0.85): this is topical relatedness, not identity. Tunable per-run.
+_PROJECT_ATTACH_THRESHOLD_DEFAULT = 0.55
+
+
+def _propose_project_attach_if_similar(
+    capture_id: int | None,
+    content: str,
+    note_id: int | None,
+    conn,
+    verbose: bool = False,
+) -> bool:
+    """Point 1 (C) — when an actionable capture (task / ephemeral intention) wasn't
+    routed to any project but sits close to an EXISTING project in embedding space,
+    queue a soft attachment proposal for « À valider ». Never forces the link; the
+    user accepts (→ project_entry) or rejects. One pending proposal per (capture,
+    project). Brand-new projects (not yet vectorized) simply won't match — by design,
+    this is about rattaching to projects that already exist."""
+    if capture_id is None or not content.strip():
+        return False
+    # Already routed to a project for this capture → nothing to propose.
+    if first_row(conn.execute(
+            "SELECT 1 FROM project_entries WHERE capture_id = ?", (capture_id,))):
+        return False
+    threshold = float(os.getenv(
+        "SYNAPSE_PROJECT_ATTACH_THRESHOLD", str(_PROJECT_ATTACH_THRESHOLD_DEFAULT)))
+    try:
+        vec = embed_text(content)
+    except Exception as exc:
+        if verbose:
+            print(f"    [attach?] embedding skipped: {exc}")
+        return False
+    matches = search_entities_by_vector(
+        conn, vec, limit=1, min_score=threshold, type_filter="project")
+    if not matches:
+        return False
+    m = matches[0]
+    if first_row(conn.execute(
+            "SELECT 1 FROM project_attach_proposals "
+            "WHERE capture_id = ? AND project_id = ? AND status = 'pending'",
+            (capture_id, m["id"]))):
+        return False
+    prop_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO project_attach_proposals "
+        "(id, capture_id, note_id, project_id, content, similarity_score) "
+        "VALUES (?,?,?,?,?,?)",
+        (prop_id, capture_id, note_id, m["id"], content.strip(), m["score"]),
+    )
+    if verbose:
+        print(f"    [attach?] capture {capture_id} ~ projet '{m['canonical_name']}' "
+              f"({m['score']:.2f}) → {prop_id}")
+    return True
+
+
 def step2_resolve(classified: dict, conn, verbose: bool = False) -> dict:
     resolved_entities = []
     for entity_data in classified.get("entities", []):
@@ -1484,6 +1540,11 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     if is_ephemeral and not (classified.get("entities") or classified.get("project_entries")
                              or durable_note):
         with conn:
+            # Point 1 (C): even a pure ephemeral intention ("acheter un baudrier") may
+            # belong to an existing project — propose the soft attachment in « À valider ».
+            if not dry_run:
+                _propose_project_attach_if_similar(
+                    entry["id"], entry["content"], None, conn, verbose)
             handle_intentions(classified, conn, dry_run, verbose)
             _mark(conn, entry["id"], now, "processed", dry_run)
         return [], []
@@ -1525,6 +1586,8 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
         # the short-term intention and the durable note legitimately coexist
         # ("salon X le 20 juin" = reminder now + dated event note that stays).
         atomic = classified.get("atomic_note")
+        created_note_id: int | None = None
+        atomic_kind = str(classified.get("atomic_note_kind") or "note")
         if atomic and atomic.strip() and (not is_ephemeral or durable_note):
             mentioned = [
                 e["canonical_name"]
@@ -1538,7 +1601,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 pc = (pe or {}).get("project_canonical")
                 if pc and pc not in mentioned:
                     mentioned.append(pc)
-            _persist_atomic_note(
+            created_note_id = _persist_atomic_note(
                 content=atomic.strip(),
                 summary=classified.get("summary") or "",
                 entities_mentioned=mentioned,
@@ -1546,7 +1609,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 conn=conn,
                 verbose=verbose,
                 # SYN-85 — note kinds: task (backlog retrouvable) / event (occurrence datée).
-                kind=str(classified.get("atomic_note_kind") or "note"),
+                kind=atomic_kind,
                 event_date=classified.get("event_date") or None,
                 event_recurring=bool(classified.get("event_recurring")),
             )
@@ -1573,6 +1636,15 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
                 verbose=verbose,
                 client=client,  # SYN-43: triggers live synthesis append per project
             )
+
+        # Point 1 (C): an actionable capture (task / ephemeral intention) that wasn't
+        # routed to any project but reads close to an existing one → propose attaching it
+        # (soft, via « À valider »). Guarded inside on « already routed to a project ».
+        if not seen_projects and (atomic_kind == "task" or is_ephemeral):
+            attach_content = (atomic.strip() if (atomic and atomic.strip())
+                              else entry["content"]).strip()
+            _propose_project_attach_if_similar(
+                capture_id, attach_content, created_note_id, conn, verbose)
 
         handle_intentions(classified, conn, dry_run=False, verbose=verbose)
 

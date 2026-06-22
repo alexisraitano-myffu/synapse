@@ -1225,6 +1225,92 @@ def type_proposal_reject(proposal_id: str):
         conn.close()
 
 
+# ── Point 1 (C): project-attach proposals ─────────────────────────────────────
+
+@app.get("/project-attach-proposals", dependencies=[Depends(require_auth)])
+def project_attach_proposals_list(status: str = "pending"):
+    """List soft « rattacher cette tâche/intention à un projet ? » proposals.
+
+    Joins the target project + the source capture content so the client renders
+    a self-contained card (no follow-up request)."""
+    if status not in {"pending", "accepted", "rejected"}:
+        raise HTTPException(status_code=400, detail="invalid status filter")
+    conn = get_connection()
+    try:
+        return cursor_to_dicts(conn.execute(
+            "SELECT p.id, p.capture_id, p.note_id, p.project_id, p.content, "
+            "       p.similarity_score, p.status, p.created_at, p.resolved_at, "
+            "       e.canonical_name AS project_name, "
+            "       i.content        AS capture_content "
+            "FROM project_attach_proposals p "
+            "LEFT JOIN entities e ON e.id = p.project_id "
+            "LEFT JOIN inbox i    ON i.id = p.capture_id "
+            "WHERE p.status = ? "
+            "ORDER BY p.created_at DESC",
+            (status,),
+        ))
+    finally:
+        conn.close()
+
+
+@app.post("/project-attach-proposals/{proposal_id}/accept", dependencies=[Depends(require_auth)])
+def project_attach_proposal_accept(proposal_id: str):
+    """Accept: attach the capture to the project (a project_entry), then mark
+    the proposal accepted. The project is fixed by the proposal — no body."""
+    from dream_cycle.cycle import _persist_project_entry
+    conn = get_connection()
+    try:
+        p = first_row(conn.execute(
+            "SELECT p.id, p.status, p.capture_id, p.content, p.project_id, "
+            "       e.canonical_name AS project_name "
+            "FROM project_attach_proposals p "
+            "LEFT JOIN entities e ON e.id = p.project_id "
+            "WHERE p.id = ?", (proposal_id,)))
+        if not p:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
+        if not p["project_name"]:
+            raise HTTPException(status_code=410, detail="projet cible introuvable")
+        client = _anthropic_client_factory()
+        with conn:
+            project_id, entry_id = _persist_project_entry(
+                project_canonical=p["project_name"],
+                content=p["content"],
+                capture_id=p["capture_id"],
+                conn=conn,
+                is_new_project=False,
+                client=client,
+            )
+            conn.execute(
+                "UPDATE project_attach_proposals SET status='accepted', "
+                "resolved_at=CURRENT_TIMESTAMP WHERE id=?", (proposal_id,))
+        return {"status": "accepted", "proposal_id": proposal_id,
+                "project_id": project_id, "entry_id": entry_id}
+    finally:
+        conn.close()
+
+
+@app.post("/project-attach-proposals/{proposal_id}/reject", dependencies=[Depends(require_auth)])
+def project_attach_proposal_reject(proposal_id: str):
+    """Reject: mark the proposal rejected (terminal, won't be re-proposed)."""
+    conn = get_connection()
+    try:
+        p = first_row(conn.execute(
+            "SELECT id, status FROM project_attach_proposals WHERE id = ?", (proposal_id,)))
+        if not p:
+            raise HTTPException(status_code=404, detail="proposal not found")
+        if p["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
+        with conn:
+            conn.execute(
+                "UPDATE project_attach_proposals SET status='rejected', "
+                "resolved_at=CURRENT_TIMESTAMP WHERE id=?", (proposal_id,))
+        return {"status": "rejected", "proposal_id": proposal_id}
+    finally:
+        conn.close()
+
+
 # ── Lifecycle: archive / obsolete (SYN-59) ────────────────────────────────────
 
 def _set_timestamp(table: str, row_id: str, columns: dict, label: str):

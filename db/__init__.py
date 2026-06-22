@@ -219,6 +219,20 @@ def init_db() -> None:
                 created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 resolved_at         TIMESTAMP
             )""",
+            # Point 1 (C): soft « rattacher cette tâche/intention à un projet existant ? »
+            # proposals, surfaced in « À valider ». capture-based (note_id optional) so a
+            # task note OR a pure ephemeral intention can both be proposed.
+            """CREATE TABLE IF NOT EXISTS project_attach_proposals (
+                id               TEXT PRIMARY KEY,
+                capture_id       INTEGER NOT NULL REFERENCES inbox(id),
+                note_id          INTEGER REFERENCES atomic_notes(id),
+                project_id       TEXT NOT NULL REFERENCES entities(id),
+                content          TEXT NOT NULL,
+                similarity_score REAL NOT NULL,
+                status           TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | rejected
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                resolved_at      TIMESTAMP
+            )""",
         ]:
             conn.execute(stmt)
 
@@ -401,6 +415,11 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_type_proposals_status "
             "ON entity_type_proposals(status, created_at DESC)"
+        )
+        # Quick lookups for the project-attach proposals queue (point 1 C).
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_attach_proposals_status "
+            "ON project_attach_proposals(status, created_at DESC)"
         )
 
         # Migration: SYN-77 — keep the failure reason on the inbox row. Before
