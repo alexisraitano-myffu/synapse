@@ -242,6 +242,10 @@ class TypeProposalAcceptIn(BaseModel):
     type: str | None = None  # optional rename of the proposed type before adding it
 
 
+class NotePromoteIn(BaseModel):
+    canonical_name: str | None = None  # optional project name (else derived from the note)
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -857,6 +861,47 @@ def atomic_note_unarchive(note_id: int):
         if not changed:
             raise HTTPException(status_code=404, detail="note not found")
         return {"id": note_id, "archived": False}
+    finally:
+        conn.close()
+
+
+@app.post("/atomic-note/{note_id}/promote-to-project", dependencies=[Depends(require_auth)])
+def atomic_note_promote_to_project(note_id: int, body: NotePromoteIn):
+    """Point 1 (D) — promote a mis-classified task/note into a project: create (or
+    reuse) the project entity, seed it with a project_entry built from the note,
+    then archive the note (reversible). Best handled upstream by the classifier
+    (SYN — projet vs tâche), but this rescues a task after the fact."""
+    from dream_cycle.cycle import _persist_project_entry
+    conn = get_connection()
+    try:
+        note = first_row(conn.execute(
+            "SELECT id, title, content, provenance_capture_id FROM atomic_notes WHERE id = ?",
+            (note_id,)))
+        if not note:
+            raise HTTPException(status_code=404, detail="note not found")
+        capture_id = note.get("provenance_capture_id")
+        if not capture_id:
+            raise HTTPException(
+                status_code=400,
+                detail="note sans capture source — promotion impossible")
+        canonical = (body.canonical_name or note.get("title") or note["content"]).strip()[:80]
+        if not canonical:
+            raise HTTPException(status_code=400, detail="nom de projet vide")
+        client = _anthropic_client_factory()
+        with conn:
+            project_id, entry_id = _persist_project_entry(
+                project_canonical=canonical,
+                content=note["content"],
+                capture_id=capture_id,
+                conn=conn,
+                is_new_project=True,
+                client=client,
+            )
+            conn.execute(
+                "UPDATE atomic_notes SET archived_at=? WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), note_id))
+        return {"status": "promoted", "note_id": note_id, "project_id": project_id,
+                "entry_id": entry_id, "project_canonical": canonical}
     finally:
         conn.close()
 
