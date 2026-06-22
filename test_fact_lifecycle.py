@@ -58,6 +58,25 @@ def test_multi_valued_predicate_appends(isolated_db):
     assert rows[f1]["obsoleted_at"] is None and rows[f2]["obsoleted_at"] is None
 
 
+def test_identical_fact_dedups_and_reinforces(isolated_db):
+    """Point 3b — re-stating an identical fact reinforces it (no duplicate row)."""
+    from db import get_connection
+    from facts_store import insert_fact
+    conn = get_connection()
+    try:
+        with conn:
+            eid = _entity(conn)
+            f1 = insert_fact(conn, entity_id=eid, predicate="likes", value="escalade", confidence=0.6)
+            # same predicate+value, different casing/spacing + higher confidence
+            f2 = insert_fact(conn, entity_id=eid, predicate="Likes", value="  Escalade ", confidence=0.95)
+        rows = _facts(conn, eid)
+    finally:
+        conn.close()
+    assert f2 == f1, "identical fact must return the existing id, not a new row"
+    assert len(rows) == 1, "no duplicate row for an identical fact"
+    assert rows[f1]["confidence"] == 0.95, "confidence reinforced to the max"
+
+
 def test_lower_confidence_does_not_supersede(isolated_db):
     """A less-confident contradiction coexists (suspicious, not yet resolved)."""
     from db import get_connection

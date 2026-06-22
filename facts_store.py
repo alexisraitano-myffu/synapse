@@ -8,7 +8,7 @@ promotion, manual validation, and the reclassify endpoint — no drifting copies
 
 import uuid
 
-from db import cursor_to_dicts
+from db import cursor_to_dicts, first_row
 
 # SYN-37: predicates that hold at most one *current* value per entity — a new
 # fact obsoletes the previous one (last-writes-wins). Everything else is
@@ -37,8 +37,28 @@ def insert_fact(conn, *, entity_id, predicate, value, confidence,
     the user sees the unresolved conflict. A manually-obsoleted fact is left
     untouched (idempotent: its earlier `obsoleted_at` is preserved). The caller
     owns the transaction. Returns the new fact id.
+
+    SYN — dedup (point 3b): if an *identical* active fact already exists (same
+    entity + predicate + value, case/whitespace-insensitive), no duplicate row is
+    created — the existing fact is reinforced instead (confidence ← max, last_confirmed
+    bumped) and its id returned. Re-stating a fact strengthens it rather than piling up
+    copies (the multi-valued predicates had no dedup before). No summary invalidation:
+    re-confirming an existing value isn't a content change.
     """
     fact_id = fact_id or str(uuid.uuid4())
+    dup = first_row(conn.execute(
+        "SELECT id, confidence FROM facts "
+        "WHERE entity_id = ? AND LOWER(TRIM(predicate)) = LOWER(TRIM(?)) "
+        "AND LOWER(TRIM(value)) = LOWER(TRIM(?)) "
+        "AND obsoleted_at IS NULL AND archived_at IS NULL LIMIT 1",
+        (entity_id, predicate, value),
+    ))
+    if dup:
+        conn.execute(
+            "UPDATE facts SET confidence = ?, last_confirmed = CURRENT_TIMESTAMP WHERE id = ?",
+            (max(confidence or 0.0, dup["confidence"] or 0.0), dup["id"]),
+        )
+        return dup["id"]
     if is_single_valued(predicate):
         for ex in cursor_to_dicts(conn.execute(
             "SELECT id, confidence FROM facts "
