@@ -49,7 +49,7 @@ python -m dream_cycle.decay        # env: SYNAPSE_DECAY_TAU_DAYS (default 30)
 python -m dream_cycle.digest                 # generate + store this week's digest
 python -m dream_cycle.digest --dry-run --verbose   # preview the markdown without writing
 ```
-On-demand from a client: `POST /digest/run` (`?dry_run=true` to preview); `GET /digest/latest` returns the last stored digest. Production trigger = a weekly LaunchAgent (Sunday 23h), machine-specific — see the launchd note below.
+On-demand from a client: `POST /digest/run` (`?dry_run=true` to preview); `GET /digest/latest` returns the last stored digest. Production trigger = a weekly LaunchAgent (Monday 08h), machine-specific — see the launchd note below. The API backend also self-heals it: `_ensure_weekly_digest` (in the scheduler loop) generates the current ISO week's digest if it's missing, so a scheduled fire missed while the Mac slept is recovered within the hour once it's awake.
 
 **Run the HTTP API** (backend for the mobile/desktop apps; FastAPI on `0.0.0.0:8000`):
 ```bash
@@ -74,9 +74,12 @@ curl -s http://localhost:8000/health                              # liveness + c
 
 **Weekly digest LaunchAgent (SYN-23).** Like the backend agent, the schedule lives in a
 machine-specific plist outside this repo (`~/Library/LaunchAgents/fr.myffu.synapse.digest.plist`):
-`StartCalendarInterval` Sunday (`Weekday 0`) 23:00, `WorkingDirectory` = this repo (so `.env`
+`StartCalendarInterval` Monday (`Weekday 1`) 08:00, `WorkingDirectory` = this repo (so `.env`
 provides `ANTHROPIC_API_KEY`), program = `.venv/bin/python -m dream_cycle.digest`, logs to
 `~/.synapse/digest.log`. It writes one `kind='digest'` note per ISO week (re-running overwrites it).
+Belt-and-braces: the API backend self-heals a missed fire (`_ensure_weekly_digest`) — if the Mac
+was asleep at 08h Monday, the running backend regenerates the week's digest on its next hourly
+check. Both triggers target the same current-week label, so there's never a duplicate.
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/fr.myffu.synapse.digest.plist   # enable
 launchctl kickstart -k gui/$(id -u)/fr.myffu.synapse.digest                              # run now

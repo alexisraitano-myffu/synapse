@@ -48,6 +48,7 @@ init_db()
 # Disabled unless SYNAPSE_AUTO_CYCLE is truthy. The lock prevents overlap.
 
 _last_capture_ts = 0.0
+_last_digest_check = 0.0
 
 
 def _auto_cycle_enabled() -> bool:
@@ -61,9 +62,43 @@ def _debounce_seconds() -> int:
         return 120
 
 
+def _ensure_weekly_digest() -> None:
+    """SYN-23 — self-heal the weekly digest. The launchd job (Monday morning) is
+    the primary trigger, but it silently misses if the Mac is asleep at that time
+    (StartCalendarInterval doesn't fire during sleep). Since the backend runs
+    continuously (launchd KeepAlive), it checks here: if the current ISO week has
+    no digest, generate one. Idempotent per week (one digest, no duplicates) and
+    free on an empty week — generate_weekly_digest skips Haiku when nothing
+    happened. So the digest appears within the hour of the machine waking, even if
+    the scheduled fire was missed."""
+    from datetime import date, timedelta
+    monday = date.today() - timedelta(days=date.today().weekday())
+    title = f"Digest — semaine du {monday.strftime('%Y-%m-%d')}"
+    conn = get_connection()
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM atomic_notes WHERE kind='digest' AND title=? LIMIT 1", (title,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if exists:
+        return
+    from dream_cycle.digest import generate_weekly_digest
+    generate_weekly_digest()  # gather → (skip if empty) → Haiku → store
+
+
 def _scheduler_loop() -> None:
+    global _last_digest_check
     while True:
         time.sleep(30)
+        # Weekly digest catch-up — independent of the auto-cycle flag, checked at
+        # most hourly (the work itself is gated on the digest being missing).
+        try:
+            if time.time() - _last_digest_check > 3600:
+                _last_digest_check = time.time()
+                _ensure_weekly_digest()
+        except Exception:
+            pass
         try:
             if not _auto_cycle_enabled():
                 continue

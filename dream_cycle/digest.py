@@ -1,8 +1,11 @@
 """
 SYN-23 — Weekly digest.
 
-A cron-driven job (Sunday 23h via launchd, see CLAUDE.md) that condenses the
-past week AND the week ahead into one durable note (`kind="digest"`).
+A cron-driven job (Monday 08h via launchd, see CLAUDE.md) that condenses the
+past week AND the week ahead into one durable note (`kind="digest"`). The API
+backend also self-heals it (`_ensure_weekly_digest`): if the Mac was asleep at
+the scheduled fire, the current ISO week's digest is generated on the next
+hourly check once the machine is awake — so it never silently goes missing.
 
 - Retrospective: new entities, new facts, new notes, and the entities most
   reactivated over the window ("tendances").
