@@ -253,6 +253,36 @@ def _load_active_types_block(conn) -> str:
     )
 
 
+def _load_owner_block(conn) -> str | None:
+    """Point 2 — tell the classifier who « moi » is, so first-person captures resolve
+    to the user's own entity instead of a phantom 'auteur'/'Auteur'. Separate (uncached)
+    block — the owner can change and shouldn't bust the stable-rules cache."""
+    from config_store import get_owner_entity_id
+    oid = get_owner_entity_id()
+    if not oid:
+        return None
+    row = first_row(conn.execute(
+        "SELECT canonical_name, aliases FROM entities "
+        "WHERE id = ? AND merged_into_id IS NULL", (oid,)))
+    if not row:
+        return None
+    name = row["canonical_name"]
+    try:
+        aliases = json.loads(row.get("aliases") or "[]")
+    except (ValueError, TypeError):
+        aliases = []
+    alias_str = f" (alias : {', '.join(aliases)})" if aliases else ""
+    return (
+        f"[AUTEUR — l'utilisateur de ce second cerveau]\n"
+        f"L'auteur des captures est « {name} »{alias_str}. Toute référence à la PREMIÈRE "
+        f"PERSONNE (je, j', me, m', moi, mon, ma, mes, le mien/la mienne…) le désigne. "
+        f"Utilise EXACTEMENT le canonical_name « {name} » comme entité pour les faits et "
+        f"relations le concernant — ex : « Romain est mon frère » → relation "
+        f"(Romain, is_sibling_of, {name}) ; « j'habite à Lyon » → fact (lives_in, Lyon) sur "
+        f"« {name} ». Ne crée JAMAIS d'entité générique « auteur », « Auteur », « User » ou « moi »."
+    )
+
+
 def step1_classify(
     entry: dict,
     client: anthropic.Anthropic,
@@ -264,10 +294,13 @@ def step1_classify(
         {"type": "text", "text": system_stable, "cache_control": {"type": "ephemeral"}},
     ]
     if conn is not None:
-        # NOT cached — both vary as the user creates projects / extends the vocab.
+        # NOT cached — all vary as the user creates projects / extends the vocab / sets owner.
         system_blocks.append({"type": "text", "text": _load_active_types_block(conn)})
         projects_block = _load_active_projects_block(conn)
         system_blocks.append({"type": "text", "text": projects_block})
+        owner_block = _load_owner_block(conn)
+        if owner_block:
+            system_blocks.append({"type": "text", "text": owner_block})
     response = client.messages.create(
         model=CLAUDE_MODEL,
         # SYN-78: 1536 silently truncated the JSON on long pasted captures

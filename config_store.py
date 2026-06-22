@@ -52,6 +52,22 @@ def has_anthropic_key() -> bool:
     return bool(get_anthropic_key())
 
 
+def get_owner_entity_id() -> str | None:
+    """Point 2 — the entity that IS the user (« moi »). First-person captures
+    (je/mon/moi) resolve to this entity instead of a phantom 'auteur'. Single-user
+    backend → one owner, kept in config.json."""
+    return _load().get("owner_entity_id")
+
+
+def set_owner_entity_id(entity_id: str | None) -> None:
+    data = _load()
+    if entity_id:
+        data["owner_entity_id"] = entity_id
+    else:
+        data.pop("owner_entity_id", None)
+    _save(data)
+
+
 def get_instance_id() -> str:
     """Stable identity of THIS backend's database (SYN-73). Generated once and
     persisted, so a replica can detect it's now talking to a different master /

@@ -221,6 +221,10 @@ class AnthropicKeyIn(BaseModel):
     key: str
 
 
+class OwnerIn(BaseModel):
+    entity_id: str | None = None  # the entity that IS the user (« moi »); null clears it
+
+
 # SYN-45 — bodies for project-entry correction endpoints
 class ProjectEntryMoveIn(BaseModel):
     project_id: str
@@ -279,6 +283,44 @@ def put_anthropic_key(body: AnthropicKeyIn):
         raise HTTPException(status_code=400, detail="invalid key format (expected sk-...)")
     config_store.set_anthropic_key(key)
     return {"status": "ok"}
+
+
+@app.get("/owner", dependencies=[Depends(require_auth)])
+def get_owner():
+    """Point 2 — which entity is « moi », so the app can show/change it. Returns the
+    resolved name too (null entity_id = not set yet)."""
+    oid = config_store.get_owner_entity_id()
+    name = None
+    if oid:
+        conn = get_connection()
+        try:
+            row = first_row(conn.execute(
+                "SELECT canonical_name FROM entities WHERE id = ? AND merged_into_id IS NULL",
+                (oid,)))
+            name = row["canonical_name"] if row else None
+        finally:
+            conn.close()
+        if name is None:
+            oid = None  # stale (entity merged/deleted) → report unset
+    return {"entity_id": oid, "canonical_name": name}
+
+
+@app.put("/owner", dependencies=[Depends(require_auth)])
+def put_owner(body: OwnerIn):
+    """Point 2 — designate (or clear) the user's own entity. First-person captures
+    then resolve to it instead of a phantom 'auteur'."""
+    eid = (body.entity_id or "").strip() or None
+    if eid:
+        conn = get_connection()
+        try:
+            row = first_row(conn.execute(
+                "SELECT id FROM entities WHERE id = ? AND merged_into_id IS NULL", (eid,)))
+            if not row:
+                raise HTTPException(status_code=404, detail="entity not found")
+        finally:
+            conn.close()
+    config_store.set_owner_entity_id(eid)
+    return {"status": "ok", "entity_id": eid}
 
 
 @app.post("/capture", dependencies=[Depends(require_auth)])
