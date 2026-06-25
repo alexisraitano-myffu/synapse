@@ -33,7 +33,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import anthropic
 
 from config import CLAUDE_MODEL
-from config_store import get_anthropic_key
 from db import cursor_to_dicts, first_row, get_connection, init_db
 from embeddings import embed_text
 
@@ -51,13 +50,9 @@ _BIRTHDAY_PREDICATES = ("has_birthday", "birthday", "born_on", "date_of_birth")
 
 
 def _get_client() -> anthropic.Anthropic:
-    key = get_anthropic_key()
-    if not key:
-        raise EnvironmentError(
-            "ANTHROPIC_API_KEY manquante — requise pour le digest hebdo "
-            "(ou règle-la depuis l'app : Réglages → Clé Anthropic API)."
-        )
-    return anthropic.Anthropic(api_key=key)
+    # SYN-105: client construction (incl. the fuel-proxy seam) is centralised.
+    from anthropic_client import get_client
+    return get_client()
 
 
 def _now(now: datetime | None) -> datetime:

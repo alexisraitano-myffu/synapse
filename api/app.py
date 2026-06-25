@@ -495,12 +495,9 @@ def _ego_filter(entities: list[dict], relations: list[dict], focus: str):
 def _anthropic_client_factory():
     """Build an Anthropic client from the configured key, or None if unset — the
     cluster labeller (SYN-70) then falls back to generic labels. Reuses the same
-    key path and model as the Dream Cycle (BYOK)."""
-    import anthropic
-
-    from config_store import get_anthropic_key
-    key = get_anthropic_key()
-    return anthropic.Anthropic(api_key=key) if key else None
+    key path and model as the Dream Cycle (BYOK / SYN-105 fuel proxy)."""
+    from anthropic_client import get_client_or_none
+    return get_client_or_none()
 
 
 def _assign_communities(nodes: list[dict], edges: list[dict]) -> None:

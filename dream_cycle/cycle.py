@@ -32,7 +32,6 @@ load_dotenv()
 import anthropic
 
 from config import CLAUDE_MODEL
-from config_store import get_anthropic_key
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
 from entity_search import entity_embedding_text, search_entities_by_vector
@@ -52,14 +51,9 @@ _TODAY = date.today().isoformat()
 # ── Claude client ──────────────────────────────────────────────────────────────
 
 def _get_client() -> anthropic.Anthropic:
-    key = get_anthropic_key()
-    if not key:
-        raise EnvironmentError(
-            "ANTHROPIC_API_KEY is not set.\n"
-            "Either export it (export ANTHROPIC_API_KEY=sk-ant-...) "
-            "or set it from the desktop app (Settings → Clé Anthropic API)."
-        )
-    return anthropic.Anthropic(api_key=key)
+    # SYN-105: client construction (incl. the fuel-proxy seam) is centralised.
+    from anthropic_client import get_client
+    return get_client()
 
 
 # ── Step 1 — Classifier ────────────────────────────────────────────────────────
