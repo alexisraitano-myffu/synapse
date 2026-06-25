@@ -21,13 +21,19 @@ from config_store import get_anthropic_key
 
 _FUEL_PREFIX = "syn-fuel-"
 
+# Closed-beta proxy endpoint, baked in so a tester only has to paste the token
+# (the URL is not a secret — only the token is). `SYNAPSE_FUEL_BASE_URL` overrides,
+# and setting it empty disables the fuel path. Only consulted for syn-fuel- tokens,
+# so a normal sk-ant- key (e.g. the Mac mini) is unaffected.
+_DEFAULT_FUEL_BASE_URL = "https://synapse-fuel-proxy.alexis-raitano.workers.dev"
+
 
 def is_fuel_token(key: str | None) -> bool:
     return bool(key) and key.startswith(_FUEL_PREFIX)
 
 
 def _fuel_base_url() -> str:
-    return os.environ.get("SYNAPSE_FUEL_BASE_URL", "").rstrip("/")
+    return os.environ.get("SYNAPSE_FUEL_BASE_URL", _DEFAULT_FUEL_BASE_URL).rstrip("/")
 
 
 def get_client() -> anthropic.Anthropic:
