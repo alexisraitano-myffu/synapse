@@ -362,8 +362,9 @@ def put_anthropic_key(body: AnthropicKeyIn):
     """Stores the key in ~/.synapse/config.json (0600). Lets the desktop app
     push the key without touching .env files."""
     key = body.key.strip()
-    if not key.startswith("sk-"):
-        raise HTTPException(status_code=400, detail="invalid key format (expected sk-...)")
+    # SYN-105: accept a beta fuel token (syn-fuel-…) too, not just sk-ant- keys.
+    if not (key.startswith("sk-") or key.startswith("syn-fuel-")):
+        raise HTTPException(status_code=400, detail="invalid key format (expected sk-... or syn-fuel-...)")
     config_store.set_anthropic_key(key)
     return {"status": "ok"}
 
