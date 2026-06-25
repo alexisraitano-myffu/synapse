@@ -51,7 +51,7 @@ python -m dream_cycle.digest --dry-run --verbose   # preview the markdown withou
 ```
 On-demand from a client: `POST /digest/run` (`?dry_run=true` to preview); `GET /digest/latest` returns the last stored digest. Production trigger = a weekly LaunchAgent (Monday 08h), machine-specific — see the launchd note below. The API backend also self-heals it: `_ensure_weekly_digest` (in the scheduler loop) generates the current ISO week's digest if it's missing, so a scheduled fire missed while the Mac slept is recovered within the hour once it's awake.
 
-> Known gap (TODO): the digest's "À venir" section only scans dated `event`/`task` notes (`upcoming_events`), not `has_birthday` **facts** — so birthdays in the next 7 days don't surface as upcoming (they only appear in the retrospective). Fix in `gather_week`.
+> Birthdays as upcoming (SYN-97, done): `gather_week` surfaces `has_birthday`/`birthday`/`born_on`/`date_of_birth` **facts** (dated, active) under `upcoming_events` too — recurring yearly (month-day via `_next_occurrence`), within the 7-day horizon, deduped against an event note that already names the same person on the same day (the cycle emits both). Previously these only appeared in the retrospective.
 
 **Run the HTTP API** (backend for the mobile/desktop apps; FastAPI on `0.0.0.0:8000`):
 ```bash
