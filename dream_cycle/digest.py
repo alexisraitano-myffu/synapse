@@ -9,9 +9,9 @@ hourly check once the machine is awake — so it never silently goes missing.
 
 - Retrospective: new entities, new facts, new notes, and the entities most
   reactivated over the window ("tendances").
-- Forward-looking: dated events in the next 7 days (incl. recurring birthdays)
-  + open tasks — the data SYN-85 made available, so the digest doubles as a
-  Sunday review.
+- Forward-looking: dated events in the next 7 days (incl. recurring birthdays,
+  both as event notes and as `has_birthday` facts — SYN-97) + open tasks — the
+  data SYN-85 made available, so the digest doubles as a Sunday review.
 
 The structured week is gathered with plain SQL (`gather_week`, offline-testable),
 rendered to French markdown by Haiku (`summarize_digest`, timeless rule — absolute
@@ -44,6 +44,10 @@ _MAX_FACTS = 25
 _MAX_NOTES = 25
 _MAX_TRENDS = 8
 _MAX_TASKS = 20
+
+# SYN-97 — birthday facts surfaced under « à venir » (recurring yearly, month-day match).
+# Subset of facts_store.SINGLE_VALUED_PREDICATES that denote a person's birth date.
+_BIRTHDAY_PREDICATES = ("has_birthday", "birthday", "born_on", "date_of_birth")
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -137,6 +141,38 @@ def gather_week(conn, *, now: datetime | None = None, days: int = 7) -> dict:
                 "date": occ.strftime("%Y-%m-%d"),
                 "recurring": bool(ev["event_recurring"]),
             })
+
+    # SYN-97 — birthdays live as `has_birthday` facts, not (only) as event notes, so
+    # without this they'd surface in the retrospective but never under « à venir ».
+    # Treat them as recurring (yearly month-day) and dedup against any event note that
+    # already names the same person on the same day (the cycle emits BOTH for a birthday).
+    placeholders = ",".join("?" * len(_BIRTHDAY_PREDICATES))
+    birthday_raw = cursor_to_dicts(conn.execute(
+        "SELECT e.canonical_name AS entity, f.value AS value "
+        "FROM facts f JOIN entities e ON e.id = f.entity_id "
+        f"WHERE f.predicate IN ({placeholders}) "
+        "AND f.archived_at IS NULL AND f.obsoleted_at IS NULL "
+        "AND (e.status IS NULL OR e.status = 'active') AND e.merged_into_id IS NULL",
+        _BIRTHDAY_PREDICATES,
+    ))
+    for b in birthday_raw:
+        occ = _next_occurrence(b["value"], True, today)  # birthdays recur yearly
+        if occ is None or not (today <= occ <= horizon):
+            continue
+        iso = occ.strftime("%Y-%m-%d")
+        name = (b["entity"] or "").strip()
+        already = name and any(
+            ev["date"] == iso
+            and name.lower() in f"{ev.get('title') or ''} {ev.get('content') or ''}".lower()
+            for ev in upcoming_events
+        )
+        if already:
+            continue
+        upcoming_events.append({
+            "title": f"Anniversaire de {name}" if name else "Anniversaire",
+            "content": None, "kind": "birthday", "date": iso, "recurring": True,
+        })
+
     upcoming_events.sort(key=lambda e: e["date"])
 
     # Open tasks WITHOUT a date (dated ones already surface under « à venir »).

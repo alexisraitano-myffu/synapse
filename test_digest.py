@@ -42,6 +42,14 @@ def _add_note(conn, content, *, kind="note", created, event_date=None, recurring
     )
 
 
+def _add_fact(conn, entity_id, predicate, value, *, created, confidence=0.9):
+    conn.execute(
+        "INSERT INTO facts (id, entity_id, predicate, value, confidence, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (f"f-{entity_id}-{predicate}", entity_id, predicate, value, confidence, created),
+    )
+
+
 def test_gather_week_retrospective_window(isolated_db):
     now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
     recent = (now - timedelta(days=2)).strftime(_FMT)
@@ -114,6 +122,51 @@ def test_recurring_birthday_resolves_into_window(isolated_db):
     finally:
         conn.close()
     assert any(e["title"] == "Anniversaire Cici" for e in week["upcoming_events"])
+
+
+def test_birthday_fact_surfaces_as_upcoming(isolated_db):
+    # SYN-97 — a has_birthday fact within 7 days must appear under « à venir ».
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    today = now.date()
+    soon = (today.replace(year=1990) + timedelta(days=2)).strftime("%Y-%m-%d")  # 2 days out
+    far = (today.replace(year=1985) + timedelta(days=30)).strftime("%Y-%m-%d")  # >7 days
+    created = now.strftime(_FMT)
+    conn = get_connection()
+    try:
+        with conn:
+            eid = _add_entity(conn, "Benjamin", created=created)
+            fid = _add_entity(conn, "Lointain", created=created)
+            _add_fact(conn, eid, "has_birthday", soon, created=created)
+            _add_fact(conn, fid, "has_birthday", far, created=created)
+        week = gather_week(conn, now=now, days=7)
+    finally:
+        conn.close()
+    bdays = [e for e in week["upcoming_events"] if e["kind"] == "birthday"]
+    assert any(e["title"] == "Anniversaire de Benjamin" for e in bdays)
+    assert all(e["recurring"] for e in bdays)
+    assert not any("Lointain" in e["title"] for e in bdays)   # >7 days out excluded
+
+
+def test_birthday_fact_deduped_against_event_note(isolated_db):
+    # The cycle emits BOTH an event note and a has_birthday fact for a birthday;
+    # the digest must not list it twice.
+    now = datetime(2026, 6, 17, 12, 0, tzinfo=timezone.utc)
+    today = now.date()
+    bday = (today.replace(year=1990) + timedelta(days=2)).strftime("%Y-%m-%d")
+    created = now.strftime(_FMT)
+    conn = get_connection()
+    try:
+        with conn:
+            eid = _add_entity(conn, "Cici", created=created)
+            _add_note(conn, "Anniversaire de Cici", kind="event",
+                      event_date=bday, recurring=1, created=created)
+            _add_fact(conn, eid, "has_birthday", bday, created=created)
+        week = gather_week(conn, now=now, days=7)
+    finally:
+        conn.close()
+    cici = [e for e in week["upcoming_events"] if "cici" in (e["title"] or "").lower()]
+    assert len(cici) == 1                # only the event note; the fact was deduped
+    assert cici[0]["kind"] == "event"
 
 
 def test_next_occurrence_recurring_rolls_to_next_year():
