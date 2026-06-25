@@ -84,23 +84,25 @@ def _consolidation_max_queued() -> int:
         return 30
 
 
-def _should_consolidate(queued: int, stale: int) -> bool:
-    """Whether the scheduler should run a consolidation pass now (SYN-93)."""
+def _should_consolidate(queued: int, stale: int) -> str:
+    """Why a consolidation pass should run now ('' = don't). 'scheduled' is the
+    nightly "sleep" pass → Batch API (-50%); 'valve'/'stale' stay synchronous so a
+    big capture day or a fact edit doesn't wait on batch latency (SYN-93)."""
     global _last_consolidation_slot
     # Stale summaries on an empty inbox = a cheap resummary-only run — don't make a
     # user's fact edit wait until the nightly pass.
     if queued == 0:
-        return stale > 0
+        return "stale" if stale > 0 else ""
     # Size safety-valve: a heavy capture day consolidates without waiting for the hour.
     if queued >= _consolidation_max_queued():
-        return True
+        return "valve"
     # Scheduled "end of day" pass — fire at most once per slot (local hour).
     now_local = datetime.now()
     slot = (now_local.date().isoformat(), now_local.hour)
     if now_local.hour in _consolidation_hours() and slot != _last_consolidation_slot:
         _last_consolidation_slot = slot
-        return True
-    return False
+        return "scheduled"
+    return ""
 
 
 def _ensure_weekly_digest() -> None:
@@ -161,10 +163,12 @@ def _scheduler_loop() -> None:
             # SYN-93 — captures wait for a batched "sleep" pass (scheduled hour or
             # size valve) instead of running ~every 2 min; stale-only resummary
             # still runs promptly. Manual /dream-cycle/run stays an on-demand override.
-            if not _should_consolidate(queued, stale):
+            reason = _should_consolidate(queued, stale)
+            if not reason:
                 continue
             try:
-                dream_cycle_run(trigger="auto")  # guarded by the lock; errors land in cycle_runs
+                # Scheduled nightly pass → Batch API (-50%); valve/stale → synchronous.
+                dream_cycle_run(trigger="auto", use_batch=(reason == "scheduled"))  # lock-guarded
             except Exception:
                 pass  # retry next tick
         except Exception:
@@ -1923,8 +1927,11 @@ def validate(fact_id: str, body: ValidateIn):
 
 
 @app.post("/dream-cycle/run", dependencies=[Depends(require_auth)])
-def dream_cycle_run(trigger: str = "manual"):
-    """Run the cycle now (manual/testing). Guarded by a single-instance lock."""
+def dream_cycle_run(trigger: str = "manual", use_batch: bool = False):
+    """Run the cycle now (manual/testing). Guarded by a single-instance lock.
+    SYN-93: use_batch routes the classify step through the Message Batches API
+    (~-50%) — set for the scheduled nightly "sleep" pass, off for size-valve /
+    manual runs where immediacy matters."""
     run_id = str(uuid.uuid4())
     with cycle_lock():
         conn = get_connection()
@@ -1945,7 +1952,7 @@ def dream_cycle_run(trigger: str = "manual"):
         now = datetime.now(timezone.utc).isoformat()
         try:
             with contextlib.redirect_stdout(buf):
-                run_dream_cycle()
+                run_dream_cycle(use_batch=use_batch)
         except EnvironmentError as e:
             _finish_run(run_id, status="error", error=str(e))
             raise HTTPException(status_code=400, detail=str(e))

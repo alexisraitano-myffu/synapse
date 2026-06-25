@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -331,6 +332,46 @@ def _build_day_context(conn, batch_entries, now) -> str | None:
     return "\n".join(lines)
 
 
+def _classify_params(entry: dict, conn=None, day_context: str | None = None) -> dict:
+    """The `messages.create` kwargs for classifying one capture. Shared by the
+    synchronous path (step1_classify) and the Batch API path (_batch_classify) so
+    both build the exact same prompt (stable rules cached + working-memory + vocab)."""
+    system_blocks = [
+        {"type": "text", "text": _SYSTEM_CLASSIFIER.format(today=_TODAY),
+         "cache_control": {"type": "ephemeral"}},
+    ]
+    if day_context:
+        # SYN-93: stable across the run → cached so only the first entry pays for it.
+        system_blocks.append(
+            {"type": "text", "text": day_context, "cache_control": {"type": "ephemeral"}})
+    if conn is not None:
+        # NOT cached — vary as the user creates projects / extends the vocab / sets owner.
+        system_blocks.append({"type": "text", "text": _load_active_types_block(conn)})
+        system_blocks.append({"type": "text", "text": _load_active_projects_block(conn)})
+        owner_block = _load_owner_block(conn)
+        if owner_block:
+            system_blocks.append({"type": "text", "text": owner_block})
+    return {
+        "model": CLAUDE_MODEL,
+        # SYN-78: 1536 silently truncated the JSON on long entity/fact-dense captures.
+        "max_tokens": 4096,
+        "system": system_blocks,
+        "messages": [{"role": "user", "content": entry["content"]}],
+    }
+
+
+def _parse_classify_text(text: str, content_len: int, stop_reason: str | None) -> dict:
+    """Parse a classifier response into the routing dict. Shared by sync + batch."""
+    if stop_reason == "max_tokens":
+        raise ValueError(
+            "classification tronquée (max_tokens) — capture trop longue/dense "
+            f"({content_len} chars)")
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return json.loads(raw)
+
+
 def step1_classify(
     entry: dict,
     client: anthropic.Anthropic,
@@ -338,41 +379,9 @@ def step1_classify(
     conn=None,
     day_context: str | None = None,
 ) -> dict:
-    system_stable = _SYSTEM_CLASSIFIER.format(today=_TODAY)
-    system_blocks = [
-        {"type": "text", "text": system_stable, "cache_control": {"type": "ephemeral"}},
-    ]
-    if day_context:
-        # SYN-93: stable across the run → mark cached so only the first entry pays
-        # for it; the rest read it from cache.
-        system_blocks.append(
-            {"type": "text", "text": day_context, "cache_control": {"type": "ephemeral"}}
-        )
-    if conn is not None:
-        # NOT cached — all vary as the user creates projects / extends the vocab / sets owner.
-        system_blocks.append({"type": "text", "text": _load_active_types_block(conn)})
-        projects_block = _load_active_projects_block(conn)
-        system_blocks.append({"type": "text", "text": projects_block})
-        owner_block = _load_owner_block(conn)
-        if owner_block:
-            system_blocks.append({"type": "text", "text": owner_block})
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        # SYN-78: 1536 silently truncated the JSON on long pasted captures
-        # (entity/fact-dense documents) → JSONDecodeError with no diagnosis.
-        max_tokens=4096,
-        system=system_blocks,
-        messages=[{"role": "user", "content": entry["content"]}],
-    )
-    if response.stop_reason == "max_tokens":
-        raise ValueError(
-            "classification tronquée (max_tokens) — capture trop longue/dense "
-            f"({len(entry['content'])} chars)"
-        )
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    result = json.loads(raw)
+    response = client.messages.create(**_classify_params(entry, conn, day_context))
+    result = _parse_classify_text(
+        response.content[0].text, len(entry["content"]), response.stop_reason)
     if verbose:
         u = response.usage
         cache_read = getattr(u, "cache_read_input_tokens", 0)
@@ -381,6 +390,53 @@ def step1_classify(
               f"tokens={u.input_tokens}/{u.output_tokens}"
               + (f" cache_hit={cache_read}" if cache_read else ""))
     return result
+
+
+def _batch_classify(
+    entries: list[dict], client, conn, day_context: str | None = None,
+    verbose: bool = False, poll_seconds: int = 10, timeout_seconds: int = 3600,
+) -> dict:
+    """SYN-93 — classify a whole batch via the Message Batches API (~-50% on the
+    nightly pass; latency is acceptable for a "sleep" consolidation). Submits one
+    request per entry, polls until the batch ends, and returns {entry_id: classified}.
+    An entry whose request errored or whose JSON won't parse maps to None — the
+    caller then classifies just that one synchronously. Raises on infrastructure
+    failure (submit/poll) so the caller can fall back to the fully-sync path."""
+    from anthropic.types.messages.batch_create_params import Request
+    requests = [
+        Request(custom_id=f"e{e['id']}", params=_classify_params(e, conn, day_context))
+        for e in entries
+    ]
+    batch = client.messages.batches.create(requests=requests)
+    if verbose:
+        print(f"    [batch] submitted {len(requests)} classify requests · id={batch.id}")
+    waited = 0
+    while batch.processing_status != "ended":
+        if waited >= timeout_seconds:
+            raise TimeoutError(f"batch {batch.id} pas terminé après {timeout_seconds}s")
+        time.sleep(poll_seconds)
+        waited += poll_seconds
+        batch = client.messages.batches.retrieve(batch.id)
+
+    by_custom = {f"e{e['id']}": e for e in entries}
+    out: dict = {}
+    for res in client.messages.batches.results(batch.id):
+        entry = by_custom.get(res.custom_id)
+        if entry is None:
+            continue
+        r = res.result
+        if getattr(r, "type", None) != "succeeded":
+            out[entry["id"]] = None  # caller retries this one synchronously
+            continue
+        try:
+            msg = r.message
+            out[entry["id"]] = _parse_classify_text(
+                msg.content[0].text, len(entry["content"]), msg.stop_reason)
+        except Exception as exc:  # noqa: BLE001 — content error for this entry
+            out[entry["id"]] = None
+            if verbose:
+                print(f"    [batch] {res.custom_id} parse error: {exc}")
+    return out
 
 
 # ── Step 2 — Resolver ─────────────────────────────────────────────────────────
@@ -1596,7 +1652,7 @@ def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False,
     )
 
 
-def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None) -> tuple[list[str], list[dict]]:
+def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None, classified=None) -> tuple[list[str], list[dict]]:
     """Process one inbox entry; mark it processed. Returns (entity_ids, new_facts).
 
     SYN-42 + SYN-57: routing is NON-EXCLUSIVE and N-per-projection. A single
@@ -1608,7 +1664,9 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None)
     leaves the entry queued); other exceptions are content errors the caller marks
     as 'failed'.
     """
-    classified = step1_classify(entry, client, verbose, conn=conn, day_context=day_context)
+    # SYN-93: the batch path pre-computes the classification; otherwise classify now.
+    if classified is None:
+        classified = step1_classify(entry, client, verbose, conn=conn, day_context=day_context)
     capture_id = entry["id"]
     entity_ids: list[str] = []
     new_facts: list[dict] = []
@@ -1760,7 +1818,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None)
 
 # ── Orchestrator ───────────────────────────────────────────────────────────────
 
-def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
+def run_dream_cycle(dry_run: bool = False, verbose: bool = False, use_batch: bool = False) -> None:
     print("═" * 60)
     print("  SYNAPSE  ·  Dream Cycle  A+")
     if dry_run:
@@ -1794,6 +1852,21 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
         now = datetime.now(timezone.utc).isoformat()
         # SYN-93 — working memory: one context block for the whole batch (coreference).
         day_context = _build_day_context(conn, entries, datetime.now(timezone.utc))
+
+        # SYN-93 — Batch API for the scheduled "sleep" pass (~-50%). Classify the
+        # whole batch up front; route each entry with its pre-computed result.
+        # Best-effort: any failure (or an empty result for one entry) falls back to
+        # classifying synchronously, so the cycle never gets stuck on the batch path.
+        classifications: dict | None = None
+        if use_batch and not dry_run and len(entries) >= 2:
+            try:
+                classifications = _batch_classify(entries, client, conn, day_context, verbose)
+                ok = sum(1 for v in classifications.values() if v is not None)
+                print(f"  [batch] {ok}/{len(entries)} classifié(s) via Batch API\n")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  ⚠ batch classify échoué ({type(exc).__name__}: {exc}) — repli synchrone\n")
+                classifications = None
+
         all_entity_ids: list[str] = []
         all_new_facts: list[dict] = []
 
@@ -1801,8 +1874,10 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
         for entry in entries:
             print(f"▸ inbox id={entry['id']}: {entry['content'][:70]!r}")
             try:
+                pre = classifications.get(entry["id"]) if classifications else None
                 entity_ids, new_facts = _process_entry(
-                    entry, client, conn, now, dry_run, verbose, day_context=day_context
+                    entry, client, conn, now, dry_run, verbose,
+                    day_context=day_context, classified=pre,
                 )
                 all_entity_ids.extend(e for e in entity_ids if e not in all_entity_ids)
                 all_new_facts.extend(new_facts)
