@@ -56,8 +56,9 @@ On-demand from a client: `POST /digest/run` (`?dry_run=true` to preview); `GET /
 **Run the HTTP API** (backend for the mobile/desktop apps; FastAPI on `0.0.0.0:8000`):
 ```bash
 python -m api                      # env: SYNAPSE_API_TOKEN (bearer auth), SYNAPSE_API_PORT,
-                                   # SYNAPSE_AUTO_CYCLE=1 (debounced auto-run after captures),
-                                   # SYNAPSE_CYCLE_DEBOUNCE_SECONDS (default 120)
+                                   # SYNAPSE_AUTO_CYCLE=1 (auto-run consolidation),
+                                   # SYNAPSE_CONSOLIDATION_HOURS (default "3", e.g. "0,12"),
+                                   # SYNAPSE_CONSOLIDATION_MAX_QUEUED (default 30, size valve)
 ```
 
 **Production on this Mac — launchd (since 2026-06-12).** The API runs as a user LaunchAgent
@@ -133,7 +134,9 @@ The 6 steps for facts:
 5. **Behavioral validation** — a pending fact corroborated by a new mention in the same run is promoted into `facts`.
 6. **Vectorize** — embeds touched entities into `entities.embedding` (BLOB). Then **decay** (SYN-19/68): `apply_decay` + `apply_entity_decay` recompute `memory_strength` for all `atomic_notes` and `entities`.
 
-Per-entry resilience: each entry is processed in isolation. An `anthropic.APIError` (no/invalid key, network) **aborts the whole run** and leaves entries queued for a retry; a content error on one entry marks just that entry `status='failed'` and the run continues. The API can auto-run the cycle debounced after captures (`SYNAPSE_AUTO_CYCLE`).
+Per-entry resilience: each entry is processed in isolation. An `anthropic.APIError` (no/invalid key, network) **aborts the whole run** and leaves entries queued for a retry; a content error on one entry marks just that entry `status='failed'` and the run continues.
+
+**Working memory + batched consolidation (SYN-93).** Two timescales, like sleep consolidation: capture buffers during the "day", consolidation runs in a batched "sleep" pass. (1) **Working memory** — `_build_day_context` hands the classifier a read-only transcript of the batch + recently-consolidated captures (24h lookback) as a *cached* context block, so coreference ("il / elle / ce projet / hier") resolves across captures instead of each entry being classified in a vacuum. The block **commits nothing** — only the current capture (the user message) produces outputs. (2) **Batched trigger** — the scheduler (`api/app.py::_should_consolidate`) no longer runs ~every 2 min; captures wait for a scheduled local hour (`SYNAPSE_CONSOLIDATION_HOURS`, default `3`; config-driven so a later setting can let the user pick the hour or add a midday pass) **or** a size safety-valve (`SYNAPSE_CONSOLIDATION_MAX_QUEUED`, default 30). Stale-summary-only runs (SYN-89, empty inbox) still fire promptly; manual `POST /dream-cycle/run` is the on-demand override. Consequence (accepted): a fresh query mid-day won't see the day's uncommitted captures until the batch runs. Batch API (-50%) for the nightly pass is a follow-up. `SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is now unused.
 
 **Memory strength / graceful forgetting (SYN-19/68, `dream_cycle/decay.py`)**: `memory_strength = exp(-Δdays/τ)` recomputed cadence-independently (τ via `SYNAPSE_DECAY_TAU_DAYS`, default 30) for **both** `atomic_notes` (`apply_decay`, anchor `last_reactivated_at`) **and** `entities` (`apply_entity_decay`, anchor `last_mentioned`, SYN-68). Reactivation: a mention in a new capture is a strong bump; a `search_memory` hit is a light one. Runs at the end of each cycle + standalone `python -m dream_cycle.decay` (nightly cron for empty-inbox days).
 
@@ -211,7 +214,7 @@ EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # Dream Cycle reasoning only
 ```
 
-**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CYCLE_DEBOUNCE_SECONDS` (120), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19). Single-valued predicates list (SYN-37): `facts_store.SINGLE_VALUED_PREDICATES`.
+**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CONSOLIDATION_HOURS` (`"3"`, SYN-93), `SYNAPSE_CONSOLIDATION_MAX_QUEUED` (30, SYN-93), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19). Single-valued predicates list (SYN-37): `facts_store.SINGLE_VALUED_PREDICATES`. (`SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is legacy/unused since SYN-93.)
 
 ### Visualizer (`visualizer/`)
 

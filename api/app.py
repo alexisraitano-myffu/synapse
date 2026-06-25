@@ -62,6 +62,47 @@ def _debounce_seconds() -> int:
         return 120
 
 
+# ── SYN-93: batched consolidation policy ─────────────────────────────────────
+# Captures no longer consolidate ~every 2 min. Instead the day's captures wait
+# for a real "sleep" pass — a scheduled hour OR a size safety-valve — which
+# widens the working-memory window (better coreference, less supersede churn,
+# cheaper). Hours + threshold are config-driven so a later setting can let the
+# user pick the hour or add a midday pass (e.g. SYNAPSE_CONSOLIDATION_HOURS="0,12").
+_last_consolidation_slot: tuple | None = None
+
+
+def _consolidation_hours() -> set[int]:
+    raw = os.environ.get("SYNAPSE_CONSOLIDATION_HOURS", "3")
+    hours = {int(p) for p in (s.strip() for s in raw.split(",")) if p.isdigit() and 0 <= int(p) <= 23}
+    return hours or {3}
+
+
+def _consolidation_max_queued() -> int:
+    try:
+        return max(1, int(os.environ.get("SYNAPSE_CONSOLIDATION_MAX_QUEUED", "30")))
+    except ValueError:
+        return 30
+
+
+def _should_consolidate(queued: int, stale: int) -> bool:
+    """Whether the scheduler should run a consolidation pass now (SYN-93)."""
+    global _last_consolidation_slot
+    # Stale summaries on an empty inbox = a cheap resummary-only run — don't make a
+    # user's fact edit wait until the nightly pass.
+    if queued == 0:
+        return stale > 0
+    # Size safety-valve: a heavy capture day consolidates without waiting for the hour.
+    if queued >= _consolidation_max_queued():
+        return True
+    # Scheduled "end of day" pass — fire at most once per slot (local hour).
+    now_local = datetime.now()
+    slot = (now_local.date().isoformat(), now_local.hour)
+    if now_local.hour in _consolidation_hours() and slot != _last_consolidation_slot:
+        _last_consolidation_slot = slot
+        return True
+    return False
+
+
 def _ensure_weekly_digest() -> None:
     """SYN-23 — self-heal the weekly digest. The launchd job (Monday morning) is
     the primary trigger, but it silently misses if the Mac is asleep at that time
@@ -117,7 +158,10 @@ def _scheduler_loop() -> None:
                 conn.close()
             if queued == 0 and stale == 0:
                 continue
-            if queued > 0 and time.time() - _last_capture_ts < _debounce_seconds():
+            # SYN-93 — captures wait for a batched "sleep" pass (scheduled hour or
+            # size valve) instead of running ~every 2 min; stale-only resummary
+            # still runs promptly. Manual /dream-cycle/run stays an on-demand override.
+            if not _should_consolidate(queued, stale):
                 continue
             try:
                 dream_cycle_run(trigger="auto")  # guarded by the lock; errors land in cycle_runs

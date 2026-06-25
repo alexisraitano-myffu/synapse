@@ -283,16 +283,71 @@ def _load_owner_block(conn) -> str | None:
     )
 
 
+# SYN-93 — working memory. Recent captures are handed to the classifier as a
+# read-only context block so coreference ("il / elle / ce projet / hier") resolves
+# across a day's captures instead of each entry being classified in a vacuum. The
+# block COMMITS NOTHING — only the current capture (the user message) produces
+# outputs. Same string for every entry of a run → cached prefix (one write, then hits).
+_WM_MAX_CAPTURES = 80
+_WM_MAX_CHARS = 8000
+_WM_LOOKBACK_HOURS = 24
+
+
+def _build_day_context(conn, batch_entries, now) -> str | None:
+    """Build the working-memory context (SYN-93): captures of the current
+    consolidation batch + recently-consolidated captures within the lookback
+    window, as a chronological transcript. Returns None when there's nothing to
+    resolve against (a lone capture with no recent history)."""
+    cutoff = (now - timedelta(hours=_WM_LOOKBACK_HOURS)).isoformat()
+    prior = cursor_to_dicts(conn.execute(
+        "SELECT content, created_at FROM inbox "
+        "WHERE processed_at IS NOT NULL AND created_at >= ? "
+        "ORDER BY created_at DESC LIMIT ?",
+        (cutoff, _WM_MAX_CAPTURES),
+    ))
+    prior.reverse()  # back to chronological
+    timeline = [(p["content"], p.get("created_at"), "consolidé") for p in prior]
+    timeline += [(e["content"], e.get("created_at"), "à consolider") for e in batch_entries]
+    if len(timeline) <= 1:
+        return None
+
+    lines = [
+        "[CONTEXTE — captures récentes, pour RÉSOUDRE LES RÉFÉRENCES "
+        "(il, elle, ça, ce projet, « hier »…).",
+        "⚠ N'EXTRAIS RIEN de ce bloc : seule la capture COURANTE (le message "
+        "utilisateur) doit produire entités/faits/notes. Ce bloc n'est qu'un rappel "
+        "du fil pour lever les ambiguïtés.]",
+    ]
+    used = 0
+    for content, created_at, phase in timeline:
+        ts = (created_at or "")[:16].replace("T", " ")
+        text = " ".join((content or "").split())
+        line = f"[{ts} · {phase}] {text}"
+        if used + len(line) > _WM_MAX_CHARS:
+            lines.append("… (contexte tronqué)")
+            break
+        lines.append(line)
+        used += len(line)
+    return "\n".join(lines)
+
+
 def step1_classify(
     entry: dict,
     client: anthropic.Anthropic,
     verbose: bool = False,
     conn=None,
+    day_context: str | None = None,
 ) -> dict:
     system_stable = _SYSTEM_CLASSIFIER.format(today=_TODAY)
     system_blocks = [
         {"type": "text", "text": system_stable, "cache_control": {"type": "ephemeral"}},
     ]
+    if day_context:
+        # SYN-93: stable across the run → mark cached so only the first entry pays
+        # for it; the rest read it from cache.
+        system_blocks.append(
+            {"type": "text", "text": day_context, "cache_control": {"type": "ephemeral"}}
+        )
     if conn is not None:
         # NOT cached — all vary as the user creates projects / extends the vocab / sets owner.
         system_blocks.append({"type": "text", "text": _load_active_types_block(conn)})
@@ -1541,7 +1596,7 @@ def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False,
     )
 
 
-def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str], list[dict]]:
+def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None) -> tuple[list[str], list[dict]]:
     """Process one inbox entry; mark it processed. Returns (entity_ids, new_facts).
 
     SYN-42 + SYN-57: routing is NON-EXCLUSIVE and N-per-projection. A single
@@ -1553,7 +1608,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose) -> tuple[list[str
     leaves the entry queued); other exceptions are content errors the caller marks
     as 'failed'.
     """
-    classified = step1_classify(entry, client, verbose, conn=conn)
+    classified = step1_classify(entry, client, verbose, conn=conn, day_context=day_context)
     capture_id = entry["id"]
     entity_ids: list[str] = []
     new_facts: list[dict] = []
@@ -1737,6 +1792,8 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
         print(f"\n  {len(entries)} unprocessed entr{'y' if len(entries) == 1 else 'ies'} found\n")
 
         now = datetime.now(timezone.utc).isoformat()
+        # SYN-93 — working memory: one context block for the whole batch (coreference).
+        day_context = _build_day_context(conn, entries, datetime.now(timezone.utc))
         all_entity_ids: list[str] = []
         all_new_facts: list[dict] = []
 
@@ -1745,7 +1802,7 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False) -> None:
             print(f"▸ inbox id={entry['id']}: {entry['content'][:70]!r}")
             try:
                 entity_ids, new_facts = _process_entry(
-                    entry, client, conn, now, dry_run, verbose
+                    entry, client, conn, now, dry_run, verbose, day_context=day_context
                 )
                 all_entity_ids.extend(e for e in entity_ids if e not in all_entity_ids)
                 all_new_facts.extend(new_facts)
