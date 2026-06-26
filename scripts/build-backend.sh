@@ -40,6 +40,8 @@ pyinstaller \
     --collect-all onnxruntime \
     --collect-all zeroconf \
     --collect-all ifaddr \
+    --collect-all networkx \
+    --collect-all dateparser \
     --copy-metadata fastembed \
     --copy-metadata anthropic \
     --hidden-import sqlite_vec \
@@ -52,6 +54,15 @@ pyinstaller \
     --hidden-import uvicorn.lifespan \
     --hidden-import uvicorn.lifespan.on \
     backend_entry.py
+
+# Stamp the bundle with a version marker. The desktop app compares this against the
+# installed backend at launch and auto-reinstalls when they differ, so a new .dmg's
+# backend reaches testers even if their old one is still running under KeepAlive
+# (SYN-105). ~/.synapse data is untouched by reinstall. Timestamped so every rebuild
+# (even same commit, e.g. a venv-sync fix) is treated as a new version.
+VERSION="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)-$(date +%Y%m%d%H%M%S)"
+echo "$VERSION" > dist/synapse-backend/BACKEND_VERSION
+echo "[stamp] BACKEND_VERSION=$VERSION"
 
 echo
 echo "[done] Bundle at: $(pwd)/dist/synapse-backend/"
