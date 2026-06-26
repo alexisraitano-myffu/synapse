@@ -38,6 +38,8 @@ pyinstaller \
     --collect-all huggingface_hub \
     --collect-all tokenizers \
     --collect-all onnxruntime \
+    --collect-all zeroconf \
+    --collect-all ifaddr \
     --copy-metadata fastembed \
     --copy-metadata anthropic \
     --hidden-import sqlite_vec \
