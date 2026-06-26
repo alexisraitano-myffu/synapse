@@ -68,13 +68,50 @@ def _debounce_seconds() -> int:
 # widens the working-memory window (better coreference, less supersede churn,
 # cheaper). Hours + threshold are config-driven so a later setting can let the
 # user pick the hour or add a midday pass (e.g. SYNAPSE_CONSOLIDATION_HOURS="0,12").
-_last_consolidation_slot: tuple | None = None
+#
+# Last-consolidation marker (file mtime in BASE_DIR). Persisted so the scheduled
+# pass survives a restart and supports catch-up: if a scheduled hour passed while
+# the Mac was asleep/off, the next tick (incl. the first one at startup) sees that
+# we haven't consolidated since that time and runs it. Mirrors the digest self-heal.
+_CONSOLIDATION_MARKER = BASE_DIR / "last_consolidation"
+
+
+def _last_consolidation_epoch() -> float:
+    try:
+        return _CONSOLIDATION_MARKER.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _mark_consolidated() -> None:
+    try:
+        BASE_DIR.mkdir(parents=True, exist_ok=True)
+        _CONSOLIDATION_MARKER.touch()
+    except OSError:
+        pass
+
+
+def _most_recent_scheduled_epoch(hours: set[int]) -> float | None:
+    """Epoch of the latest scheduled occurrence at or before now (today if one of
+    the hours has already passed, else yesterday's last hour). None if no hours."""
+    if not hours:
+        return None
+    from datetime import timedelta
+    now_local = datetime.now()
+    today = [now_local.replace(hour=h, minute=0, second=0, microsecond=0)
+             for h in hours if h <= now_local.hour]
+    most_recent = max(today) if today else (
+        now_local - timedelta(days=1)).replace(hour=max(hours), minute=0, second=0, microsecond=0)
+    return most_recent.timestamp()
 
 
 def _consolidation_hours() -> set[int]:
-    raw = os.environ.get("SYNAPSE_CONSOLIDATION_HOURS", "3")
+    # Default = midnight + noon. Two passes/day so a laptop tester that's awake
+    # at some point around either gets their captures consolidated; the startup/
+    # wake catch-up below covers the hour they were actually asleep.
+    raw = os.environ.get("SYNAPSE_CONSOLIDATION_HOURS", "0,12")
     hours = {int(p) for p in (s.strip() for s in raw.split(",")) if p.isdigit() and 0 <= int(p) <= 23}
-    return hours or {3}
+    return hours or {0, 12}
 
 
 def _consolidation_max_queued() -> int:
@@ -86,9 +123,8 @@ def _consolidation_max_queued() -> int:
 
 def _should_consolidate(queued: int, stale: int) -> str:
     """Why a consolidation pass should run now ('' = don't). 'scheduled' is the
-    nightly "sleep" pass → Batch API (-50%); 'valve'/'stale' stay synchronous so a
+    twice-daily "sleep" pass → Batch API (-50%); 'valve'/'stale' stay synchronous so a
     big capture day or a fact edit doesn't wait on batch latency (SYN-93)."""
-    global _last_consolidation_slot
     # Stale summaries on an empty inbox = a cheap resummary-only run — don't make a
     # user's fact edit wait until the nightly pass.
     if queued == 0:
@@ -96,11 +132,13 @@ def _should_consolidate(queued: int, stale: int) -> str:
     # Size safety-valve: a heavy capture day consolidates without waiting for the hour.
     if queued >= _consolidation_max_queued():
         return "valve"
-    # Scheduled "end of day" pass — fire at most once per slot (local hour).
-    now_local = datetime.now()
-    slot = (now_local.date().isoformat(), now_local.hour)
-    if now_local.hour in _consolidation_hours() and slot != _last_consolidation_slot:
-        _last_consolidation_slot = slot
+    # Scheduled pass WITH catch-up: run if the most recent scheduled time has passed
+    # and we haven't consolidated since — so a slot missed because the Mac was
+    # asleep/off (or the backend was down) is recovered on the next tick, including
+    # the first one at startup. The marker is updated after every auto run, so a
+    # valve run shortly after a scheduled hour also satisfies it (no double pass).
+    last_sched = _most_recent_scheduled_epoch(_consolidation_hours())
+    if last_sched is not None and _last_consolidation_epoch() < last_sched:
         return "scheduled"
     return ""
 
@@ -132,8 +170,13 @@ def _ensure_weekly_digest() -> None:
 
 def _scheduler_loop() -> None:
     global _last_digest_check
+    # Act before sleeping so the first iteration runs at startup — that's the
+    # catch-up for anything missed while the backend was down (Mac asleep/off).
+    first = True
     while True:
-        time.sleep(30)
+        if not first:
+            time.sleep(30)
+        first = False
         # Weekly digest catch-up — independent of the auto-cycle flag, checked at
         # most hourly (the work itself is gated on the digest being missing).
         try:
@@ -167,8 +210,9 @@ def _scheduler_loop() -> None:
             if not reason:
                 continue
             try:
-                # Scheduled nightly pass → Batch API (-50%); valve/stale → synchronous.
+                # Scheduled pass → Batch API (-50%); valve/stale → synchronous.
                 dream_cycle_run(trigger="auto", use_batch=(reason == "scheduled"))  # lock-guarded
+                _mark_consolidated()  # advance the catch-up marker (any auto run counts)
             except Exception:
                 pass  # retry next tick
         except Exception:
