@@ -163,6 +163,14 @@ Per-entry resilience: each entry is processed in isolation. An `anthropic.APIErr
 - **Offline « entités liées » (SYN-91)**: `GET /changes` ships each entity's embedding as base64 in `embedding_b64` (null until vectorized) — previously the raw BLOB was dropped. Lets the mobile replica compute the cosine « entités liées » **offline**. Cost ≈ 2 KB/entity in `/changes`; revisit with delta-sync as the base grows.
 - **Map layout moved client-side (SYN-64)**: the mobile app now computes the living-map layout itself (a vis-network `forceAtlas2Based` port, `ForceLayout.kt`) — the backend `graph_layout.py` (ForceAtlas2 → `node_positions`) is unchanged but **advisory** for the mobile map.
 
+### Update 2026-06-29 — classification quality, « À valider » tasks, reprocess
+
+Triggered by a tester: actionable captures were dropped or mis-routed.
+
+- **Classifier hardening (`_SYSTEM_CLASSIFIER`)**: the whole cycle runs on **Haiku** (`CLAUDE_MODEL`, hardcoded — same on prod + every tester; the fuel proxy only allows Haiku, so there's no "bigger model on prod"). Haiku is **fragile on the task-vs-ephemeral boundary** for terse/2nd-person/translated phrasing — it tagged "Répondre à l'e-mail de Vincent" / "déclarer les revenus à l'URSSAF" as **ephemeral pure intentions** → the ephemeral fast-exit **dropped them**. Hard rule added: any ACTION TO DO ⇒ `atomic_note != null` AND `atomic_note_kind="task"` (addressed-to-a-named-person/org or carrying a commitment/deadline = task, never ephemeral, even two words); "trivial ephemeral errand" narrowed to contentless/addressee-less. Reproduce/verify with an isolated classify-only harness (real key, the exact texts) — the **batch path shares the same prompt** (`_classify_params`), so the fix covers it; the `day_context` transcript just nudged the old prompt.
+- **« À valider » queue for low-confidence tasks**: classifier now emits `classification_confidence` (0–1); a task/event below `SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD` (0.7) is written with **`atomic_notes.review_status='pending'`** (default `'confirmed'`) instead of silently dropped. Pending notes are **hidden from every read surface** (`/atomic-notes` default, `/graph`, digest retrospective + « à venir » + open-tasks) and surface only via `GET /atomic-notes?review_status=pending`; `POST /atomic-note/{id}/confirm` promotes (reject = `/archive`). App: a "Tâches" segment in « À valider ».
+- **Reprocess (`POST /inbox/{id}/reprocess`)**: replay a capture through the cycle after a prompt fix — deletes only **that capture's** artifacts (atomic_notes + vec, facts, relations, project_entries), **keeps entities** (resolver dedupes; only `mention_count` may drift), re-queues. No global-wipe endpoint by design. To rebuild a tester's data: loop it over `/feed` ids then `POST /dream-cycle/run`.
+
 ### MCP tools (`mcp_server/server.py`)
 
 - `add_to_inbox(content, source)` — raw capture
