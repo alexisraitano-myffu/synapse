@@ -108,7 +108,8 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
   ],
   "summary": "string (résumé en 1 phrase)",
   "is_ephemeral": false,
-  "ephemeral_content": null
+  "ephemeral_content": null,
+  "classification_confidence": 1.0
 }}
 
 Règles atomic_note :
@@ -132,6 +133,13 @@ une affirmation factuelle sur des tiers.
      vendredi", "rappeler le dentiste avant le 20"), garde kind="task" ET renseigne event_date
      (date ABSOLUE). Une tâche datée N'EST PAS un événement — c'est une chose à faire, pas une
      occurrence qui se produit.
+     RÈGLE DURE — toute capture qui est une ACTION À FAIRE doit donner atomic_note != null ET
+     atomic_note_kind="task" (JAMAIS null, JAMAIS is_ephemeral seul). Une action ADRESSÉE à une
+     personne/organisation nommée ("répondre à l'e-mail de Vincent", "présenter le plan
+     d'affaires à Ziyu", "parler à Vincent de l'appartement"), ou une DÉMARCHE/un ENGAGEMENT
+     ("déclarer mes revenus à l'URSSAF", "envoyer la facture à efcsn") = TÂCHE, même formulée
+     en deux mots ou à l'impératif/2ᵉ personne. Ne te contente JAMAIS d'en extraire des faits
+     sur les entités citées en laissant tomber l'action elle-même.
  (e) ÉVÉNEMENT DATÉ (kind="event") : une occurrence qui SE PRODUIT à une date — rendez-vous,
      salon, anniversaire, échéance d'agenda. La distinction avec une tâche datée : un event tu
      y ASSISTES / il ARRIVE (passif) ; une tâche tu la FAIS (actif). "Salon Vivatech le 24" →
@@ -150,9 +158,10 @@ Sinon atomic_note = null. En particulier, atomic_note = null pour TOUS ces cas :
    pas en atomic_note (sauf si l'auteur en tire explicitement une réflexion, cf. (a)).
  - Compte-rendu projet ("j'ai avancé sur X aujourd'hui, j'ai testé Y") → project_entries, pas
    atomic_note (sauf réflexion explicite en plus).
- - Micro-course triviale SANS contenu durable ni date ("il faut que j'achète du pain") →
-   intention éphémère uniquement, pas de note. Avec une date → event (e) ; avec du contenu
-   à retrouver → task (d).
+ - Micro-course triviale, SANS destinataire ni enjeu, SANS contenu durable ni date
+   ("il faut que j'achète du pain", "acheter un baudrier") → intention éphémère uniquement,
+   pas de note. MAIS dès qu'il y a un destinataire nommé, un engagement ou une date, ce N'EST
+   PLUS éphémère → task (d) (avec event_date si échéance) ou event (e).
 
 Fail-safe SVO : si la capture peut intégralement se reformuler en (sujet, prédicat, objet) ou
 en liste de tels triplets, c'est un fact, pas une note. Une note contient toujours un
@@ -187,6 +196,14 @@ Règles type d'entité :
 - Choisis `type` STRICTEMENT parmi les TYPES D'ENTITÉ ACTIFS fournis en contexte ci-dessous (la liste s'étend avec le temps).
 - Si une entité ne rentre dans AUCUN type actif (ex : une recette, un outil logiciel, un événement, un plat), NE force PAS un type approximatif : mets `"type": "concept"` ET renseigne `"type_proposal": {{"value": "<type_en_snake_case>", "reason": "<pourquoi ce nouveau type>"}}`. Sinon laisse `"type_proposal": null`.
 - Garde-fou "projet" : n'émets `"type": "project"` QUE si tu produis aussi un item project_entries pour CETTE entité dans le même JSON. Un nom ambigu (souvent issu d'une transcription approximative) ne doit jamais créer un projet : dans le doute → `"type": "concept"`.
+
+Règle classification_confidence (0.0–1.0) :
+Note ta confiance dans le ROUTAGE choisi (input_type / atomic_note_kind / is_ephemeral).
+- 1.0 = sans ambiguïté. ~0.9 = clair. < 0.6 = tu hésites réellement (ex : action minimale dont
+  tu ne sais pas si elle vaut une tâche durable, ou capture cryptique/tronquée).
+- En cas d'hésitation sur « action durable vs éphémère » : NE jette PAS — choisis
+  atomic_note_kind="task" et baisse classification_confidence (< 0.6). Mieux vaut une tâche à
+  valider qu'une intention perdue.
 
 Règles persistence_value :
 5 = permanent (date naissance, lien familial, prénom)
