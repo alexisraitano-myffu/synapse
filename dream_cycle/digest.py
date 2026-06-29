@@ -101,7 +101,7 @@ def gather_week(conn, *, now: datetime | None = None, days: int = 7) -> dict:
     new_notes = cursor_to_dicts(conn.execute(
         "SELECT title, content, kind FROM atomic_notes "
         "WHERE created_at >= ? AND archived_at IS NULL "
-        "AND kind IN ('note', 'task', 'event') "
+        "AND kind IN ('note', 'task', 'event') AND review_status != 'pending' "
         "ORDER BY created_at DESC LIMIT ?",
         (since, _MAX_NOTES),
     ))
@@ -125,7 +125,8 @@ def gather_week(conn, *, now: datetime | None = None, days: int = 7) -> dict:
     # absolute date. Filtered in Python so the year-boundary case stays correct.
     dated_raw = cursor_to_dicts(conn.execute(
         "SELECT title, content, kind, event_date, event_recurring FROM atomic_notes "
-        "WHERE kind IN ('event', 'task') AND archived_at IS NULL AND event_date IS NOT NULL"
+        "WHERE kind IN ('event', 'task') AND archived_at IS NULL AND event_date IS NOT NULL "
+        "AND review_status != 'pending'"
     ))
     upcoming_events = []
     for ev in dated_raw:
@@ -174,6 +175,7 @@ def gather_week(conn, *, now: datetime | None = None, days: int = 7) -> dict:
     open_tasks = cursor_to_dicts(conn.execute(
         "SELECT title, content FROM atomic_notes "
         "WHERE kind = 'task' AND archived_at IS NULL AND event_date IS NULL "
+        "AND review_status != 'pending' "
         "ORDER BY created_at DESC LIMIT ?",
         (_MAX_TASKS,),
     ))

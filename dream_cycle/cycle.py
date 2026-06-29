@@ -639,6 +639,12 @@ def _propose_merge_by_embedding(
 _PROJECT_ATTACH_THRESHOLD_DEFAULT = 0.30
 _PROJECT_ATTACH_MARGIN_DEFAULT = 0.03
 
+# Classifier self-reported confidence below which a task/event note lands in « À valider »
+# (review_status='pending') instead of straight into the backlog. The classifier is told to
+# KEEP-as-task with low confidence rather than drop, so this catches the genuinely ambiguous
+# "is this a durable task or a throwaway?" cases for a one-tap user confirm. Tunable per-run.
+_REVIEW_CONFIDENCE_THRESHOLD_DEFAULT = 0.7
+
 
 def _propose_project_attach_if_similar(
     capture_id: int | None,
@@ -1325,6 +1331,7 @@ def _persist_atomic_note(
     kind: str = "note",
     event_date: str | None = None,
     event_recurring: bool = False,
+    review_status: str = "confirmed",
 ) -> int | None:
     """Persist a free-form thought as an atomic_note with provenance.
 
@@ -1339,18 +1346,21 @@ def _persist_atomic_note(
     """
     if kind not in ("note", "task", "event"):
         kind = "note"
+    if review_status not in ("confirmed", "pending"):
+        review_status = "confirmed"
     title = (summary or content)[:60]
     conn.execute(
         "INSERT INTO atomic_notes "
         "(title, content, summary, entities_mentioned, memory_strength, provenance_capture_id, "
-        " kind, event_date, event_recurring) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        " kind, event_date, event_recurring, review_status) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
         (title, content, summary,
          json.dumps(entities_mentioned, ensure_ascii=False),
          1.0, capture_id,
          # SYN-23: a task may also carry a date (échéance) without being an event.
          kind, event_date if kind in ("event", "task") else None,
-         1 if (kind in ("event", "task") and event_recurring) else 0),
+         1 if (kind in ("event", "task") and event_recurring) else 0,
+         review_status),
     )
     note_id = conn.last_insert_rowid()
     try:
@@ -1769,6 +1779,17 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
                 pc = (pe or {}).get("project_canonical")
                 if pc and pc not in mentioned:
                     mentioned.append(pc)
+            # « À valider » gate: a task/event the classifier wasn't confident about lands in
+            # 'pending' (one-tap user confirm) rather than silently joining the backlog.
+            # Reflections (kind='note') are never gated. Missing/garbled confidence ⇒ 1.0.
+            try:
+                conf = float(classified.get("classification_confidence"))
+            except (TypeError, ValueError):
+                conf = 1.0
+            review_threshold = float(os.getenv(
+                "SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD", str(_REVIEW_CONFIDENCE_THRESHOLD_DEFAULT)))
+            review_status = ("pending" if atomic_kind in ("task", "event")
+                             and conf < review_threshold else "confirmed")
             created_note_id = _persist_atomic_note(
                 content=atomic.strip(),
                 summary=classified.get("summary") or "",
@@ -1780,6 +1801,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
                 kind=atomic_kind,
                 event_date=classified.get("event_date") or None,
                 event_recurring=bool(classified.get("event_recurring")),
+                review_status=review_status,
             )
 
         # 3. Project entries — N rattachements possibles (SYN-57). Une même

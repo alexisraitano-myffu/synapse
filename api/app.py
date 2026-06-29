@@ -700,8 +700,9 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
                 "SELECT id, title, summary, content, memory_strength, "
                 "       last_reactivated_at, created_at, entities_mentioned "
                 # Digests are global weekly summaries (mention many entities) — they'd
-                # hairball the map; archived notes are hidden everywhere else too.
-                "FROM atomic_notes WHERE archived_at IS NULL AND kind != 'digest'"
+                # hairball the map; archived + pending-review notes are hidden everywhere else too.
+                "FROM atomic_notes WHERE archived_at IS NULL AND kind != 'digest' "
+                "AND review_status != 'pending'"
             )):
                 nid = f"n:{n['id']}"
                 preview = n.get("title") or n.get("summary") or (n.get("content") or "")
@@ -919,6 +920,7 @@ def atomic_notes_list(
     q: str | None = None,
     entity: str | None = None,
     kind: str | None = None,
+    review_status: str | None = None,
 ):
     """List atomic_notes for the Notes view (SYN-52).
 
@@ -927,6 +929,8 @@ def atomic_notes_list(
     - entity: matches any note whose entities_mentioned JSON array contains
       the canonical name (LIKE on the serialized list — cheap, no JSON1)
     - kind: note | task | event (SYN-85)
+    - review_status: 'pending' to fetch the « À valider » queue. Omitted ⇒ the
+      normal view, which HIDES pending tasks (they only surface in validation).
     User-archived notes are hidden (SYN-85 "rendre obsolète").
     """
     limit = min(max(1, limit), 200)
@@ -946,12 +950,20 @@ def atomic_notes_list(
                 raise HTTPException(status_code=400, detail="invalid kind filter")
             clauses.append("kind = ?")
             params.append(kind)
+        if review_status:
+            if review_status not in ("confirmed", "pending"):
+                raise HTTPException(status_code=400, detail="invalid review_status filter")
+            clauses.append("review_status = ?")
+            params.append(review_status)
+        else:
+            # Default view hides unvalidated tasks/events — they live in « À valider ».
+            clauses.append("review_status != 'pending'")
         where = "WHERE " + " AND ".join(clauses)
         params.append(limit)
         rows = cursor_to_dicts(conn.execute(
             f"SELECT id, title, content, summary, entities_mentioned, memory_strength, "
             f"       provenance_capture_id, created_at, updated_at, "
-            f"       kind, event_date, event_recurring, archived_at "
+            f"       kind, event_date, event_recurring, archived_at, review_status "
             f"FROM atomic_notes {where} ORDER BY created_at DESC LIMIT ?",
             tuple(params),
         ))
@@ -1014,6 +1026,25 @@ def atomic_note_archive(note_id: int):
         if not changed:
             raise HTTPException(status_code=404, detail="note not found")
         return {"id": note_id, "archived": True}
+    finally:
+        conn.close()
+
+
+@app.post("/atomic-note/{note_id}/confirm", dependencies=[Depends(require_auth)])
+def atomic_note_confirm(note_id: int):
+    """« À valider » — accept a low-confidence task/event: promote it from
+    review_status='pending' into the live backlog. (Reject = the /archive route.)"""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE atomic_notes SET review_status='confirmed' WHERE id=? AND review_status='pending'",
+                (note_id,),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not changed:
+            raise HTTPException(status_code=404, detail="no pending note with this id")
+        return {"id": note_id, "review_status": "confirmed"}
     finally:
         conn.close()
 

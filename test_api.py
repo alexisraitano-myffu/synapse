@@ -744,6 +744,40 @@ def test_note_kinds_filter_and_archive(client):
     assert notes["anniversaire de Marie"]["kind"] == "event"
 
 
+# ── « À valider » queue for low-confidence tasks ─────────────────────────────
+
+def test_review_queue_hides_pending_and_confirm(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO atomic_notes (content, kind, review_status) "
+                         "VALUES ('tâche sûre','task','confirmed')")
+            conn.execute("INSERT INTO atomic_notes (content, kind, review_status) "
+                         "VALUES ('tâche ambiguë','task','pending')")
+    finally:
+        conn.close()
+
+    # Default view hides the pending one; only the confirmed task shows.
+    default = client.get("/atomic-notes", params={"kind": "task"}).json()
+    assert [n["content"] for n in default] == ["tâche sûre"]
+
+    # The « À valider » queue surfaces only pending, and exposes review_status.
+    pending = client.get("/atomic-notes", params={"review_status": "pending"}).json()
+    assert [n["content"] for n in pending] == ["tâche ambiguë"]
+    assert pending[0]["review_status"] == "pending"
+    assert client.get("/atomic-notes", params={"review_status": "nope"}).status_code == 400
+
+    # Confirming promotes it into the live backlog; double-confirm 404s.
+    pid = pending[0]["id"]
+    assert client.post(f"/atomic-note/{pid}/confirm").status_code == 200
+    now = {n["content"] for n in client.get("/atomic-notes", params={"kind": "task"}).json()}
+    assert now == {"tâche sûre", "tâche ambiguë"}
+    assert client.post(f"/atomic-note/{pid}/confirm").status_code == 404
+
+    # Reject path = the existing archive route.
+    assert client.post(f"/atomic-note/{pid}/archive").status_code == 200
+
+
 # ── Fact categories (SYN-88) ─────────────────────────────────────────────────
 
 def test_entity_facts_expose_category(client):

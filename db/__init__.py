@@ -462,5 +462,15 @@ def init_db() -> None:
                 conn.execute(ddl)
             except apsw.SQLError:
                 pass  # column already present
+
+        # Migration: low-confidence task/event notes land in « À valider » instead of
+        # being silently dropped or auto-confirmed. 'confirmed' (default — every legacy
+        # row + every high-confidence classification) | 'pending' (awaits user validation).
+        # Read views hide 'pending'; only the validation queue surfaces it.
+        try:
+            conn.execute(
+                "ALTER TABLE atomic_notes ADD COLUMN review_status TEXT NOT NULL DEFAULT 'confirmed'")
+        except apsw.SQLError:
+            pass  # column already present
     finally:
         conn.close()
