@@ -90,13 +90,17 @@ def test_should_consolidate_size_valve(monkeypatch):
     assert appmod._should_consolidate(queued=4, stale=0) == ""       # below valve, not the hour
 
 
-def test_should_consolidate_scheduled_fires_once(monkeypatch):
+def test_should_consolidate_scheduled_fires_once(monkeypatch, tmp_path):
     now_hour = str(datetime.now().hour)
     monkeypatch.setenv("SYNAPSE_CONSOLIDATION_HOURS", now_hour)
     monkeypatch.setenv("SYNAPSE_CONSOLIDATION_MAX_QUEUED", "999")   # disable size valve
-    appmod._last_consolidation_slot = None
-    assert appmod._should_consolidate(queued=1, stale=0) == "scheduled"  # batch path
-    assert appmod._should_consolidate(queued=1, stale=0) == ""           # same slot → no refire
+    # Isolate the catch-up marker (mtime-based) from any real run on this machine.
+    monkeypatch.setattr(appmod, "_CONSOLIDATION_MARKER", tmp_path / "last_consolidation")
+    # Never consolidated → today's scheduled slot is due (batch path).
+    assert appmod._should_consolidate(queued=1, stale=0) == "scheduled"
+    # The scheduler marks the run done → the same slot no longer refires.
+    appmod._mark_consolidated()
+    assert appmod._should_consolidate(queued=1, stale=0) == ""
 
 
 # ── Batch API classify (offline, mocked client) ──────────────────────────────
