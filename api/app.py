@@ -521,6 +521,40 @@ def inbox_requeue(entry_id: int):
         conn.close()
 
 
+@app.post("/inbox/{entry_id}/reprocess", dependencies=[Depends(require_auth)])
+def inbox_reprocess(entry_id: int):
+    """Re-run an already-processed (or failed) capture through the cycle — e.g. to recover
+    captures mis-classified before a classifier-prompt fix. Deletes ONLY this capture's own
+    derived artifacts (atomic_notes + their vec rows, facts, relations, project_entries) so
+    the re-run can't duplicate them; ENTITIES are left untouched (the resolver dedupes against
+    them — only their mention_count may drift slightly). Re-queues the entry; the next dream
+    cycle (or POST /dream-cycle/run) reprocesses it."""
+    conn = get_connection()
+    try:
+        with conn:
+            row = first_row(conn.execute("SELECT id, status FROM inbox WHERE id=?", (entry_id,)))
+            if not row:
+                raise HTTPException(status_code=404, detail="no inbox entry with this id")
+            if row.get("status") == "running":
+                raise HTTPException(status_code=409, detail="entry is currently processing")
+            note_ids = [r["id"] for r in cursor_to_dicts(conn.execute(
+                "SELECT id FROM atomic_notes WHERE provenance_capture_id=?", (entry_id,)))]
+            for nid in note_ids:
+                # atomic_notes_vec mirrors atomic_notes by rowid — drop the vector too.
+                conn.execute("DELETE FROM atomic_notes_vec WHERE rowid=?", (nid,))
+            conn.execute("DELETE FROM atomic_notes WHERE provenance_capture_id=?", (entry_id,))
+            conn.execute("DELETE FROM facts WHERE provenance_capture_id=? OR source_inbox_id=?",
+                         (entry_id, str(entry_id)))
+            conn.execute("DELETE FROM relations WHERE provenance_capture_id=?", (entry_id,))
+            conn.execute("DELETE FROM project_entries WHERE capture_id=?", (entry_id,))
+            conn.execute(
+                "UPDATE inbox SET status='queued', processed_at=NULL, error=NULL WHERE id=?",
+                (entry_id,))
+        return {"id": entry_id, "status": "queued", "notes_removed": len(note_ids)}
+    finally:
+        conn.close()
+
+
 def _ego_filter(entities: list[dict], relations: list[dict], focus: str):
     """Keep the focus entity and its direct neighbours."""
     focus_ids = {

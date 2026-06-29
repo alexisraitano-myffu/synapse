@@ -744,6 +744,38 @@ def test_note_kinds_filter_and_archive(client):
     assert notes["anniversaire de Marie"]["kind"] == "event"
 
 
+# ── Reprocess (recover captures mis-classified before a prompt fix) ──────────
+
+def test_reprocess_clears_artifacts_and_requeues(client):
+    client.post("/capture", json={"id": "rp1", "content": "Répondre à l'e-mail de Vincent"})
+    cid = next(x["id"] for x in client.get("/feed").json() if x["client_id"] == "rp1")
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("UPDATE inbox SET status='processed' WHERE id=?", (cid,))
+            conn.execute("INSERT INTO atomic_notes (content, kind, provenance_capture_id) "
+                         "VALUES ('vieille note',  'task', ?)", (cid,))
+            conn.execute("INSERT INTO facts (id, entity_id, predicate, value, provenance_capture_id) "
+                         "VALUES ('f-rp1','e-x','p','v', ?)", (cid,))
+    finally:
+        conn.close()
+
+    assert len(client.get("/atomic-notes", params={"kind": "task"}).json()) == 1
+    r = client.post(f"/inbox/{cid}/reprocess")
+    assert r.status_code == 200 and r.json()["notes_removed"] == 1
+
+    # artifacts gone, entry back in the queue
+    assert client.get("/atomic-notes", params={"kind": "task"}).json() == []
+    conn = _conn()
+    try:
+        facts = conn.execute("SELECT COUNT(*) FROM facts WHERE provenance_capture_id=?", (cid,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert facts == 0
+    assert next(x for x in client.get("/feed").json() if x["id"] == cid)["status"] == "queued"
+    assert client.post("/inbox/999999/reprocess").status_code == 404
+
+
 # ── « À valider » queue for low-confidence tasks ─────────────────────────────
 
 def test_review_queue_hides_pending_and_confirm(client):
