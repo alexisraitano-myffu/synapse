@@ -810,6 +810,46 @@ def test_review_queue_hides_pending_and_confirm(client):
     assert client.post(f"/atomic-note/{pid}/archive").status_code == 200
 
 
+def test_pending_relations_queue_and_confirm(client):
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e40','person','Audric',1,5)")
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e41','person','Alexis',1,5)")
+            conn.execute("INSERT INTO entities (id, type, canonical_name, mention_count, persistence_value) "
+                         "VALUES ('e42','person','Marie',1,5)")
+            conn.execute("INSERT INTO relations (id, entity_from, predicate, entity_to, confidence, review_status) "
+                         "VALUES ('r-sure','e42','knows','e41',0.95,'confirmed')")
+            conn.execute("INSERT INTO relations (id, entity_from, predicate, entity_to, confidence, review_status) "
+                         "VALUES ('r-doubt','e40','is_cousin_of','e41',0.4,'pending')")
+    finally:
+        conn.close()
+
+    # A pending relation is hidden from the fiche of both endpoints…
+    assert client.get("/entity/e40").json()["relations"] == []
+    assert all(r["predicate"] != "is_cousin_of"
+               for r in client.get("/entity/e41").json()["relations_incoming"])
+    # …and from the graph, but the confirmed one shows.
+    labels = {e["label"] for e in client.get("/graph").json()["edges"]}
+    assert "knows" in labels and "is_cousin_of" not in labels
+
+    # The « À valider » queue surfaces only the pending one, names resolved.
+    pend = client.get("/relations/pending").json()
+    assert len(pend) == 1
+    assert pend[0]["entity_from_name"] == "Audric" and pend[0]["entity_to_name"] == "Alexis"
+
+    # Confirm promotes it into the graph; double-confirm 404s.
+    assert client.post("/relation/r-doubt/confirm").status_code == 200
+    assert "is_cousin_of" in {e["label"] for e in client.get("/graph").json()["edges"]}
+    assert client.post("/relation/r-doubt/confirm").status_code == 404
+    assert client.get("/relations/pending").json() == []
+
+    # Reject path = DELETE /relation/{id}.
+    assert client.delete("/relation/r-sure").status_code == 200
+
+
 # ── Fact categories (SYN-88) ─────────────────────────────────────────────────
 
 def test_entity_facts_expose_category(client):

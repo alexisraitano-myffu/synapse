@@ -207,15 +207,19 @@ def test_behavioral_validation():
     facts_after_first = _get_entity_facts("Jean-Pierre")
     pending_after_first = _get_pending_facts()
 
+    # Haiku may encode "médecin" as a French value ("médecin") OR an English
+    # predicate (is_doctor=true) — both are valid. Match the concept in either field.
+    _DOCTOR = ("medecin", "médecin", "doctor", "docteur")
+    def _is_doctor_fact(predicate: str, value: str) -> bool:
+        blob = f"{predicate} {value}".lower()
+        return any(tok in blob for tok in _DOCTOR)
+
     medecin_in_entities = any(
-        "medecin" in f["predicate"].lower() or "medecin" in f["value"].lower()
-        or "médecin" in f["value"].lower()
-        for f in facts_after_first
+        _is_doctor_fact(f["predicate"], f["value"]) for f in facts_after_first
     )
     medecin_in_pending = any(
         "jean-pierre" in p.get("entity_canonical", "").lower()
-        and ("medecin" in p.get("predicate", "").lower() or "medecin" in p.get("value", "").lower()
-             or "médecin" in p.get("value", "").lower())
+        and _is_doctor_fact(p.get("predicate", ""), p.get("value", ""))
         for p in pending_after_first
     )
 
@@ -231,9 +235,7 @@ def test_behavioral_validation():
 
         facts_after_second = _get_entity_facts("Jean-Pierre")
         medecin_confirmed = any(
-            "medecin" in f["predicate"].lower() or "médecin" in f["value"].lower()
-            or "medecin" in f["value"].lower()
-            for f in facts_after_second
+            _is_doctor_fact(f["predicate"], f["value"]) for f in facts_after_second
         )
         assert medecin_confirmed, (
             "Expected Jean-Pierre's médecin fact to be promoted to entities after second mention. "

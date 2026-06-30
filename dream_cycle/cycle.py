@@ -102,8 +102,9 @@ Retourne UNIQUEMENT un JSON valide (sans markdown) :
   "relations": [
     {{
       "from": "canonical_name",
-      "predicate": "string",
-      "to": "canonical_name"
+      "predicate": "string (snake_case relationnel ex: sibling_of, works_with, cousin_of, employed_by)",
+      "to": "canonical_name",
+      "confidence": 1.0
     }}
   ],
   "summary": "string (résumé en 1 phrase)",
@@ -215,6 +216,20 @@ Règles evidence_strength (s'applique à la langue de la capture, FR/EN/autre) :
 explicit = fait énoncé directement, sans marqueur d'incertitude
 hedged   = marqueur d'incertitude épistémique présent (ex FR: "semble", "je crois", "il paraît", "devrait", "peut-être", "probablement" ; EN: "seems", "I think", "apparently", "probably", "might" ; même critère dans toute autre langue)
 implicit = fait non énoncé mais déduit du contexte (inférence indirecte, ex: on parle du déménagement de Pierre sans dire où)
+
+Règle fact vs relation (anti-redite) :
+Une RELATION lie deux ENTITÉS NOMMÉES ; un FACT décrit une entité par une valeur LITTÉRALE.
+- Si l'objet d'une information est une entité nommée (personne / organisation / lieu qui est
+  AUSSI une entité que tu émets), émets UNIQUEMENT la relation — JAMAIS en plus un fact qui
+  répète la même chose. Ex : « Audric est le cousin d'Alexis » → relation
+  (Audric, cousin_of, Alexis) SEULE, PAS de fact (cousin_de = "Alexis") sur Audric.
+- N'émets un fact que si la valeur est littérale et n'est pas une entité : « Alexis habite Lyon »
+  → fact (lives_in, "Lyon"). « Pierre travaille chez Acme » où Acme EST une entité → relation
+  (Pierre, works_at, Acme), pas de fact.
+- confidence d'une relation : 1.0 = énoncé sans ambiguïté ; baisse-la (< 0.7) si le lien est
+  hedged/déduit ou si tu hésites sur l'identité d'un des deux bouts. Une relation peu sûre part
+  en « À valider », jamais en dur — même logique que les tâches.
+
 Résous les dates relatives vers des dates absolues.
 La date d'aujourd'hui est : {today}.\
 """
@@ -857,10 +872,17 @@ def step4_route(
     # Names appearing in relations — these entities are created so the relation
     # has both endpoints (an entity may be mentioned only as a relation target).
     relation_names = set()
+    # Anti-redite: a fact whose VALUE names an entity that the same source entity
+    # already points to via a relation is the degraded textual twin of that edge —
+    # we drop it and keep the (traversable, bidirectional) relation. Map from→{targets}.
+    relation_targets_by_from: dict[str, set[str]] = {}
     for rel in resolved.get("relations", []):
         for key in ("from", "to"):
             if rel.get(key):
                 relation_names.add(rel[key].strip().lower())
+        rfrom, rto = (rel.get("from") or "").strip().lower(), (rel.get("to") or "").strip().lower()
+        if rfrom and rto:
+            relation_targets_by_from.setdefault(rfrom, set()).add(rto)
 
     # SYN-58: live type vocabulary + the project names declared in THIS capture
     # (the project-shell guard below needs the latter).
@@ -901,7 +923,15 @@ def step4_route(
                 entity_status = "pending"
 
         scored: list[tuple[dict, float]] = []
+        _rel_targets = relation_targets_by_from.get(canonical.lower(), set())
         for fact in entity_data.get("facts", []):
+            # Anti-redite: this fact restates a relation edge from the same entity →
+            # drop it (the relation carries it, queryably and from both fiches).
+            if (fact.get("value") or "").strip().lower() in _rel_targets:
+                if verbose:
+                    print(f"    [route] fact '{fact.get('predicate')}={fact.get('value')}'"
+                          f" dropped — covered by relation")
+                continue
             confidence = compute_confidence(
                 fact,
                 evidence_strength=fact.get("evidence_strength", "explicit"),
@@ -1001,14 +1031,23 @@ def step4_route(
                     (str(uuid.uuid4()), json.dumps(fact_data), entity_data["canonical_name"]),
                 )
 
-    # Relations — only if both entities already exist
+    # Relations — only if both entities already exist. Same confidence gate as facts/tasks:
+    # a low-confidence edge lands in « À valider » (review_status='pending') rather than
+    # persisting hard. The classifier emits per-relation confidence; missing/garbled ⇒ 1.0.
     if not dry_run:
+        rel_threshold = float(os.getenv(
+            "SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD", str(_REVIEW_CONFIDENCE_THRESHOLD_DEFAULT)))
         for rel in resolved.get("relations", []):
             from_name, predicate, to_name = (
                 rel.get("from"), rel.get("predicate"), rel.get("to")
             )
             if not (from_name and predicate and to_name):
                 continue
+            try:
+                rel_conf = float(rel.get("confidence"))
+            except (TypeError, ValueError):
+                rel_conf = 1.0
+            review_status = "pending" if rel_conf < rel_threshold else "confirmed"
             from_row = conn.execute(
                 "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (from_name,)
             ).fetchone()
@@ -1018,12 +1057,15 @@ def step4_route(
             if from_row and to_row:
                 conn.execute(
                     "INSERT INTO relations "
-                    "(id, entity_from, predicate, entity_to, provenance_capture_id) "
-                    "VALUES (?,?,?,?,?)",
-                    (str(uuid.uuid4()), from_row[0], predicate, to_row[0], source_inbox_id),
+                    "(id, entity_from, predicate, entity_to, confidence, review_status, "
+                    " provenance_capture_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), from_row[0], predicate, to_row[0],
+                     rel_conf, review_status, source_inbox_id),
                 )
                 if verbose:
-                    print(f"    [route] relation {from_name} —{predicate}→ {to_name}")
+                    print(f"    [route] relation {from_name} —{predicate}→ {to_name}"
+                          f" conf={rel_conf:.2f} → {review_status}")
 
     return entity_ids
 
@@ -1161,7 +1203,8 @@ def step_resummarize(
         ))
         relations = cursor_to_dicts(conn.execute(
             "SELECT r.predicate, x.canonical_name AS target FROM relations r "
-            "JOIN entities x ON x.id = r.entity_to WHERE r.entity_from = ?", (eid,)
+            "JOIN entities x ON x.id = r.entity_to "
+            "WHERE r.entity_from = ? AND r.review_status != 'pending'", (eid,)
         ))
         if not facts and not relations:
             # Nothing to derive from — keep the extraction summary, clear the flag.

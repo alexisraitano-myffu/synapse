@@ -472,5 +472,15 @@ def init_db() -> None:
                 "ALTER TABLE atomic_notes ADD COLUMN review_status TEXT NOT NULL DEFAULT 'confirmed'")
         except apsw.SQLError:
             pass  # column already present
+
+        # Migration: relations join the same confidence gate as facts/tasks. A relation
+        # the classifier wasn't confident about lands in « À valider » (review_status='pending')
+        # instead of persisting hard — previously relations bypassed every threshold. Read
+        # surfaces (entity detail, /graph, digest) hide 'pending'; only the queue surfaces it.
+        try:
+            conn.execute(
+                "ALTER TABLE relations ADD COLUMN review_status TEXT NOT NULL DEFAULT 'confirmed'")
+        except apsw.SQLError:
+            pass  # column already present
     finally:
         conn.close()

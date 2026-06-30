@@ -721,7 +721,8 @@ def graph(entity: str | None = None, mode: str = "full", include_archived: bool 
             {"from": r["entity_from"], "to": r["entity_to"],
              "label": r["predicate"], "confidence": r["confidence"]}
             for r in cursor_to_dicts(conn.execute(
-                "SELECT entity_from, entity_to, predicate, confidence FROM relations"
+                "SELECT entity_from, entity_to, predicate, confidence FROM relations "
+                "WHERE review_status != 'pending'"
             ))
         ]
 
@@ -842,7 +843,17 @@ def entity_detail(entity_id: str, include: str | None = None):
         relations = cursor_to_dicts(conn.execute(
             "SELECT r.id, r.predicate, e.canonical_name AS entity_to, r.confidence, "
             "       r.provenance_capture_id "
-            "FROM relations r JOIN entities e ON e.id=r.entity_to WHERE r.entity_from=?",
+            "FROM relations r JOIN entities e ON e.id=r.entity_to "
+            "WHERE r.entity_from=? AND r.review_status != 'pending'",
+            (entity_id,),
+        ))
+        # Incoming edges so the fiche shows the relation from BOTH sides — "Audric is
+        # cousin of Alexis" must surface on Alexis's fiche too, not only Audric's.
+        relations_incoming = cursor_to_dicts(conn.execute(
+            "SELECT r.id, r.predicate, e.canonical_name AS entity_from, r.confidence, "
+            "       r.provenance_capture_id "
+            "FROM relations r JOIN entities e ON e.id=r.entity_from "
+            "WHERE r.entity_to=? AND r.review_status != 'pending'",
             (entity_id,),
         ))
         try:
@@ -857,6 +868,7 @@ def entity_detail(entity_id: str, include: str | None = None):
             "last_mentioned": e.get("last_mentioned"),
             "facts_count": len(facts),
             "facts": facts, "relations": relations,
+            "relations_incoming": relations_incoming,
             "provenance_capture_id": e.get("provenance_capture_id"),
             "status": e.get("status"),               # SYN-58
             "archived_at": e.get("archived_at"),     # SYN-59
@@ -1935,7 +1947,8 @@ def update_relation(relation_id: str, body: RelationUpdate):
 
 @app.delete("/relation/{relation_id}", dependencies=[Depends(require_auth)])
 def delete_relation(relation_id: str):
-    """SYN-84 — remove a wrongly-extracted relation (provenance stays in the capture)."""
+    """SYN-84 — remove a wrongly-extracted relation (provenance stays in the capture).
+    Doubles as the « À valider » reject: dropping a pending relation discards it."""
     conn = get_connection()
     try:
         with conn:
@@ -1944,6 +1957,44 @@ def delete_relation(relation_id: str):
         if not deleted:
             raise HTTPException(status_code=404, detail="relation not found")
         return {"id": relation_id, "deleted": True}
+    finally:
+        conn.close()
+
+
+@app.get("/relations/pending", dependencies=[Depends(require_auth)])
+def relations_pending():
+    """« À valider » — relations the classifier wasn't confident about (review_status=
+    'pending'). Names resolved on both ends so the app can render "A —predicate→ B"."""
+    conn = get_connection()
+    try:
+        return cursor_to_dicts(conn.execute(
+            "SELECT r.id, r.predicate, r.confidence, r.provenance_capture_id, "
+            "       ef.canonical_name AS entity_from_name, "
+            "       et.canonical_name AS entity_to_name "
+            "FROM relations r "
+            "JOIN entities ef ON ef.id = r.entity_from "
+            "JOIN entities et ON et.id = r.entity_to "
+            "WHERE r.review_status = 'pending' ORDER BY r.created_at DESC"
+        ))
+    finally:
+        conn.close()
+
+
+@app.post("/relation/{relation_id}/confirm", dependencies=[Depends(require_auth)])
+def relation_confirm(relation_id: str):
+    """« À valider » — accept a low-confidence relation: promote it from
+    review_status='pending' into the live graph. (Reject = DELETE /relation/{id}.)"""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE relations SET review_status='confirmed' WHERE id=? AND review_status='pending'",
+                (relation_id,),
+            )
+            changed = conn.execute("SELECT changes()").fetchone()[0] == 1
+        if not changed:
+            raise HTTPException(status_code=404, detail="no pending relation with this id")
+        return {"id": relation_id, "review_status": "confirmed"}
     finally:
         conn.close()
 
@@ -2165,7 +2216,8 @@ def changes(since: str | None = None):
             # « entités liées » (cosine) offline. JSON can't hold bytes; the raw BLOB is dropped.
             emb = e.pop("embedding", None)
             e["embedding_b64"] = base64.b64encode(emb).decode("ascii") if emb else None
-        relations = cursor_to_dicts(conn.execute("SELECT * FROM relations"))
+        relations = cursor_to_dicts(conn.execute(
+            "SELECT * FROM relations WHERE review_status != 'pending'"))
         if since:
             facts = cursor_to_dicts(conn.execute(
                 "SELECT * FROM facts WHERE created_at > ?", (since,)))

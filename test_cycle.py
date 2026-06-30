@@ -200,6 +200,72 @@ def test_relation_only_entity_is_created(isolated_db):
     assert rel_count == 1
 
 
+def test_fact_restating_relation_is_dropped(isolated_db):
+    """Anti-redite: « Audric est le cousin d'Alexis » must NOT produce both a
+    relation (Audric→Alexis) AND a twin fact (cousin_de = "Alexis") on Audric.
+    The relation wins; the redundant fact is dropped at routing."""
+    resolved = {
+        "resolved_entities": [
+            {"canonical_name": "Audric", "type": "person", "aliases": [],
+             "summary": None, "attributes": {},
+             "facts": [
+                 {"predicate": "is_cousin_of", "value": "Alexis",
+                  "persistence_value": 5, "evidence_strength": "explicit"},
+                 {"predicate": "lives_in", "value": "Lyon",
+                  "persistence_value": 4, "evidence_strength": "explicit"},
+             ],
+             "existing_entity": None},
+            {"canonical_name": "Alexis", "type": "person", "aliases": [],
+             "summary": None, "attributes": {}, "facts": [], "existing_entity": None},
+        ],
+        "relations": [{"from": "Audric", "predicate": "is_cousin_of",
+                       "to": "Alexis", "confidence": 1.0}],
+    }
+    _route(resolved)
+    from db import get_connection
+    conn = get_connection()
+    try:
+        # only the literal-valued fact survives; the entity-valued twin is gone
+        facts = [r[0] for r in conn.execute("SELECT predicate FROM facts")]
+        pending = [r[0] for r in conn.execute(
+            "SELECT json_extract(fact_data,'$.predicate') FROM pending_facts")]
+        rel = conn.execute("SELECT COUNT(*) FROM relations").fetchone()[0]
+    finally:
+        conn.close()
+    assert "is_cousin_of" not in facts and "is_cousin_of" not in pending
+    assert "lives_in" in facts or "lives_in" in pending  # literal fact kept
+    assert rel == 1
+
+
+def test_relation_confidence_gates_review_status(isolated_db):
+    """A relation the classifier is unsure about (confidence < threshold) lands in
+    « À valider » (review_status='pending'); a confident one persists live."""
+    resolved = {
+        "resolved_entities": [
+            {"canonical_name": "Pierre", "type": "person", "aliases": [],
+             "summary": None, "attributes": {}, "facts": [], "existing_entity": None},
+            {"canonical_name": "Acme", "type": "concept", "aliases": [],
+             "summary": None, "attributes": {}, "facts": [], "existing_entity": None},
+            {"canonical_name": "Marie", "type": "person", "aliases": [],
+             "summary": None, "attributes": {}, "facts": [], "existing_entity": None},
+        ],
+        "relations": [
+            {"from": "Pierre", "predicate": "works_at", "to": "Acme", "confidence": 0.4},
+            {"from": "Marie", "predicate": "knows", "to": "Pierre", "confidence": 0.95},
+        ],
+    }
+    _route(resolved)
+    from db import get_connection
+    conn = get_connection()
+    try:
+        rows = dict(conn.execute(
+            "SELECT predicate, review_status FROM relations").fetchall())
+    finally:
+        conn.close()
+    assert rows["works_at"] == "pending"
+    assert rows["knows"] == "confirmed"
+
+
 def test_nameless_entity_skipped(isolated_db):
     resolved = {
         "resolved_entities": [{
