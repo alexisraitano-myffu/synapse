@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Synapse — Dream Cycle Engine Map</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root {
+  --bg: #0f1115;
+  --panel: #161a20;
+  --panel-2: #1d222a;
+  --text: #e6e9ef;
+  --muted: #8a93a3;
+  --accent: #7aa2f7;
+  --accent-2: #bb9af7;
+  --good: #9ece6a;
+  --warn: #e0af68;
+  --bad: #f7768e;
+  --line: #2a313c;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+}
+header {
+  padding: 16px 24px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: baseline; gap: 16px;
+}
+header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+header .sub { color: var(--muted); font-size: 12px; flex: 1; }
+nav.tabs {
+  display: flex; gap: 4px; border-bottom: 1px solid var(--line);
+  padding: 0 16px; background: var(--panel);
+}
+nav.tabs button {
+  background: transparent; border: none; color: var(--muted);
+  padding: 10px 16px; font-size: 13px; font-family: inherit; cursor: pointer;
+  border-bottom: 2px solid transparent; transition: color .15s, border-color .15s;
+}
+nav.tabs button:hover { color: var(--text); }
+nav.tabs button.active {
+  color: var(--accent); border-bottom-color: var(--accent);
+}
+.panel { display: none; height: calc(100vh - 95px); }
+.panel.active { display: flex; }
+main { display: block; }
+.diagram {
+  flex: 1 1 auto; min-width: 0; overflow: auto; padding: 24px;
+  background: var(--panel);
+}
+.diagram svg { max-width: none !important; }
+aside {
+  flex: 0 0 460px; border-left: 1px solid var(--line);
+  overflow-y: auto; padding: 24px;
+}
+aside h2 {
+  margin: 0 0 4px 0; font-size: 16px; color: var(--accent);
+}
+aside .ref { font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; }
+aside .section {
+  margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+aside .section h3 {
+  margin: 0 0 8px 0; font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+  color: var(--muted); text-transform: uppercase;
+}
+aside p, aside li { line-height: 1.55; }
+aside ul { padding-left: 18px; }
+aside table {
+  border-collapse: collapse; width: 100%; font-size: 13px;
+}
+aside table td, aside table th {
+  text-align: left; padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+aside table th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+aside code, aside pre {
+  font-family: ui-monospace, "JetBrains Mono", monospace; font-size: 12.5px;
+  background: var(--panel-2); padding: 2px 5px; border-radius: 3px;
+}
+aside pre {
+  display: block; padding: 10px 12px; overflow-x: auto;
+  border-left: 2px solid var(--accent); margin: 8px 0;
+}
+.kv { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.kv .k { color: var(--muted); }
+.kv .v { color: var(--text); font-family: ui-monospace, monospace; }
+.placeholder { color: var(--muted); font-style: italic; }
+.tag {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 11px; margin-right: 4px;
+}
+.tag-haiku { background: rgba(122,162,247,0.15); color: var(--accent); }
+.tag-local { background: rgba(158,206,106,0.15); color: var(--good); }
+.tag-sql   { background: rgba(187,154,247,0.15); color: var(--accent-2); }
+.tag-env   { background: rgba(224,175,104,0.15); color: var(--warn); }
+.tag-llm   { background: rgba(247,118,142,0.15); color: var(--bad); }
+
+/* Hover-revealed variable chip : la lecture par défaut est fonctionnelle,
+   le nom de la constante / env var apparaît au survol. */
+.var {
+  position: relative;
+  cursor: help;
+  border-bottom: 1px dotted var(--warn);
+  padding-bottom: 1px;
+}
+.var:hover::after {
+  content: attr(data-var) " = " attr(data-val);
+  position: absolute; left: 0; top: 100%;
+  transform: translateY(4px);
+  background: var(--panel-2);
+  color: var(--warn);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  white-space: nowrap;
+  z-index: 10;
+  pointer-events: none;
+}
+.var.no-val:hover::after {
+  content: attr(data-var);
+}
+.fn-table { width: 100%; border-collapse: collapse; }
+.fn-table th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+.fn-table td.functional { color: var(--text); }
+.fn-table td.technical {
+  font-family: ui-monospace, monospace; font-size: 12px;
+  color: var(--warn); white-space: nowrap;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Synapse · Engine Map</h1>
+  <span class="sub">Cliquer un nœud → détail dans la sidebar. Snapshot 2026-07-02 (SYN-93 consolidation batchée · « À valider » tâches/relations · dedup fact⇄relation).</span>
+</header>
+<nav class="tabs">
+  <button data-tab="pipeline" class="active">Pipeline Dream Cycle</button>
+  <button data-tab="model">Modèle de données</button>
+  <button data-tab="graph">Modèle du graphe</button>
+</nav>
+<main>
+<div class="panel active" data-panel="pipeline">
+  <div class="diagram">
+<pre class="mermaid">
+%%{init: {'theme':'dark','themeVariables':{'fontFamily':'-apple-system','primaryColor':'#1d222a','primaryBorderColor':'#7aa2f7','primaryTextColor':'#e6e9ef','lineColor':'#8a93a3','clusterBkg':'#161a20','clusterBorder':'#2a313c'}}}%%
+flowchart TD
+  capture["Réception de la capture<br/><span style='font-size:11px;opacity:.7'>POST /capture · idempotent</span>"]:::io
+  scheduler["Consolidation batchée<br/><span style='font-size:11px;opacity:.7'>heure planifiée 0h/12h ou valve de taille · 1 cycle à la fois</span>"]:::infra
+  capture --> scheduler
+  scheduler --> step1
+
+  subgraph CYCLE["Dream Cycle (par capture)"]
+    direction TB
+    step1["Lecture & classification IA<br/><span style='font-size:11px;opacity:.7'>Step 1 · Claude Haiku 4.5</span>"]:::llm
+    step1 --> step2["Résolution d'entités<br/><span style='font-size:11px;opacity:.7'>Step 2 · match nom + alias</span>"]:::compute
+    step1 -. "exit ephémère" .-> intentions["Intentions courtes<br/><span style='font-size:11px;opacity:.7'>TTL — pas de mémoire long-terme</span>"]:::store
+
+    step2 --> step3["Score de fiabilité par fait<br/><span style='font-size:11px;opacity:.7'>Step 3 · formule de confiance</span>"]:::compute
+    step3 --> step4["Tri par confiance<br/><span style='font-size:11px;opacity:.7'>Step 4 · 3 niveaux</span>"]:::compute
+
+    step4 --> facts["Faits durables<br/><span style='font-size:11px;opacity:.7'>très fiable</span>"]:::store
+    step4 --> pending["File de validation<br/><span style='font-size:11px;opacity:.7'>fiabilité moyenne</span>"]:::store
+    step4 --> review["File de review<br/><span style='font-size:11px;opacity:.7'>signal faible</span>"]:::store
+
+    step2 --> entityGate["Filtre anti-bruit entité<br/><span style='font-size:11px;opacity:.7'>création conditionnelle</span>"]:::compute
+    entityGate --> entityUpsert["Mise à jour du graphe<br/><span style='font-size:11px;opacity:.7'>entities · upsert + provenance</span>"]:::store
+    entityUpsert --> mergeCheck["Détection de doublon<br/><span style='font-size:11px;opacity:.7'>nom similaire ?</span>"]:::compute
+    mergeCheck --> mergeQueue["File de fusion<br/><span style='font-size:11px;opacity:.7'>l'utilisateur tranche</span>"]:::store
+
+    step1 -. "réflexion libre" .-> atomicNote["Notes atomiques<br/><span style='font-size:11px;opacity:.7'>pensées · indexées</span>"]:::store
+    step1 -. "rattachement projet" .-> projectEntries["Timelines projet<br/><span style='font-size:11px;opacity:.7'>N projets possibles</span>"]:::store
+    projectEntries --> synthesis["Synthèse vivante du projet<br/><span style='font-size:11px;opacity:.7'>append ou refonte</span>"]:::llm
+    synthesis --> projectState["État courant du projet<br/><span style='font-size:11px;opacity:.7'>versions historisées</span>"]:::store
+
+    step2 --> relations["Arêtes du graphe<br/><span style='font-size:11px;opacity:.7'>relations entre entités</span>"]:::store
+  end
+
+  classDef io        fill:#1d222a,stroke:#7aa2f7,color:#e6e9ef;
+  classDef infra     fill:#1d222a,stroke:#e0af68,color:#e6e9ef;
+  classDef llm       fill:#1d222a,stroke:#f7768e,color:#e6e9ef;
+  classDef compute   fill:#1d222a,stroke:#9ece6a,color:#e6e9ef;
+  classDef store     fill:#1d222a,stroke:#bb9af7,color:#e6e9ef;
+
+  click capture call showDetail("capture")
+  click scheduler call showDetail("scheduler")
+  click step1 call showDetail("step1")
+  click intentions call showDetail("intentions")
+  click step2 call showDetail("step2")
+  click step3 call showDetail("step3")
+  click step4 call showDetail("step4")
+  click facts call showDetail("facts")
+  click pending call showDetail("pending")
+  click review call showDetail("review")
+  click entityGate call showDetail("entityGate")
+  click entityUpsert call showDetail("entityUpsert")
+  click mergeCheck call showDetail("mergeCheck")
+  click mergeQueue call showDetail("mergeQueue")
+  click atomicNote call showDetail("atomicNote")
+  click projectEntries call showDetail("projectEntries")
+  click synthesis call showDetail("synthesis")
+  click projectState call showDetail("projectState")
+  click relations call showDetail("relations")
+</pre>
+  </div>
+  <aside id="sidebar-pipeline">
+    <h2>Bienvenue</h2>
+    <div class="ref">Clique un nœud du diagramme pour voir le détail ici.</div>
+    <div class="section">
+      <h3>Légende</h3>
+      <p>
+        <span class="tag tag-llm">LLM</span> appel Claude<br>
+        <span class="tag tag-haiku">I/O</span> entrée externe<br>
+        <span class="tag tag-local">compute</span> logique Python pure<br>
+        <span class="tag tag-sql">store</span> écriture SQLite<br>
+        <span class="tag tag-env">infra</span> scheduler / OS
+      </p>
+    </div>
+    <div class="section">
+      <h3>Vue d'ensemble</h3>
+      <p>
+        Une capture entre dans l'inbox et attend la <b>consolidation batchée</b> (SYN-93) : le scheduler
+        déclenche un cycle sur tout le lot à une heure planifiée (minuit/midi) ou via une valve de taille.
+        Le Step 1 classifie via Claude Haiku 4.5 → 4 sorties non-exclusives possibles (atomic_note,
+        project_entries[N], entities/facts, relations). Les facts passent par un score de confiance
+        qui les répartit en 3 buckets. Les entités peuvent déclencher une proposition de merge si elles
+        ressemblent à une existante (SYN-39). Les project_entries déclenchent une synthèse vivante par projet
+        (append ou refinement si ≥ 20 entries).
+      </p>
+    </div>
+  </aside>
+</div>
+
+<div class="panel" data-panel="model">
+  <div class="diagram">
+<pre class="mermaid">
+%%{init: {'theme':'dark','themeVariables':{'fontFamily':'-apple-system','primaryColor':'#1d222a','primaryBorderColor':'#7aa2f7','primaryTextColor':'#e6e9ef','lineColor':'#8a93a3','clusterBkg':'#161a20','clusterBorder':'#2a313c'}}}%%
+flowchart LR
+  subgraph SOURCE["Source immuable"]
+    m_inbox["inbox<br/>captures brutes"]:::source
+  end
+
+  subgraph GRAPHC["Graphe de connaissance"]
+    m_entities["entities<br/>person, place, project,<br/>concept, organization, animal"]:::gph
+    m_facts["facts<br/>predicat = valeur"]:::gph
+    m_relations["relations<br/>entite vers entite"]:::gph
+  end
+
+  subgraph PROJECTS["Projets (entity type=project)"]
+    m_project_entries["project_entries<br/>timeline, N par capture"]:::project
+    m_project_state["project_state<br/>synthese courante"]:::project
+    m_project_state_versions["project_state_versions<br/>append ou refinement"]:::project
+  end
+
+  subgraph NOTES["Pensees atomiques"]
+    m_atomic_notes["atomic_notes<br/>reflexions"]:::note
+    m_atomic_notes_vec["atomic_notes_vec<br/>embedding 384d"]:::note
+  end
+
+  subgraph QUEUES["Files utilisateur"]
+    m_pending["pending_facts<br/>a valider"]:::queue
+    m_review["review_queue<br/>signal faible"]:::queue
+    m_merge["entity_merge_proposals<br/>doublons detectes"]:::queue
+    m_type_prop["entity_type_proposals<br/>+ active_entity_types<br/>(vocab dynamique SYN-58)"]:::queue
+    m_attach["project_attach_proposals<br/>rattacher a un projet ?"]:::queue
+  end
+
+  subgraph EPHEMERAL["Perissable"]
+    m_intentions["intentions<br/>TTL"]:::eph
+  end
+
+  subgraph CARTE["Carte vivante — projection SYN-66"]
+    m_node_positions["node_positions<br/>x, y · ForceAtlas2"]:::carte
+    m_cluster_labels["cluster_labels<br/>label Haiku cache"]:::carte
+  end
+
+  m_inbox -- "1:N provenance" --> m_entities
+  m_inbox -- "1:N provenance" --> m_facts
+  m_inbox -- "1:N provenance" --> m_relations
+  m_inbox -- "1:N provenance" --> m_atomic_notes
+  m_inbox -- "1:N" --> m_project_entries
+  m_inbox -. "si ephemeral" .-> m_intentions
+
+  m_entities -- "1:N owns" --> m_facts
+  m_entities -- "from + to" --> m_relations
+
+  m_entities -- "type=project 1:N" --> m_project_entries
+  m_entities -- "type=project 1:1" --> m_project_state
+  m_project_state -- "current_version_id" --> m_project_state_versions
+  m_project_state_versions -. "1 par projet" .-> m_entities
+
+  m_atomic_notes -- "mentions par nom N:M" --> m_entities
+  m_atomic_notes -- "1:1 vec" --> m_atomic_notes_vec
+
+  m_pending -. "validate puis INSERT" .-> m_facts
+  m_review -. "a trancher" .-> m_facts
+  m_merge -. "candidate" .-> m_entities
+  m_merge -. "existing" .-> m_entities
+  m_type_prop -. "candidate pending" .-> m_entities
+  m_inbox -. "rattacher ?" .-> m_attach
+  m_attach -. "vers projet" .-> m_entities
+
+  m_entities -. "position carte" .-> m_node_positions
+  m_atomic_notes -. "position carte" .-> m_node_positions
+  m_entities -. "communaute vers label" .-> m_cluster_labels
+
+  classDef source   fill:#1d222a,stroke:#7aa2f7,color:#e6e9ef;
+  classDef carte    fill:#1d222a,stroke:#73daca,color:#e6e9ef;
+  classDef gph      fill:#1d222a,stroke:#9ece6a,color:#e6e9ef;
+  classDef project  fill:#1d222a,stroke:#bb9af7,color:#e6e9ef;
+  classDef note     fill:#1d222a,stroke:#e0af68,color:#e6e9ef;
+  classDef queue    fill:#1d222a,stroke:#f7768e,color:#e6e9ef;
+  classDef eph      fill:#1d222a,stroke:#8a93a3,color:#e6e9ef;
+
+  click m_inbox call showModelDetail("inbox")
+  click m_entities call showModelDetail("entities")
+  click m_facts call showModelDetail("facts")
+  click m_relations call showModelDetail("relations")
+  click m_project_entries call showModelDetail("project_entries")
+  click m_project_state call showModelDetail("project_state")
+  click m_project_state_versions call showModelDetail("project_state_versions")
+  click m_atomic_notes call showModelDetail("atomic_notes")
+  click m_atomic_notes_vec call showModelDetail("atomic_notes_vec")
+  click m_pending call showModelDetail("pending_facts")
+  click m_review call showModelDetail("review_queue")
+  click m_merge call showModelDetail("entity_merge_proposals")
+  click m_type_prop call showModelDetail("entity_type_proposals")
+  click m_attach call showModelDetail("project_attach_proposals")
+  click m_intentions call showModelDetail("intentions")
+  click m_node_positions call showModelDetail("node_positions")
+  click m_cluster_labels call showModelDetail("cluster_labels")
+</pre>
+  </div>
+  <aside id="sidebar-model">
+    <h2>Bienvenue</h2>
+    <div class="ref">Clique une table pour voir son schema, qui pointe vers elle, vers qui elle pointe, et son cycle de vie.</div>
+    <div class="section">
+      <h3>Légende des liens</h3>
+      <p>
+        <b>1:N</b> · un parent, plusieurs enfants (ex : 1 inbox → N entities via provenance)<br>
+        <b>N:M</b> · plusieurs des deux côtés (ex : atomic_notes ↔ entities via la liste de noms)<br>
+        <b>1:1</b> · couplage strict (ex : 1 atomic_note → 1 ligne embedding)<br>
+        Trait <span style="color:var(--muted)">pointillé</span> · soft-link réversible ou logique (mentions par nom, merge, promotion depuis une file)
+      </p>
+    </div>
+    <div class="section">
+      <h3>Pattern provenance (SYN-41)</h3>
+      <p>
+        Toutes les <b>projections</b> (entities, facts, relations, atomic_notes, project_entries) gardent un
+        <code>provenance_capture_id</code> qui pointe vers la ligne <code>inbox</code> immuable qui les a
+        spawnées. C'est le squelette de la traçabilité dans l'app (chip "🔗 source #N").
+      </p>
+    </div>
+    <div class="section">
+      <h3>Soft-delete vs hard-delete</h3>
+      <p>
+        Aucune table ne fait de <code>DELETE</code> hors des files temporaires (pending_facts résolus, review_queue).
+        Les disparitions sont des <em>soft-links</em> : <code>merged_into_id</code> sur entities (SYN-39),
+        bientôt <code>archived_at</code> / <code>obsoleted_at</code> sur facts + entities (SYN-37 + SYN-59).
+        Lineage toujours rebuildable.
+      </p>
+    </div>
+  </aside>
+</div>
+<div class="panel" data-panel="graph">
+  <div class="diagram">
+<pre class="mermaid">
+%%{init: {'theme':'dark','themeVariables':{'fontFamily':'-apple-system','primaryColor':'#1d222a','primaryBorderColor':'#7aa2f7','primaryTextColor':'#e6e9ef','lineColor':'#8a93a3','clusterBkg':'#161a20','clusterBorder':'#2a313c'}}}%%
+flowchart LR
+  g_assemble["Assemblage du graphe<br/><span style='font-size:11px;opacity:.7'>entités + notes · relations + mentions</span>"]:::io
+  g_cluster["Détection de communautés<br/><span style='font-size:11px;opacity:.7'>Louvain · couleur de zone</span>"]:::compute
+  g_filter["Filtres anti-hairball<br/><span style='font-size:11px;opacity:.7'>borne ce qui est montré</span>"]:::compute
+  g_layout["Disposition spatiale<br/><span style='font-size:11px;opacity:.7'>ForceAtlas2 · positions persistées</span>"]:::compute
+  g_labels["Zones nommées<br/><span style='font-size:11px;opacity:.7'>label IA caché + contour</span>"]:::llm
+  g_out["Réponse carte<br/><span style='font-size:11px;opacity:.7'>GET /graph</span>"]:::io
+
+  g_assemble --> g_cluster --> g_filter --> g_layout --> g_labels --> g_out
+
+  classDef io        fill:#1d222a,stroke:#7aa2f7,color:#e6e9ef;
+  classDef compute   fill:#1d222a,stroke:#9ece6a,color:#e6e9ef;
+  classDef llm       fill:#1d222a,stroke:#f7768e,color:#e6e9ef;
+
+  click g_assemble call showGraphDetail("assemble")
+  click g_cluster call showGraphDetail("cluster")
+  click g_filter call showGraphDetail("filter")
+  click g_layout call showGraphDetail("layout")
+  click g_labels call showGraphDetail("labels")
+  click g_out call showGraphDetail("out")
+</pre>
+  </div>
+  <aside id="sidebar-graph">
+    <h2>Bienvenue</h2>
+    <div class="ref">Clique une étape du pipeline pour voir comment le graphe devient une carte.</div>
+    <div class="section">
+      <h3>L'idée</h3>
+      <p>
+        La carte n'est pas une table de plus : c'est une <b>projection</b> assemblée à la demande
+        depuis le graphe existant (<span class="var no-val" data-var="entities">entités</span> +
+        <span class="var no-val" data-var="atomic_notes">notes</span> +
+        <span class="var no-val" data-var="relations">relations</span>). Aucune nouvelle source de vérité —
+        juste deux caches (<span class="var no-val" data-var="node_positions">positions</span>,
+        <span class="var no-val" data-var="cluster_labels">labels</span>). Un recalcul complet ne perd rien.
+      </p>
+    </div>
+    <div class="section">
+      <h3>Du sens au visuel</h3>
+      <table class="fn-table">
+        <tr><td class="functional">taille du neurone</td><td class="technical"><span class="var no-val" data-var="memory_strength × degree">vivacité × connexions</span></td></tr>
+        <tr><td class="functional">couleur de zone</td><td class="technical"><span class="var no-val" data-var="community_id">communauté Louvain</span></td></tr>
+        <tr><td class="functional">saturation</td><td class="technical"><span class="var" data-var="memory_strength" data-val="decay Ebbinghaus SYN-19/68">vivacité</span></td></tr>
+        <tr><td class="functional">position</td><td class="technical"><span class="var no-val" data-var="ForceLayout.kt (client) · forceAtlas2Based">forceAtlas2 client</span></td></tr>
+        <tr><td class="functional">zones</td><td class="technical"><span class="var no-val" data-var="Voronoï retiré (SYN-64) — couleur de communauté seule">plus de régions dessinées</span></td></tr>
+      </table>
+    </div>
+  </aside>
+</div>
+</main>
+<script>
+const DETAILS = {
+  capture: {
+    title: "POST /capture — entrée dans l'inbox",
+    tags: ["I/O"],
+    ref: "api/app.py:214",
+    body: `
+      <p>L'API d'entrée. Stocke la capture brute dans <code>inbox</code> avec un client_id UUID
+      (idempotent : un retry réseau ne duplique pas). La capture est <em>immuable</em> — toutes
+      les projections (entities, facts, atomic_notes, project_entries) gardent un
+      <code>provenance_capture_id</code> qui pointe ici (SYN-41).</p>
+    `,
+    sections: [
+      { h: "Schema clé", body: `<pre>inbox(id, content, source, client_id, device_id,
+      captured_at, created_at, processed_at, status)</pre>` },
+      { h: "Statuts", body: `<code>queued</code> → <code>processed</code> | <code>failed</code>` },
+      { h: "Idempotence", body: `Index unique partiel sur <code>client_id</code> (skip si déjà présent).` },
+    ],
+  },
+  scheduler: {
+    title: "Consolidation batchée (SYN-93)",
+    tags: ["infra"],
+    ref: "api/app.py:65-219 (_should_consolidate)",
+    body: `
+      <p>Deux temporalités, comme le sommeil : la capture s'accumule pendant la « journée », la
+      consolidation tourne en une passe « sommeil » batchée. Fini le débounce par capture (~2 min) —
+      le lot du jour attend une <b>heure planifiée</b> OU une <b>valve de taille</b>. Un verrou
+      empêche deux cycles simultanés.</p>
+    `,
+    sections: [
+      { h: "Ce qui déclenche une passe (_should_consolidate)", body: `
+        <table class="fn-table">
+          <tr><th>Déclencheur</th><th>Réglage</th><th>Chemin</th></tr>
+          <tr>
+            <td class="functional">Heures planifiées (locales)</td>
+            <td class="technical"><span class="var" data-var="SYNAPSE_CONSOLIDATION_HOURS" data-val="0,12">minuit + midi</span></td>
+            <td class="functional">Batch API (-50%)</td>
+          </tr>
+          <tr>
+            <td class="functional">Valve de taille (grosse journée)</td>
+            <td class="technical"><span class="var" data-var="SYNAPSE_CONSOLIDATION_MAX_QUEUED" data-val="30">30 en file</span></td>
+            <td class="functional">synchrone (immédiat)</td>
+          </tr>
+          <tr>
+            <td class="functional">Résumés périmés, inbox vide (SYN-89)</td>
+            <td class="technical"><span class="var no-val" data-var="stale > 0">resummary seul</span></td>
+            <td class="functional">synchrone</td>
+          </tr>
+        </table>` },
+      { h: "Rattrapage (laptop testeurs)", body: `La passe planifiée n'est pas un « pile à l'heure » :
+        elle tourne si la dernière heure planifiée est passée et qu'on n'a pas consolidé depuis
+        (persisté via un fichier marqueur <span class="var no-val" data-var="last_consolidation (mtime dans SYNAPSE_HOME)">last_consolidation</span>).
+        Un créneau raté (Mac endormi/éteint) est rattrapé au tick suivant, <b>y compris le premier au démarrage</b>.
+        Miroir de l'auto-heal du digest hebdo.` },
+      { h: "Mémoire de travail (_build_day_context)", body: `Avant de classifier, le classifier reçoit un
+        <b>transcript en lecture seule</b> du lot + les captures consolidées des dernières
+        <span class="var no-val" data-var="_WM_LOOKBACK_HOURS=24">24 h</span> (bloc caché). La coréférence
+        (« il / elle / ce projet / hier ») se résout d'une capture à l'autre au lieu de classifier chacune
+        à l'aveugle. Le bloc <b>ne produit rien</b> — seule la capture courante génère des sorties.` },
+      { h: "Batch API vs synchrone", body: `La passe planifiée classifie tout le lot via la Message
+        Batches API (<span class="var no-val" data-var="_batch_classify (submit → poll → results)">_batch_classify</span>,
+        -50 % sur la classification), même prompt que la voie synchrone (<code>_classify_params</code>). Best-effort :
+        tout échec submit/poll retombe en classify synchrone. <code>SYNAPSE_CYCLE_DEBOUNCE_SECONDS</code> est
+        désormais <em>legacy/inutilisé</em>.` },
+      { h: "Trigger manuel", body: `Appeler <code>POST /dream-cycle/run</code> bypass la planification (override on-demand) mais respecte le verrou.` },
+    ],
+  },
+  step1: {
+    title: "Lecture & classification IA",
+    tags: ["LLM"],
+    ref: "dream_cycle/cycle.py:62-200",
+    body: `
+      <p>Un appel à Claude par capture qui retourne un JSON structuré : quelles entités sont
+      mentionnées, quels faits, quelles relations, est-ce une réflexion, est-ce un compte-rendu
+      projet, est-ce une intention courte. Les règles du prompt sont mises en cache pour les
+      captures suivantes (~5× moins de tokens facturés).</p>
+    `,
+    sections: [
+      { h: "Modèle utilisé", body: `<span class="var" data-var="CLAUDE_MODEL" data-val="claude-haiku-4-5-20251001">Claude Haiku 4.5</span>
+        · longueur de sortie max <span class="var no-val" data-var="max_tokens=4096 (SYN-78)">4096 tokens</span>` },
+      { h: "Sorties possibles (toutes coexistent)", body: `
+        <ul>
+          <li><b>Réflexion libre</b> — pensée à mémoriser <span class="var no-val" data-var="atomic_note (string|null)">·</span></li>
+          <li><b>Rattachement projet</b> — un ou plusieurs <span class="var no-val" data-var="project_entries[] (SYN-57)">·</span></li>
+          <li><b>Entités + faits</b> — graphe de connaissance <span class="var no-val" data-var="entities[] + facts[] par entité">·</span></li>
+          <li><b>Relations entre entités</b> <span class="var no-val" data-var="relations[]">·</span></li>
+          <li><b>Intention périssable</b> — sortie courte <span class="var no-val" data-var="is_ephemeral=true">·</span></li>
+          <li><b>Ressource web</b> (SYN-21) — toute URL est fetchée + résumée (Haiku) + stockée dans <code>resources</code>, cherchable. URL-driven, indépendant du routing. <span class="var no-val" data-var="dream_cycle/resources.py">·</span></li>
+        </ul>` },
+      { h: "Importance d'un fait (1-5)", body: `
+        <table class="fn-table">
+          <tr><th>Niveau</th><th>Sens</th><th>Exemple</th></tr>
+          <tr><td class="technical"><span class="var no-val" data-var="persistence_value=5">5</span></td><td class="functional">permanent</td><td>date de naissance</td></tr>
+          <tr><td class="technical"><span class="var no-val" data-var="persistence_value=4">4</span></td><td class="functional">stable modifiable</td><td>lieu de travail</td></tr>
+          <tr><td class="technical"><span class="var no-val" data-var="persistence_value=3">3</span></td><td class="functional">état actuel</td><td>projet en cours</td></tr>
+          <tr><td class="technical"><span class="var no-val" data-var="persistence_value=2">2</span></td><td class="functional">contextuel</td><td>événement ponctuel</td></tr>
+          <tr><td class="technical"><span class="var no-val" data-var="persistence_value=1">1</span></td><td class="functional">bruit</td><td>mention passagère</td></tr>
+        </table>` },
+      { h: "Comment le fait est formulé", body: `
+        <table class="fn-table">
+          <tr><th>Formulation</th><th>Base confiance</th><th>Routing typique</th></tr>
+          <tr><td class="functional">affirmé sans doute</td><td class="technical"><span class="var" data-var="evidence_strength=explicit" data-val="base 0.92">0.92</span></td><td>faits durables</td></tr>
+          <tr><td class="functional">avec marqueur de doute</td><td class="technical"><span class="var" data-var="evidence_strength=hedged" data-val="base 0.65">0.65</span></td><td>file de validation</td></tr>
+          <tr><td class="functional">déduit du contexte</td><td class="technical"><span class="var" data-var="evidence_strength=implicit" data-val="base 0.40">0.40</span></td><td>file de review</td></tr>
+        </table>` },
+      { h: "Type d'entité — vocab dynamique (SYN-58)", body: `Le prompt reçoit la liste
+        <code>active_entity_types</code> (bloc non-caché) et doit choisir dedans. S'il ne trouve
+        pas, il met <code>type=concept</code> + <code>type_proposal {value, reason}</code> (au lieu
+        de forcer un type faux). Garde-fou : <code>type=project</code> uniquement si un project_entry
+        accompagne l'entité dans le même JSON.` },
+      { h: "Owner « moi »", body: `Un bloc <span class="var no-val" data-var="_load_owner_block · config.json owner_entity_id">AUTEUR</span>
+        (non-caché) dit au classifier qui est « moi » : toute première personne (je, mon, mes…) résout vers
+        l'entité de l'utilisateur au lieu d'un fantôme « Auteur ». « Romain est mon frère » →
+        relation (Romain, is_sibling_of, <owner>).` },
+      { h: "Projet vs tâche (priorité haute)", body: `Une entreprise à plusieurs étapes / dans le temps
+        (« apprendre le japonais », « rénover l'appart », « projet X ») est un <b>PROJET</b> (project_entry
+        + entité type=project), jamais une simple <code>kind="task"</code>. Une action unique et bornée
+        (« rappeler le dentiste ») reste une tâche.` },
+      { h: "Confiance de routage (« À valider »)", body: `Le classifier émet
+        <span class="var no-val" data-var="classification_confidence (0–1)">classification_confidence</span> :
+        1.0 = sans ambiguïté, < 0.6 = il hésite. En cas de doute « durable vs éphémère » il choisit
+        <code>task</code> et baisse la confiance plutôt que de jeter → la tâche part en « À valider » (voir Tri).` },
+    ],
+  },
+  intentions: {
+    title: "Intentions courtes — sortie ephémère",
+    tags: ["store"],
+    ref: "db/__init__.py + handle_intentions()",
+    body: `
+      <p>Quand Claude classifie une capture comme <em>périssable</em> (RDV, achats, "il faut que…"),
+      elle évite le graphe et atterrit ici avec une date d'expiration. Pas remontée comme fait,
+      pas reliée à des entités → ne pollue pas la mémoire long-terme.</p>
+      <p><b>Note dogfood 2026-05-28</b> : Claude peut tagger ephemeral à tort (recettes Udon).
+      SYN-58 traitera ce point via vocab dynamique + status pending sur les entités douteuses.</p>
+    `,
+    sections: [
+      { h: "Durée par défaut", body: `<span class="var" data-var="ttl_hours" data-val="48">48 heures</span>` },
+    ],
+  },
+  step2: {
+    title: "Résolution d'entités",
+    tags: ["compute"],
+    ref: "dream_cycle/cycle.py:248-270",
+    body: `
+      <p>Pour chaque entité que Haiku a extraite, cherche s'il y en a déjà une qui correspond.
+      Match strict : <code>LOWER(canonical_name)</code> identique OU intersection avec l'union
+      des aliases (case-insensitive).</p>
+      <p>Filtre <code>merged_into_id IS NULL</code> pour ignorer les entités absorbées
+      par un merge (SYN-39).</p>
+    `,
+    sections: [
+      { h: "Date resolver", body: `Pour les facts dont le predicate contient "birthday", "birth",
+        "date", "anniversaire" → tente une normalisation ISO. Sinon valeur brute.` },
+      { h: "Limite", body: `Pas de fuzzy match ni embedding — c'est l'objet du proposeur de merge
+        (voir nœud "Merge proposal?").` },
+    ],
+  },
+  step3: {
+    title: "Score de fiabilité par fait",
+    tags: ["compute"],
+    ref: "dream_cycle/cycle.py:292-309",
+    body: `
+      <p>Pour chaque fait, on cumule un score entre 0 et 1 qui dira dans quel bac il atterrit.
+      Le calcul combine 4 ingrédients :</p>
+      <table class="fn-table">
+        <tr><th>Ingrédient</th><th>Effet sur le score</th></tr>
+        <tr>
+          <td class="functional">Base selon comment Claude formule le fait</td>
+          <td class="technical"><span class="var no-val" data-var="_EVIDENCE_BASE">0.40 à 0.92</span></td>
+        </tr>
+        <tr>
+          <td class="functional">Bonus si l'entité existe déjà</td>
+          <td class="technical"><span class="var no-val" data-var="existing → +0.05">+0.05</span></td>
+        </tr>
+        <tr>
+          <td class="functional">Bonus si mentions répétées</td>
+          <td class="technical"><span class="var no-val" data-var="min(0.05, mention_count × 0.02)">jusqu'à +0.05</span></td>
+        </tr>
+        <tr>
+          <td class="functional">Bonus / malus selon l'importance</td>
+          <td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS">−0.10 à +0.20</span></td>
+        </tr>
+      </table>
+    `,
+    sections: [
+      { h: "Bonus / malus d'importance", body: `
+        <table class="fn-table">
+          <tr><th>Importance</th><th>Effet</th></tr>
+          <tr><td class="functional">5 — permanent</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[5]">+0.20</span></td></tr>
+          <tr><td class="functional">4 — stable</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[4]">+0.15</span></td></tr>
+          <tr><td class="functional">3 — état actuel</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[3]">+0.05</span></td></tr>
+          <tr><td class="functional">2 — contextuel</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[2]">0</span></td></tr>
+          <tr><td class="functional">1 — bruit</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[1]">−0.10</span></td></tr>
+        </table>` },
+      { h: "Plafond pour les faits avec doute", body: `Si Claude marque le fait comme
+        <em>hedged</em> (avec marqueur de doute), le score est plafonné <span class="var" data-var="hedged clamp" data-val="0.84">juste sous le seuil "durable"</span>
+        → il passe toujours par la validation utilisateur, jamais directement dans les faits durables.` },
+    ],
+  },
+  step4: {
+    title: "Tri par confiance — 3 niveaux",
+    tags: ["compute"],
+    ref: "dream_cycle/cycle.py:382-491",
+    body: `
+      <p>Selon le score de fiabilité, chaque fait atterrit dans un des 3 niveaux :</p>
+      <table class="fn-table">
+        <tr><th>Niveau</th><th>Quand</th><th>Visible où</th></tr>
+        <tr>
+          <td class="functional"><b>Fait durable</b></td>
+          <td class="technical"><span class="var" data-var="seuil facts" data-val="conf > 0.85">très fiable</span></td>
+          <td>fiche entité</td>
+        </tr>
+        <tr>
+          <td class="functional"><b>À valider</b></td>
+          <td class="technical"><span class="var" data-var="seuil pending" data-val="0.5 ≤ conf ≤ 0.85">fiabilité moyenne</span></td>
+          <td>onglet Pending</td>
+        </tr>
+        <tr>
+          <td class="functional"><b>À reviewer</b></td>
+          <td class="technical"><span class="var" data-var="seuil review" data-val="conf < 0.5">signal faible</span></td>
+          <td>file de review (pas exposée)</td>
+        </tr>
+      </table>
+    `,
+    sections: [
+      { h: "Pourquoi ces seuils", body: `Le seuil "durable" est calibré pour qu'un fait <em>explicit</em>
+        (Claude affirme sans doute) avec une importance moyenne y atterrisse naturellement. Le seuil
+        "review" est la limite d'utilité : en-dessous, l'info est probablement du bruit. Les deux
+        seuils sont en dur dans le code (pas d'env var pour l'instant), à ajuster en éditant
+        directement <code>step4_route</code>.` },
+      { h: "« À valider » — tâches & relations (gate séparé)", body: `Les faits utilisent le score
+        <em>dérivé</em> ci-dessus. Les <b>tâches/événements</b> et les <b>relations</b>, eux, portent une
+        confiance <em>auto-déclarée</em> par le LLM et passent par un gate distinct : sous
+        <span class="var" data-var="SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD" data-val="0.7">0.7</span> ils sont
+        écrits avec <code>review_status='pending'</code> (au lieu d'être jetés) — une note en
+        <span class="var no-val" data-var="atomic_notes.review_status">atomic_notes.review_status</span>,
+        une relation en <span class="var no-val" data-var="relations.review_status">relations.review_status</span>.
+        Ces lignes <b>pending sont cachées de toutes les lectures</b> et ne remontent que via
+        <code>GET /atomic-notes?review_status=pending</code> / <code>GET /relations/pending</code> ;
+        <code>POST …/confirm</code> promeut, reject = archive/DELETE. Seuil partagé tâches ⇆ relations.` },
+    ],
+  },
+  facts: {
+    title: "Faits durables — la mémoire fiable",
+    tags: ["store"],
+    ref: "db/__init__.py — table facts",
+    body: `
+      <p>La table-source de vérité pour les affirmations sur les entités. Lue partout
+      (<code>/entity/{id}</code>, <code>/graph</code>, synthèse projet).</p>
+    `,
+    sections: [
+      { h: "Schema", body: `<pre>facts(id, entity_id, predicate, value,
+       confidence, source_inbox_id, persistence_value,
+       provenance_capture_id, created_at, last_confirmed)</pre>` },
+      { h: "À venir", body: `SYN-37 ajoutera <code>obsoleted_at</code> + <code>obsoleted_by</code> pour gérer
+        last-writes-wins et l'archivage manuel (SYN-59).` },
+    ],
+  },
+  pending: {
+    title: "File de validation utilisateur",
+    tags: ["store"],
+    ref: "db/__init__.py — table pending_facts",
+    body: `
+      <p>Facts mid-confidence qui attendent une décision utilisateur. Exposés dans l'onglet
+      <em>Pending</em> avec swipe validate/reject.</p>
+    `,
+    sections: [
+      { h: "Validation strategy", body: `<code>passive</code> = attente UI. Autres stratégies (active
+        question, MCP refinement) prévues mais pas implémentées.` },
+      { h: "Confirmation", body: `À l'accept (SYN-9 livré), record validation event + INSERT dans facts
+        avec confidence=0.95. À reject, DELETE.` },
+    ],
+  },
+  review: {
+    title: "File de review — signal faible",
+    tags: ["store"],
+    ref: "db/__init__.py — table review_queue",
+    body: `
+      <p>Pour les facts dont la confidence est trop faible pour être validables par swipe simple.
+      Pas d'UI dédiée pour l'instant — sert de débordement.</p>
+    `,
+  },
+  entityGate: {
+    title: "Filtre anti-bruit pour les entités",
+    tags: ["compute"],
+    ref: "dream_cycle/cycle.py:354 + 482-498",
+    body: `
+      <p>Avant de créer une nouvelle entité dans le graphe, on vérifie qu'elle porte un signal
+      minimum (évite que chaque nom passant devienne une fiche). Une entité est créée si
+      <b>au moins une</b> condition est remplie :</p>
+      <ul>
+        <li>Elle existe déjà → bump du compteur de mentions</li>
+        <li>Elle apparaît dans une relation (sinon l'arête serait orpheline)</li>
+        <li>Elle porte au moins un fait au-dessus du seuil de bruit</li>
+      </ul>
+      <p>Sinon → ignorée. Pas une perte : la capture brute reste dans l'inbox, on peut toujours
+      remonter le fil plus tard.</p>
+    `,
+    sections: [
+      { h: "Seuil de bruit", body: `Le minimum d'importance qu'un fait doit avoir pour permettre la
+        création d'entité : <span class="var" data-var="MIN_ENTITY_PERSISTENCE" data-val="2 (en dur)">importance 2</span>
+        (= "contextuel"). Monter à 3 pour être plus strict, redescendre à 1 pour tout capturer.` },
+    ],
+  },
+  entityUpsert: {
+    title: "Mise à jour du graphe d'entités",
+    tags: ["store"],
+    ref: "dream_cycle/cycle.py:320-379",
+    body: `
+      <p>INSERT ou UPDATE. UPDATE merge les aliases + attributes (nouvelles clés gagnent), garde
+      la summary existante si la nouvelle est vide, bump mention_count, prend le max sur
+      persistence_value. Provenance : posée à l'INSERT, intouchée à l'UPDATE.</p>
+    `,
+    sections: [
+      { h: "Schema clé", body: `<pre>entities(id, type, canonical_name, aliases JSON,
+         attributes JSON, mention_count, last_mentioned,
+         persistence_value, summary, embedding BLOB,
+         provenance_capture_id, merged_into_id, merged_at,
+         status, created_at)</pre>` },
+      { h: "Types (vocab dynamique SYN-58)", body: `Le <code>type</code> est choisi parmi
+        <code>active_entity_types</code> (6 built-in + types validés par l'user), injecté dans le
+        prompt au runtime. Un type inconnu → entité <code>status='pending'</code> + une
+        <code>entity_type_proposals</code>. Garde-fou : <code>type='project'</code> seulement si un
+        project_entry correspond, sinon → <code>concept</code>.` },
+      { h: "Statut (SYN-58)", body: `<code>status active|pending|archived</code> — seules les
+        <code>active</code> apparaissent dans les vues (graphe, recherche, suggestions).` },
+    ],
+  },
+  mergeCheck: {
+    title: "Détection de doublon d'entité",
+    tags: ["compute"],
+    ref: "dream_cycle/cycle.py:255-380 (SYN-39 + SYN-61)",
+    body: `
+      <p>Après chaque création d'entité, on scanne les autres entités du même type pour repérer
+      un éventuel doublon. Deux couches, la moins chère d'abord ; la première qui matche gagne
+      (une proposition par entité — l'utilisateur tranche) :</p>
+      <ol>
+        <li><b>Substring (SYN-39)</b> : un nom entièrement contenu dans l'autre ET au moins un mot
+        complet en commun (évite "Pi" ⊂ "Pierre"). Cas typique : "Martin" ↔ "Martin Bari".</li>
+        <li><b>Fallback embedding (SYN-61)</b> : si le substring ne trouve rien, similarité cosine
+        sur les entités du même type. Rattrape les doublons sans substring partagée — "Marie Dupont"
+        ↔ "M. Dupont", "OpenAI" ↔ "Open AI". L'entité n'étant pas encore vectorisée (step6 tourne en
+        fin de cycle), on l'embed à la volée et on cherche dans le graphe historique.</li>
+      </ol>
+      <p>Seuil cosine du fallback :
+      <span class="var" data-var="SYNAPSE_MERGE_EMBEDDING_THRESHOLD" data-val="0.85">0.85</span>
+      (env var, défaut <code>_MERGE_EMBEDDING_THRESHOLD_DEFAULT</code>). La proposition porte
+      <code>similarity_reason="embedding_X.XX"</code> vs <code>"name_substring"</code> pour distinguer
+      la couche. Une proposition par paire — pas de re-prompt même après un rejet.</p>
+    `,
+    sections: [
+      { h: "Calibration", body: `Seuil sensible : trop bas = bruit, trop haut = on rate. Lancer le
+        cycle en --verbose logge chaque paire détectée avec son score pour ajuster
+        SYNAPSE_MERGE_EMBEDDING_THRESHOLD.` },
+      { h: "Hors scope", body: `Score composite couplé à un "même type confirmé par facts" (V3 si besoin).` },
+    ],
+  },
+  mergeQueue: {
+    title: "File de fusion — l'utilisateur tranche",
+    tags: ["store"],
+    ref: "db/__init__.py + api/app.py:456-650 (SYN-39)",
+    body: `
+      <p>L'utilisateur tranche via <code>POST /merge-proposals/{id}/accept</code> avec
+      <code>{canonical_id}</code>. Au accept : reroute facts.entity_id, relations.entity_from/to,
+      atomic_notes.entities_mentioned vers le survivant + l'absorbé devient alias +
+      <code>merged_into_id</code> posé. Soft-link, jamais de DELETE.</p>
+    `,
+    sections: [
+      { h: "Filtres", body: `<code>/graph</code>, <code>/projects</code>, <code>/entity/{id}</code> et le
+        projects context du classifier filtrent <code>merged_into_id IS NULL</code>. GET sur
+        l'absorbé → 410 avec pointer.` },
+      { h: "UI", body: `Sous-tab "Propositions" dans Mémoire à venir (commune à merge + type, SYN-58).` },
+    ],
+  },
+  atomicNote: {
+    title: "Notes atomiques — pensées à mémoriser",
+    tags: ["store"],
+    ref: "dream_cycle/cycle.py:706-740 (SYN-42, durci SYN-56)",
+    body: `
+      <p>Une atomic_note est une <b>pensée de l'auteur qui doit pouvoir resurgir</b> (insight,
+      citation, décision). Critères positifs (au moins un requis, SYN-56) :</p>
+      <ul>
+        <li>Première personne réflexive ("je pense que…", "je vais essayer…")</li>
+        <li>Citation/référence à une œuvre + positionnement</li>
+        <li>Observation contemplative non-actionnable</li>
+        <li>Décision/résolution</li>
+      </ul>
+      <p>Sinon null — pas un compte-rendu d'événement, pas un fact "X a Y".</p>
+      <p><b>Fail-safe SVO</b> : si ça se réduit à (sujet, prédicat, objet), c'est un fact, pas une note.</p>
+    `,
+    sections: [
+      { h: "Persistence", body: `INSERT avec embedding via fastembed (multilingual MiniLM, local,
+        384 dim) → table vec0 <code>atomic_notes_vec</code> pour la recherche sémantique future.` },
+      { h: "Schema clé", body: `<pre>atomic_notes(id, title, content, summary,
+              entities_mentioned JSON, memory_strength,
+              provenance_capture_id, created_at, updated_at)</pre>` },
+    ],
+  },
+  projectEntries: {
+    title: "Timelines projet — N projets par capture",
+    tags: ["store"],
+    ref: "dream_cycle/cycle.py:949-1017 (SYN-42 + SYN-57)",
+    body: `
+      <p>Le classifier émet <code>project_entries[]</code> — une capture peut nourrir plusieurs
+      projets en parallèle. Routing : dedup par <code>canonical_name</code> (lowercase) puis
+      <code>_persist_project_entry</code> par item, chacun avec son content extrait spécifique.</p>
+    `,
+    sections: [
+      { h: "Schema", body: `<pre>project_entries(id, project_id, capture_id,
+                 content, kind, created_at)</pre>` },
+      { h: "Création auto de projet", body: `Si le canonical_name n'existe pas comme entity type=project,
+        une entity est créée à la volée (is_new flag du classifier sert juste à logger).` },
+    ],
+  },
+  synthesis: {
+    title: "Synthèse vivante du projet",
+    tags: ["LLM"],
+    ref: "dream_cycle/cycle.py:741-946 (SYN-43, SYN-44)",
+    body: `
+      <p>Après chaque nouvelle entrée dans la timeline d'un projet, on demande à Claude de mettre
+      à jour la synthèse du projet. Deux modes :</p>
+      <table class="fn-table">
+        <tr><th>Mode</th><th>Quand</th><th>Coût</th></tr>
+        <tr>
+          <td class="functional"><b>Append</b> — ajout incrémental</td>
+          <td class="functional">par défaut</td>
+          <td class="functional">léger (synthèse précédente + 1 entry)</td>
+        </tr>
+        <tr>
+          <td class="functional"><b>Refonte</b> — reconstruction complète</td>
+          <td class="technical"><span class="var" data-var="SYNAPSE_REFINEMENT_THRESHOLD" data-val="20">tous les 20 ajouts</span></td>
+          <td class="functional">plus coûteux (toutes les entries)</td>
+        </tr>
+      </table>
+    `,
+    sections: [
+      { h: "Pourquoi alterner", body: `L'append est rapide mais peut dériver (la structure se déforme
+        au fil des injections). La refonte périodique recadre tout. Monter le seuil = économies tokens,
+        descendre = synthèses plus propres mais plus chères.` },
+      { h: "Modèle utilisé", body: `<span class="var" data-var="CLAUDE_MODEL" data-val="claude-haiku-4-5-20251001">Claude Haiku 4.5</span>
+        — mêmes blocs cache que la classification mais avec un prompt dédié à la synthèse.` },
+    ],
+  },
+  projectState: {
+    title: "État courant des projets — versions historisées",
+    tags: ["store"],
+    ref: "db/__init__.py (SYN-41 + SYN-44)",
+    body: `
+      <p>2 tables :</p>
+      <ul>
+        <li><code>project_state_versions</code> : append-only des synthèses successives avec
+          <code>kind</code> (append|refinement), <code>trigger</code> (passive|mcp|manual), entry_count.</li>
+        <li><code>project_state</code> : pointe vers la version courante (1 row par projet).</li>
+      </ul>
+      <p>Exposé par <code>GET /project/{id}/state</code> qui retourne current_state + 50 entries récents +
+      entries_total.</p>
+    `,
+  },
+  relations: {
+    title: "Arêtes du graphe — relations entre entités",
+    tags: ["store"],
+    ref: "dream_cycle/cycle.py:step4_route (SYN 2026-06-30)",
+    body: `
+      <p>Représente une assertion directionnelle entre 2 entités (ex : Marie has_pet→Gipsy).
+      Insérée au Step 4 si Haiku a émis une <code>relations[]</code>. <b>Une relation est la forme
+      canonique d'un fait dont l'objet est une entité nommée</b> : traversable et visible des deux fiches.</p>
+    `,
+    sections: [
+      { h: "Schema", body: `<pre>relations(id, entity_from, predicate, entity_to,
+           confidence, review_status, provenance_capture_id, created_at)</pre>` },
+      { h: "Anti-redite fact⇄relation (2026-06-30)", body: `« Audric est le cousin d'Alexis » ne produit
+        plus À LA FOIS un fact <code>cousin_of="Alexis"</code> ET une relation. Règle prompt : si l'objet
+        d'un fait est une entité nommée que tu émets aussi → émets SEULEMENT la relation. Filet défensif
+        dans <code>step4_route</code> : un fact dont la <code>value</code> matche une cible de relation de
+        la même entité est <b>dropé</b>. Les facts à valeur littérale (<code>lives_in="Lyon"</code>) sont intacts.` },
+      { h: "Confiance-gated (comme les tâches)", body: `Les relations ne persistent plus « en dur ». Le
+        classifier émet une <code>confidence</code> par relation ; sous
+        <span class="var" data-var="SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD" data-val="0.7">0.7</span> →
+        <code>review_status='pending'</code> (« À valider »), cachée de toutes les lectures ; sinon
+        <code>'confirmed'</code>. <code>GET /relations/pending</code> + <code>POST /relation/{id}/confirm</code>.` },
+      { h: "Fiche bidirectionnelle", body: `<code>GET /entity/{id}</code> renvoie désormais aussi
+        <span class="var no-val" data-var="relations_incoming (entity_to = id)">relations_incoming</span> →
+        « Audric → cousin → Alexis » apparaît aussi sur la fiche d'Alexis.` },
+      { h: "Note", body: `Une relation force la création des 2 entités-endpoints même si elles
+        n'auraient pas passé MIN_ENTITY_PERSISTENCE seules (sinon arête cassée).` },
+    ],
+  },
+};
+
+const MODEL_DETAILS = {
+  inbox: {
+    title: "inbox — captures brutes (source de vérité)",
+    tags: ["store"],
+    ref: "db/__init__.py",
+    body: `
+      <p>La <b>seule</b> table immuable du système. Toute la mémoire du second cerveau peut être
+      reconstruite à partir d'ici (les projections sont dérivées). Une capture mobile arrive,
+      atterrit ici en quelques millisecondes, sera traitée plus tard par le cycle.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id, content, source, client_id (UUID idempotence),
+device_id, captured_at, created_at, processed_at, status</pre>` },
+      { h: "Cycle de vie", body: `<code>queued</code> → <code>processed</code> | <code>failed</code>.
+        Pas de DELETE. Une capture ratée peut être re-traitée (reset processed_at).` },
+      { h: "Pointée par", body: `
+        <ul>
+          <li><b>entities.provenance_capture_id</b> (1:N)</li>
+          <li><b>facts.provenance_capture_id</b> + <code>source_inbox_id</code> historique (1:N)</li>
+          <li><b>relations.provenance_capture_id</b> (1:N)</li>
+          <li><b>atomic_notes.provenance_capture_id</b> (1:N)</li>
+          <li><b>project_entries.capture_id</b> (1:N)</li>
+          <li><b>entity_merge_proposals.evidence_capture_id</b> (1:N)</li>
+        </ul>` },
+    ],
+  },
+  entities: {
+    title: "entities — nœuds du graphe",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:_upsert_entity",
+    body: `
+      <p>Le graphe d'entités. Chaque entité a un <b>type</b> (vocab dynamique
+      <code>active_entity_types</code>, SYN-58 — built-in + validés user), un nom canonique,
+      des aliases, une summary, un embedding, un compteur de mentions et un <b>status</b>
+      (active|pending|archived).</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id (UUID), type, canonical_name, aliases JSON,
+attributes JSON, mention_count, last_mentioned,
+persistence_value, summary, embedding BLOB,
+provenance_capture_id,
+merged_into_id (SYN-39), merged_at,
+status (SYN-58), archived_at (SYN-59), created_at</pre>` },
+      { h: "Création", body: `Gardée par le <em>Filtre anti-bruit</em> du cycle (Step 4) :
+        existe déjà / apparaît dans une relation / a un fait avec persistence ≥ 2. Sinon skip.` },
+      { h: "Pointe vers", body: `<code>merged_into_id</code> → autre entité (soft-link absorption).` },
+      { h: "Entités liées offline (SYN-91)", body: `L'<span class="var no-val" data-var="entities.embedding BLOB · float32 384d">embedding</span> est désormais
+        répliqué vers le mobile (<span class="var" data-var="/changes · embedding_b64" data-val="base64">base64</span>) → l'app calcule
+        le <b>cosinus top-K</b> (« entités liées ») hors-ligne, sans appel réseau.` },
+      { h: "Pointée par", body: `
+        <ul>
+          <li><b>facts.entity_id</b> (1:N · les faits qu'elle porte)</li>
+          <li><b>relations.entity_from</b> et <b>entity_to</b> (N:M via 2 FK)</li>
+          <li><b>project_entries.project_id</b> (si type=project, 1:N)</li>
+          <li><b>project_state.project_id</b> (si type=project, 1:1)</li>
+          <li><b>entity_merge_proposals</b> (2 FK : candidate + existing)</li>
+        </ul>` },
+      { h: "Filtres lecture", body: `Vues UI filtrent <code>merged_into_id IS NULL</code>. SYN-59
+        ajoutera <code>archived_at IS NULL</code>.` },
+    ],
+  },
+  facts: {
+    title: "facts — assertions sur une entité",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:step4_route",
+    body: `
+      <p>Une assertion explicite sur une entité, sous forme (<code>predicate</code>,
+      <code>value</code>) + score de confiance. Les facts sont la matière première des fiches
+      entité et des synthèses.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id, entity_id (FK), predicate, value,
+confidence, source_inbox_id (legacy), persistence_value,
+provenance_capture_id, created_at, last_confirmed,
+archived_at, obsoleted_at, obsoleted_by (SYN-37/59)</pre>` },
+      { h: "Provient de", body: `
+        <ul>
+          <li>Direct via Step 4 quand <span class="var" data-var="seuil facts" data-val="conf > 0.85">confiance &gt; 0.85</span></li>
+          <li>Indirect via promotion depuis <code>pending_facts</code> au moment où l'utilisateur valide (confidence forcée à 0.95)</li>
+        </ul>
+        <p>Tous les écrits passent par <code>facts_store.insert_fact</code> (4 chemins unifiés).</p>` },
+      { h: "Dedup à la re-mention (2026-06-30)", body: `<code>insert_fact</code> ne duplique pas un fait
+        <b>actif identique</b> (même entity + predicate + value, insensible casse/espaces) : il <b>renforce</b>
+        l'existant (<code>confidence ← max</code>, <code>last_confirmed</code> bumpé) et renvoie son id.
+        Re-dire un fait le consolide au lieu d'empiler des copies.` },
+      { h: "Pointe vers", body: `<code>entity_id</code> → entities (N:1) · <code>obsoleted_by</code> → facts (le fait qui remplace).` },
+      { h: "Cycle de vie (SYN-37/59)", body: `
+        <ul>
+          <li><b>obsoleted_at/by</b> : « plus vrai aujourd'hui ». Auto par <b>SYN-37</b> (last-writes-wins
+          sur prédicats single-valued — <code>works_at</code>, <code>lives_in</code>… — si la nouvelle
+          confiance ≥ l'ancienne) OU manuel (<code>obsoleted_by</code> NULL).</li>
+          <li><b>archived_at</b> : « rangé hors vue », geste user explicite, réversible.</li>
+          <li>Caché par défaut dans les vues ; <code>?include=archived,obsolete</code> sur la fiche
+          entité pour l'historique. Endpoints <code>POST /fact/{id}/(obsolete|restore|archive|unarchive)</code>.</li>
+        </ul>` },
+    ],
+  },
+  relations: {
+    title: "relations — arêtes du graphe",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:step4_route",
+    body: `
+      <p>Une assertion directionnelle entre deux entités (ex : Marie has_pet→Gipsy, Karim
+      works_at→Mistral). Inscrite par le cycle quand le classifier émet une
+      <code>relations[]</code> dans son JSON. Forme canonique d'un fait dont l'objet est une entité
+      nommée (anti-redite fact⇄relation, 2026-06-30).</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id, entity_from (FK), predicate, entity_to (FK),
+confidence, review_status (2026-06-30), provenance_capture_id, created_at</pre>` },
+      { h: "Gate « À valider »", body: `<code>review_status</code> (défaut <code>'confirmed'</code>, miroir
+        de <code>atomic_notes</code>) : <code>'pending'</code> quand la confiance par relation &lt;
+        <span class="var" data-var="SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD" data-val="0.7">0.7</span>.
+        Les pending sont exclues de <code>/entity/{id}</code> (out + incoming), <code>/graph</code>,
+        <code>/changes</code> et de la régénération de summary.` },
+      { h: "Fiche bidirectionnelle", body: `<code>GET /entity/{id}</code> renvoie <code>relations</code>
+        (entity_from) <b>et</b> <code>relations_incoming</code> (entity_to) → l'arête est lisible des deux fiches.` },
+      { h: "Implication", body: `Une relation <em>force</em> la création des 2 entités-endpoints,
+        même si elles n'auraient pas passé le filtre anti-bruit seules (sinon l'arête est cassée).` },
+    ],
+  },
+  project_entries: {
+    title: "project_entries — entrée timeline d'un projet",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:_persist_project_entry",
+    body: `
+      <p>Le pont entre une capture (inbox) et un projet (entity type=project). Une capture peut
+      en spawner <b>N</b> (SYN-57) — chaque projet mentionné reçoit son extrait spécifique du
+      texte original.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id (UUID), project_id (FK entities),
+capture_id (FK inbox), content, kind, created_at</pre>` },
+      { h: "Side-effects", body: `Chaque INSERT déclenche une mise à jour de la synthèse vivante
+        du projet concerné (append le plus souvent, refonte tous les <span class="var" data-var="SYNAPSE_REFINEMENT_THRESHOLD" data-val="20">20 entries</span>).` },
+      { h: "Corrections manuelles (SYN-55)", body: `<code>POST /detach</code>, <code>POST /attach-to-project</code>
+        (additif), <code>POST /reclassify-as-fact</code>.` },
+    ],
+  },
+  project_state: {
+    title: "project_state — synthèse courante d'un projet",
+    tags: ["store"],
+    ref: "db/__init__.py",
+    body: `
+      <p>Pointe vers la version active de la synthèse pour chaque projet. 1 row par projet
+      (PK = project_id). Sert à servir <code>GET /project/{id}/state</code> en une seule jointure.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>project_id (PK · FK entities),
+current_version_id (FK project_state_versions),
+updated_at, entry_count_at_sync</pre>` },
+    ],
+  },
+  project_state_versions: {
+    title: "project_state_versions — historique des synthèses",
+    tags: ["store"],
+    ref: "db/__init__.py",
+    body: `
+      <p>Append-only : chaque mise à jour de synthèse crée une nouvelle version, on garde tout.
+      Permet de remonter le fil ("comment la synthèse a évolué depuis le démarrage du projet").</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id (UUID), project_id (FK entities),
+summary_md, entry_count, trigger, kind, created_at</pre>` },
+      { h: "kind", body: `<code>append</code> (incrémental, ~95% des cas) ou <code>refinement</code>
+        (refonte from-scratch tous les <span class="var" data-var="SYNAPSE_REFINEMENT_THRESHOLD" data-val="20">20 entries</span>).` },
+      { h: "trigger", body: `<code>passive</code> (cycle auto), <code>mcp</code> (outil MCP, futur),
+        <code>manual</code> (bouton UI).` },
+    ],
+  },
+  atomic_notes: {
+    title: "atomic_notes — réflexions libres",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:_persist_atomic_note",
+    body: `
+      <p>Les pensées de l'auteur qui doivent pouvoir resurgir (insight, citation, décision).
+      Post-SYN-56, les règles d'éligibilité sont strictes pour ne pas inclure de simples
+      compte-rendus factuels.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id (INTEGER PK · rowid vec0), title, content, summary,
+entities_mentioned JSON (liste de canonical_name),
+memory_strength, last_reactivated_at (SYN-19),
+kind, event_date, event_recurring, archived_at (SYN-85),
+review_status (2026-06-29), provenance_capture_id, created_at, updated_at</pre>` },
+      { h: "« À valider » (review_status, 2026-06-29)", body: `Une tâche/événement dont le classifier
+        n'est pas sûr (<code>classification_confidence</code> &lt;
+        <span class="var" data-var="SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD" data-val="0.7">0.7</span>) est écrite
+        <code>review_status='pending'</code> (défaut <code>'confirmed'</code>) au lieu d'être jetée.
+        Les pending sont <b>cachées de toutes les lectures</b> (/atomic-notes, /graph, digest) et ne
+        remontent que via <code>GET /atomic-notes?review_status=pending</code> ;
+        <code>POST /atomic-note/{id}/confirm</code> promeut, reject = <code>/archive</code>.` },
+      { h: "Natures de note (SYN-85 / SYN-23)", body: `
+        <ul>
+          <li><span class="var no-val" data-var="kind='note'">réflexion</span> — pensée libre (défaut).</li>
+          <li><span class="var no-val" data-var="kind='task'">tâche</span> — chose à <b>faire</b>, retrouvable ; peut porter une <span class="var no-val" data-var="event_date sur kind=task (SYN-23)">échéance</span> sans devenir un événement.</li>
+          <li><span class="var no-val" data-var="kind='event'">événement</span> — occurrence qui <b>se produit</b> à une date (<span class="var no-val" data-var="event_date absolue + event_recurring">date absolue, récurrence annuelle</span>).</li>
+          <li><span class="var no-val" data-var="kind='digest' (SYN-23)">digest</span> — synthèse hebdo générée par un job à part (<span class="var no-val" data-var="dream_cycle/digest.py · LaunchAgent lundi 08h + auto-heal _ensure_weekly_digest">cron hebdo</span> : rétro semaine + « à venir », rendu <span class="var no-val" data-var="Haiku · règle intemporelle (dates absolues)">Haiku intemporel</span>, idempotent par semaine ISO ; <span class="var no-val" data-var="POST /digest/run · GET /digest/latest">endpoints</span>). Exclu de la carte (sinon hairball).</li>
+        </ul>
+        <span class="var no-val" data-var="archived_at (POST /atomic-note/{id}/archive|unarchive)">« rendre obsolète »</span> masque sans détruire (réversible).
+        <span class="var no-val" data-var="POST /atomic-note/{id}/reinforce (SYN-23)">👍 « garder »</span> réactive une note en cours d'oubli.` },
+      { h: "Oubli gracieux (SYN-19)", body: `<code>memory_strength = exp(-Δjours / τ)</code> recalculé
+        depuis <code>last_reactivated_at</code> (τ = <span class="var" data-var="SYNAPSE_DECAY_TAU_DAYS" data-val="30">30j</span>).
+        Réactivation : une mention dans une nouvelle capture = bump fort ; un hit dans search = bump léger.
+        <code>apply_decay</code> tourne en fin de cycle + <code>python -m dream_cycle.decay</code> (cron nuits à inbox vide).
+        Recalcul depuis le temps écoulé → indépendant de la cadence du job.` },
+      { h: "Lien aux entités", body: `<b>N:M logique par nom canonique</b>, pas par FK : la liste
+        est mise à jour automatiquement quand une entité est mergée (SYN-39 le gère via swap de nom).` },
+    ],
+  },
+  atomic_notes_vec: {
+    title: "atomic_notes_vec — index vectoriel (vec0)",
+    tags: ["store"],
+    ref: "db/__init__.py · embeddings.py",
+    body: `
+      <p>Table virtuelle <code>vec0</code> (sqlite-vec) qui contient l'embedding de chaque
+      atomic_note. <code>rowid</code> miroir de <code>atomic_notes.id</code> → JOIN trivial pour
+      la recherche sémantique.</p>
+    `,
+    sections: [
+      { h: "Modèle embedding", body: `<span class="var" data-var="EMBEDDING_MODEL" data-val="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2">MiniLM multilingual</span>
+        · <span class="var" data-var="EMBEDDING_DIM" data-val="384">384 dimensions</span>
+        · <span class="tag tag-local">local</span> · pas d'appel API.` },
+    ],
+  },
+  pending_facts: {
+    title: "pending_facts — file de validation utilisateur",
+    tags: ["store"],
+    ref: "db/__init__.py",
+    body: `
+      <p>Les facts mid-confidence atterrissent ici. L'utilisateur tranche via swipe (Validate /
+      Reject). Validate → INSERT dans facts avec confidence=0.95 + event log. Reject → DELETE.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id, fact_data JSON (sérialise predicate, value,
+entity_canonical, source_inbox_id, persistence_value,
+evidence_strength, confidence),
+validation_strategy, created_at</pre>` },
+      { h: "Stratégies prévues", body: `<code>passive</code> (UI swipe, livré) · <code>active question</code>
+        (le système relance) · <code>mcp refinement</code> (outil MCP, futur).` },
+    ],
+  },
+  review_queue: {
+    title: "review_queue — débordement bas signal",
+    tags: ["store"],
+    ref: "db/__init__.py",
+    body: `
+      <p>Pour les facts trop faibles pour être validés par swipe simple. Pas d'UI dédiée V1 —
+      sert juste de zone de débordement pour ne rien perdre.</p>
+    `,
+  },
+  entity_merge_proposals: {
+    title: "entity_merge_proposals — file de dédoublonnage",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:_propose_merge_if_similar (SYN-39 + SYN-61)",
+    body: `
+      <p>Quand le cycle crée une entité qui ressemble à une existante, une proposition est inscrite
+      ici. L'utilisateur tranche : qui devient canonique, l'autre est soft-merged.</p>
+      <p><code>similarity_reason</code> indique la couche qui a détecté la paire :
+      <code>"name_substring"</code> (SYN-39) ou <code>"embedding_X.XX"</code> (fallback cosine SYN-61,
+      le score étant la similarité).</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id, candidate_entity_id (FK), existing_entity_id (FK),
+similarity_score, similarity_reason, evidence_capture_id,
+status, created_at, resolved_at, resolved_canonical_id</pre>` },
+      { h: "Statuts", body: `<code>pending</code> → <code>accepted</code> | <code>rejected</code>.
+        Une fois résolu, pas de re-prompt même si la paire ré-apparaît.` },
+    ],
+  },
+  entity_type_proposals: {
+    title: "entity_type_proposals + active_entity_types — vocab dynamique",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:_record_type_proposal · api/app.py (SYN-58)",
+    body: `
+      <p><code>active_entity_types</code> est le vocabulaire vivant des types d'entité (6 built-in
+      seedés au boot + types validés par l'user, <code>source='builtin'|'user'</code>). Le prompt
+      classifier le lit au runtime (bloc non-caché).</p>
+      <p>Quand une entité ne rentre dans aucun type actif, le cycle la crée en
+      <code>status='pending'</code> et inscrit une <code>entity_type_proposals</code>. L'user
+      valide : accept → type ajouté au vocab + entité <code>active</code> ; reject → entité
+      <code>archived</code>.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>entity_type_proposals(id, proposed_type, reason,
+  evidence_capture_id, candidate_entity_id,
+  status, created_at, resolved_at)
+active_entity_types(type PK, source, added_at)</pre>` },
+      { h: "Endpoints", body: `<code>GET /entity-type-proposals?status=</code> ·
+        <code>POST /{id}/accept {type?}</code> (rename possible) · <code>POST /{id}/reject</code>.` },
+      { h: "Statuts", body: `<code>pending</code> → <code>accepted</code> | <code>rejected</code>.` },
+    ],
+  },
+  project_attach_proposals: {
+    title: "project_attach_proposals — « rattacher à un projet ? »",
+    tags: ["store"],
+    ref: "db/__init__.py · cycle.py:_propose_project_attach_if_similar",
+    body: `
+      <p>Proposition douce (« À valider ») : une tâche ou une intention dont l'embedding ressemble à
+      un projet existant est proposée au rattachement, sans jamais forcer. Basée sur la capture
+      (<code>note_id</code> optionnel) → une note tâche OU une intention pure peuvent toutes deux être proposées.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id (UUID), capture_id (FK inbox), note_id (FK atomic_notes, opt),
+project_id (FK entities type=project), content,
+similarity_score, status, created_at, resolved_at</pre>` },
+      { h: "Seuil de rattachement", body: `Cosine top-1 ≥
+        <span class="var" data-var="SYNAPSE_PROJECT_ATTACH_THRESHOLD" data-val="0.30">0.30</span>, et le
+        projet en tête doit devancer le 2ᵉ d'au moins
+        <span class="var" data-var="SYNAPSE_PROJECT_ATTACH_MARGIN" data-val="0.03">0.03</span> (sinon ambigu → skip).` },
+      { h: "Statuts", body: `<code>pending</code> → <code>accepted</code> | <code>rejected</code>.` },
+    ],
+  },
+  intentions: {
+    title: "intentions — sortie périssable",
+    tags: ["store"],
+    ref: "db/__init__.py · handle_intentions()",
+    body: `
+      <p>Quand Claude classifie une capture comme <code>is_ephemeral=true</code> (RDV, achats,
+      "il faut que…"), elle ne touche pas le graphe et atterrit ici avec une date d'expiration.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>id, content, ttl_hours (défaut 48), resolved, created_at</pre>` },
+      { h: "Note dogfood", body: `Le LLM peut tagger ephemeral à tort (recettes Udon).
+        SYN-58 va traiter ce point via vocab dynamique + status pending sur les entités douteuses.` },
+    ],
+  },
+  node_positions: {
+    title: "node_positions — positions de la carte (SYN-69)",
+    tags: ["store"],
+    ref: "graph_layout.py",
+    body: `
+      <p>Position <code>x, y</code> de chaque nœud de la carte (id = uuid d'entité ou
+      <code>n:&lt;rowid&gt;</code> pour une note). Relue telle quelle → la carte ne « saute » pas
+      entre deux ouvertures.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>node_id (PK), x, y, updated_at</pre>` },
+      { h: "Incrémental", body: `Calculée par <span class="var no-val" data-var="forceatlas2_layout (seed=42)">ForceAtlas2</span> ;
+        un nouveau nœud est posé près du barycentre de son cluster sans bouger les autres. Recalcul complet
+        sur <span class="var" data-var="relayout" data-val="true">demande</span>.` },
+    ],
+  },
+  cluster_labels: {
+    title: "cluster_labels — labels de cluster (cache Haiku, SYN-70)",
+    tags: ["store", "LLM"],
+    ref: "graph_clusters.py",
+    body: `
+      <p>Un label court par communauté (« Musique », « Stack Synapse »), généré par
+      <span class="var" data-var="CLAUDE_MODEL" data-val="claude-haiku-4-5">Haiku</span> en un seul
+      appel batché pour tous les manquants.</p>
+    `,
+    sections: [
+      { h: "Colonnes clés", body: `<pre>signature (PK), label, updated_at</pre>` },
+      { h: "Clé = signature", body: `Indexé par une <span class="var no-val" data-var="sha1(top entités triées)">signature des entités définissantes</span>,
+        pas par l'index de communauté (volatil) → le label survit au re-clustering et Haiku n'est rappelé que si le
+        cluster change vraiment. Sans clé → fallback <code>Cluster N</code> non caché.` },
+    ],
+  },
+};
+
+const GRAPH_DETAILS = {
+  assemble: {
+    title: "Assemblage du graphe",
+    tags: ["I/O"],
+    ref: "api/app.py · graph()",
+    body: `<p>Deux natures de nœuds réunies : <b>entités</b> (id uuid) et <b>notes atomiques</b>
+      (<span class="var no-val" data-var="n:&lt;rowid&gt;">id préfixé</span>). Deux natures d'arêtes :
+      relations entité↔entité, et <span class="var no-val" data-var="entities_mentioned">mentions</span>
+      note→entité résolues par nom.</p>`,
+    sections: [
+      { h: "Flag", body: `<span class="var" data-var="include_notes" data-val="true">ajoute les notes</span>.
+        Chaque nœud porte sa nature (<span class="var no-val" data-var="kind">kind</span>) et son
+        <span class="var no-val" data-var="degree">nombre de connexions</span>.` },
+    ],
+  },
+  cluster: {
+    title: "Détection de communautés",
+    tags: ["compute"],
+    ref: "api/app.py · _assign_communities",
+    body: `<p>Regroupe les nœuds par <span class="var no-val" data-var="networkx.community.louvain_communities (seed=42)">Louvain</span>
+      → chaque nœud reçoit un <span class="var no-val" data-var="community_id">identifiant de communauté</span> qui donne sa couleur.</p>`,
+    sections: [
+      { h: "Choix", body: `Louvain pur-Python (<span class="var no-val" data-var="networkx>=3.2">networkx</span>) — package sans binaire C dans le .dmg. Leiden/igraph en upgrade futur.` },
+    ],
+  },
+  filter: {
+    title: "Filtres anti-hairball",
+    tags: ["compute"],
+    ref: "api/app.py · SYN-71",
+    body: `<p>Borne ce qui est renvoyé pour ne jamais noyer la carte.</p>`,
+    sections: [
+      { h: "Leviers", body: `<span class="var no-val" data-var="memory_strength_min">vivacité minimale</span> ·
+        <span class="var no-val" data-var="top_pct_per_cluster">top % par cluster</span> ·
+        <span class="var no-val" data-var="since">fenêtre temporelle</span> ·
+        <span class="var no-val" data-var="node_types">entités / notes</span> ·
+        <span class="var no-val" data-var="include_isolated">nœuds isolés</span>` },
+      { h: "Plafond dur", body: `<span class="var" data-var="max_nodes" data-val="1000">jamais plus de 1000 nœuds</span>, les plus saillants d'abord.` },
+    ],
+  },
+  layout: {
+    title: "Disposition spatiale",
+    tags: ["compute"],
+    ref: "graph_layout.py · SYN-69 / ForceLayout.kt · SYN-64",
+    body: `<p><b>Le mobile calcule désormais le layout lui-même</b> (SYN-64) : <span class="var no-val" data-var="ForceLayout.kt · portage vis-network forceAtlas2Based">forceAtlas2Based client</span>,
+      une fois puis <b>figé</b> → zoom = pur affine (zéro gigue), <b>offline</b>. Le backend
+      <span class="var no-val" data-var="forceatlas2_layout → node_positions">ForceAtlas2 → node_positions</span> reste calculé/persisté (contrat /graph) mais devient <em>advisory</em> pour la carte mobile.</p>`,
+    sections: [
+      { h: "Forces (calées en playground)", body: `<span class="var no-val" data-var="gravitationalConstant=-60">répulsion</span> ·
+        <span class="var no-val" data-var="centralGravity=0.005">gravité centrale</span> ·
+        <span class="var no-val" data-var="springLength=120 ×1.5">longueur d'arête</span> ·
+        <span class="var no-val" data-var="springConstant=0.01">raideur</span> ·
+        <span class="var no-val" data-var="damping=0.4">amortissement</span> ·
+        <span class="var no-val" data-var="avoidOverlap=0.8">anti-chevauchement</span>.` },
+      { h: "Cohésion (backend, advisory)", body: `Les arêtes intra-cluster tirent plus fort (<span class="var" data-var="_INTRA_COMMUNITY_PULL" data-val="3×">×3</span>) → les communautés se regroupent spatialement.` },
+      { h: "Layout sémantique (SYN-64)", body: `Au recalcul complet, des <b>ressorts souples kNN sur embeddings</b> (<span class="var" data-var="SYNAPSE_SEMANTIC_K" data-val="4">top-4</span> cosinus ≥ <span class="var" data-var="SYNAPSE_SEMANTIC_MIN_SCORE" data-val="0.80">0.80</span>, poids <span class="var" data-var="SYNAPSE_SEMANTIC_WEIGHT" data-val="0.45">0.45×score</span>) rapprochent les entités proches sémantiquement, sans relation explicite. <b>Layout-only</b> : jamais renvoyés. <span class="var" data-var="semantic_layout" data-val="true">semantic_layout=false</span> pour couper.` },
+    ],
+  },
+  labels: {
+    title: "Zones nommées",
+    tags: ["LLM"],
+    ref: "graph_clusters.py · SYN-70",
+    body: `<p>Chaque communauté reçoit un nom court (<span class="var" data-var="CLAUDE_MODEL" data-val="claude-haiku-4-5">Haiku</span>)
+      et un contour (<span class="var no-val" data-var="_convex_hull">enveloppe convexe pure-Python</span>).</p>`,
+    sections: [
+      { h: "Cache", body: `Labels batchés (1 appel) + cachés par <span class="var no-val" data-var="cluster_labels.signature">signature du cluster</span> → coût LLM négligeable.` },
+      { h: "Pas de cluster forcé", body: `Une communauté < <span class="var" data-var="MIN_CLUSTER_SIZE" data-val="3">3 nœuds</span> ne devient pas une région (un hull a besoin de ≥3 points, un label à 1 nœud retombe sur le nœud). En dessous → nœud <b>orphelin</b>, rendu flottant sans zone.` },
+    ],
+  },
+  out: {
+    title: "Réponse carte — GET /graph",
+    tags: ["I/O"],
+    ref: "openapi.json · /graph",
+    body: `<p>Renvoie <code>{nodes, edges, clusters}</code> : nœuds positionnés et colorés, arêtes, et zones
+      <code>{label, hull}</code>. C'est le contrat que lit le rendu frontend (SYN-64).</p>`,
+    sections: [
+      { h: "Rendu (SYN-64)", body: `Le frontend dessine un <b>cerveau</b> : nœuds = neurones (soma + noyau ; note = anneau), arêtes = axones (+ bulbe synaptique). Clusters = simple <b>couleur</b> de nœud (communauté Louvain) — les régions Voronoï dessinées ont été <b>retirées</b> (déformaient le graphe). Zones « soft » par-dessus = piste future.` },
+      { h: "Ouvrir un nœud", body: `Clic entité → fiche <code>/entity/{id}</code> ; clic note → <code>GET /atomic-note/{id}</code> (contenu + capture d'origine).` },
+    ],
+  },
+};
+
+function renderInto(sideId, dict, id) {
+  const d = dict[id];
+  const side = document.getElementById(sideId);
+  if (!d) {
+    side.innerHTML = '<p class="placeholder">Nœud inconnu : ' + id + '</p>';
+    return;
+  }
+  const tagHtml = (d.tags || []).map(t => {
+    const cls = t === 'LLM' ? 'tag-llm' : t === 'I/O' ? 'tag-haiku' :
+                t === 'compute' ? 'tag-local' : t === 'store' ? 'tag-sql' : 'tag-env';
+    return `<span class="tag ${cls}">${t}</span>`;
+  }).join(' ');
+  const sectionsHtml = (d.sections || []).map(s =>
+    `<div class="section"><h3>${s.h}</h3>${s.body}</div>`
+  ).join('');
+  side.innerHTML = `
+    <h2>${d.title}</h2>
+    <div>${tagHtml}</div>
+    <div class="ref">${d.ref || ''}</div>
+    <div style="margin-top:14px">${d.body}</div>
+    ${sectionsHtml}
+  `;
+  side.scrollTop = 0;
+}
+
+function showDetail(id) { renderInto('sidebar-pipeline', DETAILS, id); }
+function showModelDetail(id) { renderInto('sidebar-model', MODEL_DETAILS, id); }
+function showGraphDetail(id) { renderInto('sidebar-graph', GRAPH_DETAILS, id); }
+window.showDetail = showDetail;
+window.showModelDetail = showModelDetail;
+window.showGraphDetail = showGraphDetail;
+
+// Rendu manuel : un panel hidden a width 0 → un rendu auto-startOnLoad
+// produit un SVG inutilisable. On rend uniquement le panel actif, et on
+// rend chaque autre panel à la 1ère ouverture (lazy).
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: 'dark' });
+
+async function renderPanel(tabName) {
+  const panel = document.querySelector(`.panel[data-panel="${tabName}"]`);
+  if (!panel) return;
+  const block = panel.querySelector('pre.mermaid');
+  if (!block || block.dataset.rendered === '1') return;
+  try {
+    await mermaid.run({ nodes: [block] });
+    block.dataset.rendered = '1';
+  } catch (e) {
+    block.innerHTML = '<pre style="color:#f7768e;white-space:pre-wrap">Mermaid error : '
+      + (e && e.message ? e.message : e) + '</pre>';
+  }
+}
+
+// Tab switcher
+document.querySelectorAll('nav.tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.panel').forEach(p =>
+      p.classList.toggle('active', p.dataset.panel === tab)
+    );
+    renderPanel(tab);
+  });
+});
+
+// Initial render of the default active panel.
+window.addEventListener('DOMContentLoaded', () => renderPanel('pipeline'));
+</script>
+</body>
+</html>
