@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
-<title>Synapse — Dream Cycle Engine Map</title>
+<title>Synapse : Dream Cycle Engine Map</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
 :root {
@@ -159,7 +159,7 @@ flowchart TD
     direction TB
     step1["Lecture & classification IA<br/><span style='font-size:11px;opacity:.7'>Step 1 · Claude Haiku 4.5</span>"]:::llm
     step1 --> step2["Résolution d'entités<br/><span style='font-size:11px;opacity:.7'>Step 2 · match nom + alias</span>"]:::compute
-    step1 -. "exit ephémère" .-> intentions["Intentions courtes<br/><span style='font-size:11px;opacity:.7'>TTL — pas de mémoire long-terme</span>"]:::store
+    step1 -. "exit ephémère" .-> intentions["Intentions courtes<br/><span style='font-size:11px;opacity:.7'>TTL : pas de mémoire long-terme</span>"]:::store
 
     step2 --> step3["Score de fiabilité par fait<br/><span style='font-size:11px;opacity:.7'>Step 3 · formule de confiance</span>"]:::compute
     step3 --> step4["Tri par confiance<br/><span style='font-size:11px;opacity:.7'>Step 4 · 3 niveaux</span>"]:::compute
@@ -274,7 +274,7 @@ flowchart LR
     m_intentions["intentions<br/>TTL"]:::eph
   end
 
-  subgraph CARTE["Carte vivante — projection SYN-66"]
+  subgraph CARTE["Carte vivante : projection SYN-66"]
     m_node_positions["node_positions<br/>x, y · ForceAtlas2"]:::carte
     m_cluster_labels["cluster_labels<br/>label Haiku cache"]:::carte
   end
@@ -402,7 +402,7 @@ flowchart LR
         La carte n'est pas une table de plus : c'est une <b>projection</b> assemblée à la demande
         depuis le graphe existant (<span class="var no-val" data-var="entities">entités</span> +
         <span class="var no-val" data-var="atomic_notes">notes</span> +
-        <span class="var no-val" data-var="relations">relations</span>). Aucune nouvelle source de vérité —
+        <span class="var no-val" data-var="relations">relations</span>). Aucune nouvelle source de vérité :
         juste deux caches (<span class="var no-val" data-var="node_positions">positions</span>,
         <span class="var no-val" data-var="cluster_labels">labels</span>). Un recalcul complet ne perd rien.
       </p>
@@ -414,7 +414,7 @@ flowchart LR
         <tr><td class="functional">couleur de zone</td><td class="technical"><span class="var no-val" data-var="community_id">communauté Louvain</span></td></tr>
         <tr><td class="functional">saturation</td><td class="technical"><span class="var" data-var="memory_strength" data-val="decay Ebbinghaus SYN-19/68">vivacité</span></td></tr>
         <tr><td class="functional">position</td><td class="technical"><span class="var no-val" data-var="ForceLayout.kt (client) · forceAtlas2Based">forceAtlas2 client</span></td></tr>
-        <tr><td class="functional">zones</td><td class="technical"><span class="var no-val" data-var="Voronoï retiré (SYN-64) — couleur de communauté seule">plus de régions dessinées</span></td></tr>
+        <tr><td class="functional">zones</td><td class="technical"><span class="var no-val" data-var="Voronoï retiré (SYN-64) : couleur de communauté seule">plus de régions dessinées</span></td></tr>
       </table>
     </div>
   </aside>
@@ -423,12 +423,12 @@ flowchart LR
 <script>
 const DETAILS = {
   capture: {
-    title: "POST /capture — entrée dans l'inbox",
+    title: "POST /capture : entrée dans l'inbox",
     tags: ["I/O"],
     ref: "api/app.py:214",
     body: `
       <p>L'API d'entrée. Stocke la capture brute dans <code>inbox</code> avec un client_id UUID
-      (idempotent : un retry réseau ne duplique pas). La capture est <em>immuable</em> — toutes
+      (idempotent : un retry réseau ne duplique pas). La capture est <em>immuable</em>, toutes
       les projections (entities, facts, atomic_notes, project_entries) gardent un
       <code>provenance_capture_id</code> qui pointe ici (SYN-41).</p>
     `,
@@ -445,7 +445,7 @@ const DETAILS = {
     ref: "api/app.py:65-219 (_should_consolidate)",
     body: `
       <p>Deux temporalités, comme le sommeil : la capture s'accumule pendant la « journée », la
-      consolidation tourne en une passe « sommeil » batchée. Fini le débounce par capture (~2 min) —
+      consolidation tourne en une passe « sommeil » batchée. Fini le débounce par capture (~2 min) :
       le lot du jour attend une <b>heure planifiée</b> OU une <b>valve de taille</b>. Un verrou
       empêche deux cycles simultanés.</p>
     `,
@@ -478,7 +478,7 @@ const DETAILS = {
         <b>transcript en lecture seule</b> du lot + les captures consolidées des dernières
         <span class="var no-val" data-var="_WM_LOOKBACK_HOURS=24">24 h</span> (bloc caché). La coréférence
         (« il / elle / ce projet / hier ») se résout d'une capture à l'autre au lieu de classifier chacune
-        à l'aveugle. Le bloc <b>ne produit rien</b> — seule la capture courante génère des sorties.` },
+        à l'aveugle. Le bloc <b>ne produit rien</b> : seule la capture courante génère des sorties.` },
       { h: "Batch API vs synchrone", body: `La passe planifiée classifie tout le lot via la Message
         Batches API (<span class="var no-val" data-var="_batch_classify (submit → poll → results)">_batch_classify</span>,
         -50 % sur la classification), même prompt que la voie synchrone (<code>_classify_params</code>). Best-effort :
@@ -502,12 +502,12 @@ const DETAILS = {
         · longueur de sortie max <span class="var no-val" data-var="max_tokens=4096 (SYN-78)">4096 tokens</span>` },
       { h: "Sorties possibles (toutes coexistent)", body: `
         <ul>
-          <li><b>Réflexion libre</b> — pensée à mémoriser <span class="var no-val" data-var="atomic_note (string|null)">·</span></li>
-          <li><b>Rattachement projet</b> — un ou plusieurs <span class="var no-val" data-var="project_entries[] (SYN-57)">·</span></li>
-          <li><b>Entités + faits</b> — graphe de connaissance <span class="var no-val" data-var="entities[] + facts[] par entité">·</span></li>
+          <li><b>Réflexion libre</b> : pensée à mémoriser <span class="var no-val" data-var="atomic_note (string|null)">·</span></li>
+          <li><b>Rattachement projet</b> : un ou plusieurs <span class="var no-val" data-var="project_entries[] (SYN-57)">·</span></li>
+          <li><b>Entités + faits</b> : graphe de connaissance <span class="var no-val" data-var="entities[] + facts[] par entité">·</span></li>
           <li><b>Relations entre entités</b> <span class="var no-val" data-var="relations[]">·</span></li>
-          <li><b>Intention périssable</b> — sortie courte <span class="var no-val" data-var="is_ephemeral=true">·</span></li>
-          <li><b>Ressource web</b> (SYN-21) — toute URL est fetchée + résumée (Haiku) + stockée dans <code>resources</code>, cherchable. URL-driven, indépendant du routing. <span class="var no-val" data-var="dream_cycle/resources.py">·</span></li>
+          <li><b>Intention périssable</b> : sortie courte <span class="var no-val" data-var="is_ephemeral=true">·</span></li>
+          <li><b>Ressource web</b> (SYN-21) : toute URL est fetchée + résumée (Haiku) + stockée dans <code>resources</code>, cherchable. URL-driven, indépendant du routing. <span class="var no-val" data-var="dream_cycle/resources.py">·</span></li>
         </ul>` },
       { h: "Importance d'un fait (1-5)", body: `
         <table class="fn-table">
@@ -525,7 +525,7 @@ const DETAILS = {
           <tr><td class="functional">avec marqueur de doute</td><td class="technical"><span class="var" data-var="evidence_strength=hedged" data-val="base 0.65">0.65</span></td><td>file de validation</td></tr>
           <tr><td class="functional">déduit du contexte</td><td class="technical"><span class="var" data-var="evidence_strength=implicit" data-val="base 0.40">0.40</span></td><td>file de review</td></tr>
         </table>` },
-      { h: "Type d'entité — vocab dynamique (SYN-58)", body: `Le prompt reçoit la liste
+      { h: "Type d'entité : vocab dynamique (SYN-58)", body: `Le prompt reçoit la liste
         <code>active_entity_types</code> (bloc non-caché) et doit choisir dedans. S'il ne trouve
         pas, il met <code>type=concept</code> + <code>type_proposal {value, reason}</code> (au lieu
         de forcer un type faux). Garde-fou : <code>type=project</code> uniquement si un project_entry
@@ -539,13 +539,13 @@ const DETAILS = {
         + entité type=project), jamais une simple <code>kind="task"</code>. Une action unique et bornée
         (« rappeler le dentiste ») reste une tâche.` },
       { h: "Confiance de routage (« À valider »)", body: `Le classifier émet
-        <span class="var no-val" data-var="classification_confidence (0–1)">classification_confidence</span> :
+        <span class="var no-val" data-var="classification_confidence (0 à 1)">classification_confidence</span> :
         1.0 = sans ambiguïté, < 0.6 = il hésite. En cas de doute « durable vs éphémère » il choisit
         <code>task</code> et baisse la confiance plutôt que de jeter → la tâche part en « À valider » (voir Tri).` },
     ],
   },
   intentions: {
-    title: "Intentions courtes — sortie ephémère",
+    title: "Intentions courtes : sortie ephémère",
     tags: ["store"],
     ref: "db/__init__.py + handle_intentions()",
     body: `
@@ -573,7 +573,7 @@ const DETAILS = {
     sections: [
       { h: "Date resolver", body: `Pour les facts dont le predicate contient "birthday", "birth",
         "date", "anniversaire" → tente une normalisation ISO. Sinon valeur brute.` },
-      { h: "Limite", body: `Pas de fuzzy match ni embedding — c'est l'objet du proposeur de merge
+      { h: "Limite", body: `Pas de fuzzy match ni embedding : c'est l'objet du proposeur de merge
         (voir nœud "Merge proposal?").` },
     ],
   },
@@ -608,11 +608,11 @@ const DETAILS = {
       { h: "Bonus / malus d'importance", body: `
         <table class="fn-table">
           <tr><th>Importance</th><th>Effet</th></tr>
-          <tr><td class="functional">5 — permanent</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[5]">+0.20</span></td></tr>
-          <tr><td class="functional">4 — stable</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[4]">+0.15</span></td></tr>
-          <tr><td class="functional">3 — état actuel</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[3]">+0.05</span></td></tr>
-          <tr><td class="functional">2 — contextuel</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[2]">0</span></td></tr>
-          <tr><td class="functional">1 — bruit</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[1]">−0.10</span></td></tr>
+          <tr><td class="functional">5 : permanent</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[5]">+0.20</span></td></tr>
+          <tr><td class="functional">4 : stable</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[4]">+0.15</span></td></tr>
+          <tr><td class="functional">3 : état actuel</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[3]">+0.05</span></td></tr>
+          <tr><td class="functional">2 : contextuel</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[2]">0</span></td></tr>
+          <tr><td class="functional">1 : bruit</td><td class="technical"><span class="var no-val" data-var="_PERSISTENCE_BONUS[1]">−0.10</span></td></tr>
         </table>` },
       { h: "Plafond pour les faits avec doute", body: `Si Claude marque le fait comme
         <em>hedged</em> (avec marqueur de doute), le score est plafonné <span class="var" data-var="hedged clamp" data-val="0.84">juste sous le seuil "durable"</span>
@@ -620,7 +620,7 @@ const DETAILS = {
     ],
   },
   step4: {
-    title: "Tri par confiance — 3 niveaux",
+    title: "Tri par confiance : 3 niveaux",
     tags: ["compute"],
     ref: "dream_cycle/cycle.py:382-491",
     body: `
@@ -650,11 +650,11 @@ const DETAILS = {
         "review" est la limite d'utilité : en-dessous, l'info est probablement du bruit. Les deux
         seuils sont en dur dans le code (pas d'env var pour l'instant), à ajuster en éditant
         directement <code>step4_route</code>.` },
-      { h: "« À valider » — tâches & relations (gate séparé)", body: `Les faits utilisent le score
+      { h: "« À valider » : tâches & relations (gate séparé)", body: `Les faits utilisent le score
         <em>dérivé</em> ci-dessus. Les <b>tâches/événements</b> et les <b>relations</b>, eux, portent une
         confiance <em>auto-déclarée</em> par le LLM et passent par un gate distinct : sous
         <span class="var" data-var="SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD" data-val="0.7">0.7</span> ils sont
-        écrits avec <code>review_status='pending'</code> (au lieu d'être jetés) — une note en
+        écrits avec <code>review_status='pending'</code> (au lieu d'être jetés) : une note en
         <span class="var no-val" data-var="atomic_notes.review_status">atomic_notes.review_status</span>,
         une relation en <span class="var no-val" data-var="relations.review_status">relations.review_status</span>.
         Ces lignes <b>pending sont cachées de toutes les lectures</b> et ne remontent que via
@@ -663,9 +663,9 @@ const DETAILS = {
     ],
   },
   facts: {
-    title: "Faits durables — la mémoire fiable",
+    title: "Faits durables : la mémoire fiable",
     tags: ["store"],
-    ref: "db/__init__.py — table facts",
+    ref: "db/__init__.py : table facts",
     body: `
       <p>La table-source de vérité pour les affirmations sur les entités. Lue partout
       (<code>/entity/{id}</code>, <code>/graph</code>, synthèse projet).</p>
@@ -681,7 +681,7 @@ const DETAILS = {
   pending: {
     title: "File de validation utilisateur",
     tags: ["store"],
-    ref: "db/__init__.py — table pending_facts",
+    ref: "db/__init__.py : table pending_facts",
     body: `
       <p>Facts mid-confidence qui attendent une décision utilisateur. Exposés dans l'onglet
       <em>Pending</em> avec swipe validate/reject.</p>
@@ -694,12 +694,12 @@ const DETAILS = {
     ],
   },
   review: {
-    title: "File de review — signal faible",
+    title: "File de review : signal faible",
     tags: ["store"],
-    ref: "db/__init__.py — table review_queue",
+    ref: "db/__init__.py : table review_queue",
     body: `
       <p>Pour les facts dont la confidence est trop faible pour être validables par swipe simple.
-      Pas d'UI dédiée pour l'instant — sert de débordement.</p>
+      Pas d'UI dédiée pour l'instant, sert de débordement.</p>
     `,
   },
   entityGate: {
@@ -744,7 +744,7 @@ const DETAILS = {
         prompt au runtime. Un type inconnu → entité <code>status='pending'</code> + une
         <code>entity_type_proposals</code>. Garde-fou : <code>type='project'</code> seulement si un
         project_entry correspond, sinon → <code>concept</code>.` },
-      { h: "Statut (SYN-58)", body: `<code>status active|pending|archived</code> — seules les
+      { h: "Statut (SYN-58)", body: `<code>status active|pending|archived</code> : seules les
         <code>active</code> apparaissent dans les vues (graphe, recherche, suggestions).` },
     ],
   },
@@ -755,12 +755,12 @@ const DETAILS = {
     body: `
       <p>Après chaque création d'entité, on scanne les autres entités du même type pour repérer
       un éventuel doublon. Deux couches, la moins chère d'abord ; la première qui matche gagne
-      (une proposition par entité — l'utilisateur tranche) :</p>
+      (une proposition par entité, l'utilisateur tranche) :</p>
       <ol>
         <li><b>Substring (SYN-39)</b> : un nom entièrement contenu dans l'autre ET au moins un mot
         complet en commun (évite "Pi" ⊂ "Pierre"). Cas typique : "Martin" ↔ "Martin Bari".</li>
         <li><b>Fallback embedding (SYN-61)</b> : si le substring ne trouve rien, similarité cosine
-        sur les entités du même type. Rattrape les doublons sans substring partagée — "Marie Dupont"
+        sur les entités du même type. Rattrape les doublons sans substring partagée : "Marie Dupont"
         ↔ "M. Dupont", "OpenAI" ↔ "Open AI". L'entité n'étant pas encore vectorisée (step6 tourne en
         fin de cycle), on l'embed à la volée et on cherche dans le graphe historique.</li>
       </ol>
@@ -768,7 +768,7 @@ const DETAILS = {
       <span class="var" data-var="SYNAPSE_MERGE_EMBEDDING_THRESHOLD" data-val="0.85">0.85</span>
       (env var, défaut <code>_MERGE_EMBEDDING_THRESHOLD_DEFAULT</code>). La proposition porte
       <code>similarity_reason="embedding_X.XX"</code> vs <code>"name_substring"</code> pour distinguer
-      la couche. Une proposition par paire — pas de re-prompt même après un rejet.</p>
+      la couche. Une proposition par paire, pas de re-prompt même après un rejet.</p>
     `,
     sections: [
       { h: "Calibration", body: `Seuil sensible : trop bas = bruit, trop haut = on rate. Lancer le
@@ -778,7 +778,7 @@ const DETAILS = {
     ],
   },
   mergeQueue: {
-    title: "File de fusion — l'utilisateur tranche",
+    title: "File de fusion : l'utilisateur tranche",
     tags: ["store"],
     ref: "db/__init__.py + api/app.py:456-650 (SYN-39)",
     body: `
@@ -795,7 +795,7 @@ const DETAILS = {
     ],
   },
   atomicNote: {
-    title: "Notes atomiques — pensées à mémoriser",
+    title: "Notes atomiques : pensées à mémoriser",
     tags: ["store"],
     ref: "dream_cycle/cycle.py:706-740 (SYN-42, durci SYN-56)",
     body: `
@@ -807,7 +807,7 @@ const DETAILS = {
         <li>Observation contemplative non-actionnable</li>
         <li>Décision/résolution</li>
       </ul>
-      <p>Sinon null — pas un compte-rendu d'événement, pas un fact "X a Y".</p>
+      <p>Sinon null : pas un compte-rendu d'événement, pas un fact "X a Y".</p>
       <p><b>Fail-safe SVO</b> : si ça se réduit à (sujet, prédicat, objet), c'est un fact, pas une note.</p>
     `,
     sections: [
@@ -819,11 +819,11 @@ const DETAILS = {
     ],
   },
   projectEntries: {
-    title: "Timelines projet — N projets par capture",
+    title: "Timelines projet : N projets par capture",
     tags: ["store"],
     ref: "dream_cycle/cycle.py:949-1017 (SYN-42 + SYN-57)",
     body: `
-      <p>Le classifier émet <code>project_entries[]</code> — une capture peut nourrir plusieurs
+      <p>Le classifier émet <code>project_entries[]</code> : une capture peut nourrir plusieurs
       projets en parallèle. Routing : dedup par <code>canonical_name</code> (lowercase) puis
       <code>_persist_project_entry</code> par item, chacun avec son content extrait spécifique.</p>
     `,
@@ -844,12 +844,12 @@ const DETAILS = {
       <table class="fn-table">
         <tr><th>Mode</th><th>Quand</th><th>Coût</th></tr>
         <tr>
-          <td class="functional"><b>Append</b> — ajout incrémental</td>
+          <td class="functional"><b>Append</b> : ajout incrémental</td>
           <td class="functional">par défaut</td>
           <td class="functional">léger (synthèse précédente + 1 entry)</td>
         </tr>
         <tr>
-          <td class="functional"><b>Refonte</b> — reconstruction complète</td>
+          <td class="functional"><b>Refonte</b> : reconstruction complète</td>
           <td class="technical"><span class="var" data-var="SYNAPSE_REFINEMENT_THRESHOLD" data-val="20">tous les 20 ajouts</span></td>
           <td class="functional">plus coûteux (toutes les entries)</td>
         </tr>
@@ -860,11 +860,11 @@ const DETAILS = {
         au fil des injections). La refonte périodique recadre tout. Monter le seuil = économies tokens,
         descendre = synthèses plus propres mais plus chères.` },
       { h: "Modèle utilisé", body: `<span class="var" data-var="CLAUDE_MODEL" data-val="claude-haiku-4-5-20251001">Claude Haiku 4.5</span>
-        — mêmes blocs cache que la classification mais avec un prompt dédié à la synthèse.` },
+        : mêmes blocs cache que la classification mais avec un prompt dédié à la synthèse.` },
     ],
   },
   projectState: {
-    title: "État courant des projets — versions historisées",
+    title: "État courant des projets : versions historisées",
     tags: ["store"],
     ref: "db/__init__.py (SYN-41 + SYN-44)",
     body: `
@@ -879,7 +879,7 @@ const DETAILS = {
     `,
   },
   relations: {
-    title: "Arêtes du graphe — relations entre entités",
+    title: "Arêtes du graphe : relations entre entités",
     tags: ["store"],
     ref: "dream_cycle/cycle.py:step4_route (SYN 2026-06-30)",
     body: `
@@ -911,7 +911,7 @@ const DETAILS = {
 
 const MODEL_DETAILS = {
   inbox: {
-    title: "inbox — captures brutes (source de vérité)",
+    title: "inbox : captures brutes (source de vérité)",
     tags: ["store"],
     ref: "db/__init__.py",
     body: `
@@ -936,12 +936,12 @@ device_id, captured_at, created_at, processed_at, status</pre>` },
     ],
   },
   entities: {
-    title: "entities — nœuds du graphe",
+    title: "entities : nœuds du graphe",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:_upsert_entity",
     body: `
       <p>Le graphe d'entités. Chaque entité a un <b>type</b> (vocab dynamique
-      <code>active_entity_types</code>, SYN-58 — built-in + validés user), un nom canonique,
+      <code>active_entity_types</code>, SYN-58, built-in + validés user), un nom canonique,
       des aliases, une summary, un embedding, un compteur de mentions et un <b>status</b>
       (active|pending|archived).</p>
     `,
@@ -971,7 +971,7 @@ status (SYN-58), archived_at (SYN-59), created_at</pre>` },
     ],
   },
   facts: {
-    title: "facts — assertions sur une entité",
+    title: "facts : assertions sur une entité",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:step4_route",
     body: `
@@ -998,7 +998,7 @@ archived_at, obsoleted_at, obsoleted_by (SYN-37/59)</pre>` },
       { h: "Cycle de vie (SYN-37/59)", body: `
         <ul>
           <li><b>obsoleted_at/by</b> : « plus vrai aujourd'hui ». Auto par <b>SYN-37</b> (last-writes-wins
-          sur prédicats single-valued — <code>works_at</code>, <code>lives_in</code>… — si la nouvelle
+          sur prédicats single-valued (<code>works_at</code>, <code>lives_in</code>…) si la nouvelle
           confiance ≥ l'ancienne) OU manuel (<code>obsoleted_by</code> NULL).</li>
           <li><b>archived_at</b> : « rangé hors vue », geste user explicite, réversible.</li>
           <li>Caché par défaut dans les vues ; <code>?include=archived,obsolete</code> sur la fiche
@@ -1007,7 +1007,7 @@ archived_at, obsoleted_at, obsoleted_by (SYN-37/59)</pre>` },
     ],
   },
   relations: {
-    title: "relations — arêtes du graphe",
+    title: "relations : arêtes du graphe",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:step4_route",
     body: `
@@ -1031,12 +1031,12 @@ confidence, review_status (2026-06-30), provenance_capture_id, created_at</pre>`
     ],
   },
   project_entries: {
-    title: "project_entries — entrée timeline d'un projet",
+    title: "project_entries : entrée timeline d'un projet",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:_persist_project_entry",
     body: `
       <p>Le pont entre une capture (inbox) et un projet (entity type=project). Une capture peut
-      en spawner <b>N</b> (SYN-57) — chaque projet mentionné reçoit son extrait spécifique du
+      en spawner <b>N</b> (SYN-57) : chaque projet mentionné reçoit son extrait spécifique du
       texte original.</p>
     `,
     sections: [
@@ -1049,7 +1049,7 @@ capture_id (FK inbox), content, kind, created_at</pre>` },
     ],
   },
   project_state: {
-    title: "project_state — synthèse courante d'un projet",
+    title: "project_state : synthèse courante d'un projet",
     tags: ["store"],
     ref: "db/__init__.py",
     body: `
@@ -1063,7 +1063,7 @@ updated_at, entry_count_at_sync</pre>` },
     ],
   },
   project_state_versions: {
-    title: "project_state_versions — historique des synthèses",
+    title: "project_state_versions : historique des synthèses",
     tags: ["store"],
     ref: "db/__init__.py",
     body: `
@@ -1080,7 +1080,7 @@ summary_md, entry_count, trigger, kind, created_at</pre>` },
     ],
   },
   atomic_notes: {
-    title: "atomic_notes — réflexions libres",
+    title: "atomic_notes : réflexions libres",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:_persist_atomic_note",
     body: `
@@ -1103,10 +1103,10 @@ review_status (2026-06-29), provenance_capture_id, created_at, updated_at</pre>`
         <code>POST /atomic-note/{id}/confirm</code> promeut, reject = <code>/archive</code>.` },
       { h: "Natures de note (SYN-85 / SYN-23)", body: `
         <ul>
-          <li><span class="var no-val" data-var="kind='note'">réflexion</span> — pensée libre (défaut).</li>
-          <li><span class="var no-val" data-var="kind='task'">tâche</span> — chose à <b>faire</b>, retrouvable ; peut porter une <span class="var no-val" data-var="event_date sur kind=task (SYN-23)">échéance</span> sans devenir un événement.</li>
-          <li><span class="var no-val" data-var="kind='event'">événement</span> — occurrence qui <b>se produit</b> à une date (<span class="var no-val" data-var="event_date absolue + event_recurring">date absolue, récurrence annuelle</span>).</li>
-          <li><span class="var no-val" data-var="kind='digest' (SYN-23)">digest</span> — synthèse hebdo générée par un job à part (<span class="var no-val" data-var="dream_cycle/digest.py · LaunchAgent lundi 08h + auto-heal _ensure_weekly_digest">cron hebdo</span> : rétro semaine + « à venir », rendu <span class="var no-val" data-var="Haiku · règle intemporelle (dates absolues)">Haiku intemporel</span>, idempotent par semaine ISO ; <span class="var no-val" data-var="POST /digest/run · GET /digest/latest">endpoints</span>). Exclu de la carte (sinon hairball).</li>
+          <li><span class="var no-val" data-var="kind='note'">réflexion</span> : pensée libre (défaut).</li>
+          <li><span class="var no-val" data-var="kind='task'">tâche</span> : chose à <b>faire</b>, retrouvable ; peut porter une <span class="var no-val" data-var="event_date sur kind=task (SYN-23)">échéance</span> sans devenir un événement.</li>
+          <li><span class="var no-val" data-var="kind='event'">événement</span> : occurrence qui <b>se produit</b> à une date (<span class="var no-val" data-var="event_date absolue + event_recurring">date absolue, récurrence annuelle</span>).</li>
+          <li><span class="var no-val" data-var="kind='digest' (SYN-23)">digest</span> : synthèse hebdo générée par un job à part (<span class="var no-val" data-var="dream_cycle/digest.py · LaunchAgent lundi 08h + auto-heal _ensure_weekly_digest">cron hebdo</span> : rétro semaine + « à venir », rendu <span class="var no-val" data-var="Haiku · règle intemporelle (dates absolues)">Haiku intemporel</span>, idempotent par semaine ISO ; <span class="var no-val" data-var="POST /digest/run · GET /digest/latest">endpoints</span>). Exclu de la carte (sinon hairball).</li>
         </ul>
         <span class="var no-val" data-var="archived_at (POST /atomic-note/{id}/archive|unarchive)">« rendre obsolète »</span> masque sans détruire (réversible).
         <span class="var no-val" data-var="POST /atomic-note/{id}/reinforce (SYN-23)">👍 « garder »</span> réactive une note en cours d'oubli.` },
@@ -1120,7 +1120,7 @@ review_status (2026-06-29), provenance_capture_id, created_at, updated_at</pre>`
     ],
   },
   atomic_notes_vec: {
-    title: "atomic_notes_vec — index vectoriel (vec0)",
+    title: "atomic_notes_vec : index vectoriel (vec0)",
     tags: ["store"],
     ref: "db/__init__.py · embeddings.py",
     body: `
@@ -1135,7 +1135,7 @@ review_status (2026-06-29), provenance_capture_id, created_at, updated_at</pre>`
     ],
   },
   pending_facts: {
-    title: "pending_facts — file de validation utilisateur",
+    title: "pending_facts : file de validation utilisateur",
     tags: ["store"],
     ref: "db/__init__.py",
     body: `
@@ -1152,16 +1152,16 @@ validation_strategy, created_at</pre>` },
     ],
   },
   review_queue: {
-    title: "review_queue — débordement bas signal",
+    title: "review_queue : débordement bas signal",
     tags: ["store"],
     ref: "db/__init__.py",
     body: `
-      <p>Pour les facts trop faibles pour être validés par swipe simple. Pas d'UI dédiée V1 —
+      <p>Pour les facts trop faibles pour être validés par swipe simple. Pas d'UI dédiée V1,
       sert juste de zone de débordement pour ne rien perdre.</p>
     `,
   },
   entity_merge_proposals: {
-    title: "entity_merge_proposals — file de dédoublonnage",
+    title: "entity_merge_proposals : file de dédoublonnage",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:_propose_merge_if_similar (SYN-39 + SYN-61)",
     body: `
@@ -1180,7 +1180,7 @@ status, created_at, resolved_at, resolved_canonical_id</pre>` },
     ],
   },
   entity_type_proposals: {
-    title: "entity_type_proposals + active_entity_types — vocab dynamique",
+    title: "entity_type_proposals + active_entity_types : vocab dynamique",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:_record_type_proposal · api/app.py (SYN-58)",
     body: `
@@ -1203,7 +1203,7 @@ active_entity_types(type PK, source, added_at)</pre>` },
     ],
   },
   project_attach_proposals: {
-    title: "project_attach_proposals — « rattacher à un projet ? »",
+    title: "project_attach_proposals : « rattacher à un projet ? »",
     tags: ["store"],
     ref: "db/__init__.py · cycle.py:_propose_project_attach_if_similar",
     body: `
@@ -1223,7 +1223,7 @@ similarity_score, status, created_at, resolved_at</pre>` },
     ],
   },
   intentions: {
-    title: "intentions — sortie périssable",
+    title: "intentions : sortie périssable",
     tags: ["store"],
     ref: "db/__init__.py · handle_intentions()",
     body: `
@@ -1237,7 +1237,7 @@ similarity_score, status, created_at, resolved_at</pre>` },
     ],
   },
   node_positions: {
-    title: "node_positions — positions de la carte (SYN-69)",
+    title: "node_positions : positions de la carte (SYN-69)",
     tags: ["store"],
     ref: "graph_layout.py",
     body: `
@@ -1253,7 +1253,7 @@ similarity_score, status, created_at, resolved_at</pre>` },
     ],
   },
   cluster_labels: {
-    title: "cluster_labels — labels de cluster (cache Haiku, SYN-70)",
+    title: "cluster_labels : labels de cluster (cache Haiku, SYN-70)",
     tags: ["store", "LLM"],
     ref: "graph_clusters.py",
     body: `
@@ -1292,7 +1292,7 @@ const GRAPH_DETAILS = {
     body: `<p>Regroupe les nœuds par <span class="var no-val" data-var="networkx.community.louvain_communities (seed=42)">Louvain</span>
       → chaque nœud reçoit un <span class="var no-val" data-var="community_id">identifiant de communauté</span> qui donne sa couleur.</p>`,
     sections: [
-      { h: "Choix", body: `Louvain pur-Python (<span class="var no-val" data-var="networkx>=3.2">networkx</span>) — package sans binaire C dans le .dmg. Leiden/igraph en upgrade futur.` },
+      { h: "Choix", body: `Louvain pur-Python (<span class="var no-val" data-var="networkx>=3.2">networkx</span>) : package sans binaire C dans le .dmg. Leiden/igraph en upgrade futur.` },
     ],
   },
   filter: {
@@ -1339,13 +1339,13 @@ const GRAPH_DETAILS = {
     ],
   },
   out: {
-    title: "Réponse carte — GET /graph",
+    title: "Réponse carte : GET /graph",
     tags: ["I/O"],
     ref: "openapi.json · /graph",
     body: `<p>Renvoie <code>{nodes, edges, clusters}</code> : nœuds positionnés et colorés, arêtes, et zones
       <code>{label, hull}</code>. C'est le contrat que lit le rendu frontend (SYN-64).</p>`,
     sections: [
-      { h: "Rendu (SYN-64)", body: `Le frontend dessine un <b>cerveau</b> : nœuds = neurones (soma + noyau ; note = anneau), arêtes = axones (+ bulbe synaptique). Clusters = simple <b>couleur</b> de nœud (communauté Louvain) — les régions Voronoï dessinées ont été <b>retirées</b> (déformaient le graphe). Zones « soft » par-dessus = piste future.` },
+      { h: "Rendu (SYN-64)", body: `Le frontend dessine un <b>cerveau</b> : nœuds = neurones (soma + noyau ; note = anneau), arêtes = axones (+ bulbe synaptique). Clusters = simple <b>couleur</b> de nœud (communauté Louvain). Les régions Voronoï dessinées ont été <b>retirées</b> (déformaient le graphe). Zones « soft » par-dessus = piste future.` },
       { h: "Ouvrir un nœud", body: `Clic entité → fiche <code>/entity/{id}</code> ; clic note → <code>GET /atomic-note/{id}</code> (contenu + capture d'origine).` },
     ],
   },
