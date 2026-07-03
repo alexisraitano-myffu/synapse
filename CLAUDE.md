@@ -246,9 +246,9 @@ The HTTP API has known clients beyond MCP:
 
 The roadmap (Phase C — memory_strength decay, coreference window, resource fetch, weekly digest, etc.) is tracked in an **internal task tracker outside this repo**. Don't reference internal tooling URLs from this file (public repo).
 
-## Local-only engine map
+## Engine map
 
-If `docs/engine-map.html` is present in the working tree, it is a personal, gitignored visual map — three tabs (Dream Cycle pipeline · data model · **living-map graph model**, SYN-66) with clickable details for prompts, tunable thresholds, schema. Keep it in sync when you change:
+`docs/engine-map.html` is a committed (public) visual map — three tabs (Dream Cycle pipeline · data model · **living-map graph model**, SYN-66) with clickable details for prompts, tunable thresholds, schema. Keep it in sync when you change:
 - Tunable constants in `dream_cycle/cycle.py` (e.g. `MIN_ENTITY_PERSISTENCE`, `_EVIDENCE_BASE`, bucket thresholds in `step4_route`).
 - Env vars consumed by the cycle (`SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CYCLE_DEBOUNCE_SECONDS`, `SYNAPSE_REFINEMENT_THRESHOLD`).
 - Classifier prompt rules (`_SYSTEM_CLASSIFIER`) or sub-routing rules (atomic_note, project_entries, ephemeral).
