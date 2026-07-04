@@ -143,6 +143,10 @@ def init_db() -> None:
     sites (MCP startup, Dream Cycle, tests) unchanged. Do NOT add DDL here —
     schema changes go into the core.
     """
-    from core_store import get_store
+    from core_store import get_brain, get_store
 
     get_store()
+    # Warm the Brain here too: opening it runs (idempotent) schema writes,
+    # which must never happen lazily inside a caller's open transaction
+    # (SQLITE_BUSY). After this, get_brain() is a cache hit everywhere.
+    get_brain()

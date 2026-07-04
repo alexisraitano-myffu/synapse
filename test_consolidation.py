@@ -105,7 +105,9 @@ def test_should_consolidate_scheduled_fires_once(monkeypatch, tmp_path):
 
 # ── Batch API classify (offline, mocked client) ──────────────────────────────
 
-def test_classify_params_shape_with_working_memory():
+def test_classify_params_shape_with_working_memory(isolated_db):
+    # SYN-111: the params are built by the core (prompt-as-data + live DB
+    # blocks, always read from the core's own connection).
     params = _classify_params({"id": 1, "content": "Coucou"}, conn=None, day_context="CTX")
     assert params["model"] and params["max_tokens"] == 4096
     assert params["messages"][0]["content"] == "Coucou"
@@ -113,6 +115,8 @@ def test_classify_params_shape_with_working_memory():
     # stable rules + working-memory block, both cached; user content carried separately.
     assert sysblocks[0]["cache_control"] == {"type": "ephemeral"}
     assert any(b.get("text") == "CTX" and b.get("cache_control") for b in sysblocks)
+    # uncached live blocks (vocab + projects) follow the cached prefix.
+    assert any("TYPES D'ENTITÉ ACTIFS" in b.get("text", "") for b in sysblocks)
 
 
 def test_parse_classify_text_strips_fence_and_guards_truncation():
