@@ -171,6 +171,22 @@ Triggered by a tester: actionable captures were dropped or mis-routed.
 - **« À valider » queue for low-confidence tasks**: classifier now emits `classification_confidence` (0-1); a task/event below `SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD` (0.7) is written with **`atomic_notes.review_status='pending'`** (default `'confirmed'`) instead of silently dropped. Pending notes are **hidden from every read surface** (`/atomic-notes` default, `/graph`, digest retrospective + « à venir » + open-tasks) and surface only via `GET /atomic-notes?review_status=pending`; `POST /atomic-note/{id}/confirm` promotes (reject = `/archive`). App: a "Tâches" segment in « À valider ».
 - **Reprocess (`POST /inbox/{id}/reprocess`)**: replay a capture through the cycle after a prompt fix: deletes only **that capture's** artifacts (atomic_notes + vec, facts, relations, project_entries), **keeps entities** (resolver dedupes; only `mention_count` may drift), re-queues. No global-wipe endpoint by design. To rebuild a tester's data: loop it over `/feed` ids then `POST /dream-cycle/run`.
 
+### Update 2026-07-04 (après-midi): uuid ids everywhere (SYN-112 phase 1, T3)
+
+- **`inbox.id` and `atomic_notes.id` are TEXT uuids** (P2P prerequisite: AUTOINCREMENT
+  can't give rows a cross-device identity). One-shot migration in the core
+  (`migrate.rs`, runs at `Storage::open`): `client_id` promoted to inbox pk, uuid4 for
+  notes, vec0 re-keyed (`atomic_notes_vec(note_id TEXT PRIMARY KEY, …)`), every
+  referencing column rewritten (dangling refs keep their old value).
+- **Never use `last_insert_rowid()` for inbox/notes**: on a TEXT-pk table it returns
+  the internal ROWID, not the id. Generate the uuid first, then INSERT (the DDL has a
+  random-hex DEFAULT as a safety net, but real code always passes an explicit id).
+- API path params for captures/notes are strings; `/graph` note nodes are `n:<uuid>`;
+  the app (branch syn-112) parses them by prefix, not by `toLongOrNull()`.
+- Golden harness replays historical integer corpus ids as their text form; the
+  normalizer tokenizes note uuids by natural key. Reference re-frozen: parity 224/224.
+- Backup at switch: `~/.synapse/synapse.db.pre-syn112-uuid-20260704`.
+
 ### Update 2026-07-04: the brain lives in synapse-core (SYN-110 + SYN-111, T1/T2 of SYN-96)
 
 - **Storage (SYN-110)**: the Rust core owns the SQLite schema and the ONLY SQLite library
@@ -232,10 +248,10 @@ Search is hybrid: vector k-NN via sqlite-vec first (no API key needed: embedding
 SQLite at `~/.synapse/synapse.db`, owned by the **Rust core** since SYN-110: the `synapse_core` wheel (built from the separate `synapse-core` repo, not on PyPI) bundles the ONLY SQLite library in the process, with sqlite-vec compiled in. Hard rule: never add a second SQLite binding (apsw, stdlib sqlite3) — same-process POSIX locks don't conflict across libraries, transactions interleave and the file gets corrupted (observed). Connection helpers (`get_connection`, `cursor_to_dicts`, `first_row`, `init_db`) live in `db/__init__.py`: `Connection`/`Cursor` keep the old apsw surface (`execute`, fetch, `with conn:` transactions with savepoints) over the core's SQL gateway. **The schema DDL lives in the core** (`crates/synapse-core/src/schema.rs`, same idempotent CREATE/ALTER discipline); `init_db()` just opens the core store (`core_store.get_store()`) and is called at MCP startup and at the top of the Dream Cycle. Vector reads/writes (vec0 KNN over notes, entity/resource embedding columns + similarity scans) go through the core `Storage` API — `entity_search.py` keeps its historical signatures on top. Core vector writes run on the core's own connection: never call them while a Python `with conn:` transaction is open (SQLITE_BUSY); the cycle defers them until after commit.
 
 Tables:
-- `inbox`: raw captures; `processed_at` NULL until consumed. Sync: `client_id` (UNIQUE partial index → idempotent), `device_id`, `captured_at`, `status`
+- `inbox`: raw captures; `processed_at` NULL until consumed. **`id` = TEXT uuid** (SYN-112): equals the client-generated `client_id` when provided, so `POST /capture` idempotency rides on the pk (the `client_id` UNIQUE index remains for the transition). `device_id`, `captured_at`, `status`
 - `validation_events`: append-only log of validate/reject decisions
 - `cycle_runs`: one row per Dream Cycle run (stats for `GET /dream-cycle/last`)
-- `atomic_notes` / `atomic_notes_vec`: episodic memory; vec0 rowid mirrors `atomic_notes.id`. Columns: `summary`, `entities_mentioned` (JSON), `memory_strength` + `last_reactivated_at` (SYN-19)
+- `atomic_notes` / `atomic_notes_vec`: episodic memory; vec0 keyed by `note_id` = the note's uuid (SYN-112). Columns: `summary`, `entities_mentioned` (JSON), `memory_strength` + `last_reactivated_at` (SYN-19)
 - `entities`, `facts`, `relations`, `resources`: entity graph (UUID ids). `entities.embedding` raw BLOB (manual cosine: UUID ids can't use int-rowid vec0). Lifecycle cols: `entities.status` (active|pending|archived, SYN-58) + `entities.archived_at`, `facts.archived_at`/`obsoleted_at`/`obsoleted_by` (SYN-37/59). `entities.memory_strength` (decay, SYN-68). `resources` now has `url`/`content`/`summary`/`embedding`/`fetched_at` (SYN-21, unique index on `url`)
 - `node_positions` (carte: `node_id`,`x`,`y`: ForceAtlas2, SYN-69), `cluster_labels` (carte: `signature`,`label`: cached Haiku labels, SYN-70): projection caches for the living map, never authoritative
 - `active_entity_types` (live type vocab: 6 builtin + user-validated) + `entity_type_proposals` (SYN-58)
