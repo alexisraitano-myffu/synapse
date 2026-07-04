@@ -460,9 +460,10 @@ def capture(item: CaptureIn):
         with conn:
             conn.execute(
                 "INSERT OR IGNORE INTO inbox "
-                "(content, source, client_id, device_id, captured_at, status) "
-                "VALUES (?,?,?,?,?, 'queued')",
-                (item.content, item.source, item.id, item.device_id, item.captured_at),
+                "(id, content, source, client_id, device_id, captured_at, status) "
+                "VALUES (?,?,?,?,?,?, 'queued')",
+                (item.id, item.content, item.source, item.id, item.device_id,
+                 item.captured_at),
             )
         row = first_row(conn.execute(
             "SELECT id, created_at FROM inbox WHERE client_id=?", (item.id,)
@@ -504,7 +505,7 @@ def feed(limit: int = 30):
 
 
 @app.post("/inbox/{entry_id}/requeue", dependencies=[Depends(require_auth)])
-def inbox_requeue(entry_id: int):
+def inbox_requeue(entry_id: str):
     """Put a failed entry back in the queue (SYN-77 — user-driven retry)."""
     conn = get_connection()
     try:
@@ -523,7 +524,7 @@ def inbox_requeue(entry_id: int):
 
 
 @app.post("/inbox/{entry_id}/reprocess", dependencies=[Depends(require_auth)])
-def inbox_reprocess(entry_id: int):
+def inbox_reprocess(entry_id: str):
     """Re-run an already-processed (or failed) capture through the cycle — e.g. to recover
     captures mis-classified before a classifier-prompt fix. Deletes ONLY this capture's own
     derived artifacts (atomic_notes + their vec rows, facts, relations, project_entries) so
@@ -1027,7 +1028,7 @@ def atomic_notes_list(
 
 
 @app.get("/atomic-note/{note_id}", dependencies=[Depends(require_auth)])
-def atomic_note_detail(note_id: int):
+def atomic_note_detail(note_id: str):
     """A single atomic_note for the map / notes detail (SYN-64).
 
     Same shape as the list rows, plus the source capture's content when the
@@ -1060,7 +1061,7 @@ def atomic_note_detail(note_id: int):
 
 
 @app.post("/atomic-note/{note_id}/archive", dependencies=[Depends(require_auth)])
-def atomic_note_archive(note_id: int):
+def atomic_note_archive(note_id: str):
     """SYN-85 — user gesture « rendre obsolète » : hide a note (task done /
     event passé / pensée périmée) without deleting it (reversible)."""
     conn = get_connection()
@@ -1079,7 +1080,7 @@ def atomic_note_archive(note_id: int):
 
 
 @app.post("/atomic-note/{note_id}/confirm", dependencies=[Depends(require_auth)])
-def atomic_note_confirm(note_id: int):
+def atomic_note_confirm(note_id: str):
     """« À valider » — accept a low-confidence task/event: promote it from
     review_status='pending' into the live backlog. (Reject = the /archive route.)"""
     conn = get_connection()
@@ -1098,7 +1099,7 @@ def atomic_note_confirm(note_id: int):
 
 
 @app.post("/atomic-note/{note_id}/unarchive", dependencies=[Depends(require_auth)])
-def atomic_note_unarchive(note_id: int):
+def atomic_note_unarchive(note_id: str):
     conn = get_connection()
     try:
         with conn:
@@ -1112,7 +1113,7 @@ def atomic_note_unarchive(note_id: int):
 
 
 @app.post("/atomic-note/{note_id}/promote-to-project", dependencies=[Depends(require_auth)])
-def atomic_note_promote_to_project(note_id: int, body: NotePromoteIn):
+def atomic_note_promote_to_project(note_id: str, body: NotePromoteIn):
     """Point 1 (D) — promote a mis-classified task/note into a project: create (or
     reuse) the project entity, seed it with a project_entry built from the note,
     then archive the note (reversible). Best handled upstream by the classifier
@@ -1153,7 +1154,7 @@ def atomic_note_promote_to_project(note_id: int, body: NotePromoteIn):
 
 
 @app.post("/atomic-note/{note_id}/reinforce", dependencies=[Depends(require_auth)])
-def atomic_note_reinforce(note_id: int):
+def atomic_note_reinforce(note_id: str):
     """SYN-23 (digest) — user gesture 👍 « garder ça » on a fading note: full
     reactivation. Moves last_reactivated_at to now so Ebbinghaus springs the
     memory_strength back up; sets it to 1.0 immediately for the UI."""
@@ -1174,7 +1175,7 @@ def atomic_note_reinforce(note_id: int):
 
 
 @app.post("/atomic-note/{note_id}/date", dependencies=[Depends(require_auth)])
-def atomic_note_set_date(note_id: int, event_date: str | None = None, recurring: bool = False):
+def atomic_note_set_date(note_id: str, event_date: str | None = None, recurring: bool = False):
     """SYN-23 (dated tasks) — set (or clear) a note's date. Lets a task carry an
     `event_date` without becoming an event, so it surfaces in « À venir » like an
     event. `event_date=null` clears it. Absolute date (YYYY-MM-DD) expected."""
@@ -1619,7 +1620,7 @@ def fact_restore(fact_id: str):
 
 
 @app.get("/capture/{capture_id}", dependencies=[Depends(require_auth)])
-def capture_detail(capture_id: int):
+def capture_detail(capture_id: str):
     """Return the raw inbox row by id. Powers the 'source' chip — anything
     elsewhere with a provenance_capture_id can resolve to a full capture
     payload here without leaking SQL details to the client."""
@@ -1638,7 +1639,7 @@ def capture_detail(capture_id: int):
 
 
 @app.get("/capture/{capture_id}/generated", dependencies=[Depends(require_auth)])
-def capture_generated(capture_id: int):
+def capture_generated(capture_id: str):
     """SYN-92 — the reverse provenance index: what the Dream Cycle produced from
     one capture. Every derived table carries provenance_capture_id (the inbox row
     that first created the entity / fact / relation / note), so this is a uniform

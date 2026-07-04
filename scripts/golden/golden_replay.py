@@ -66,12 +66,15 @@ def main() -> int:
     all_new_facts = []
     try:
         for item in corpus["entries"]:
+            # SYN-112: uuid TEXT pks — historical integer corpus ids are
+            # replayed as their text form (same convention as the Rust runner).
+            cid = str(item["capture_id"])
             conn.execute(
                 "INSERT INTO inbox (id, content, source, created_at, status) "
                 "VALUES (?,?,?,?, 'queued')",
-                (item["capture_id"], item["content"], "golden", item["created_at"]),
+                (cid, item["content"], "golden", item["created_at"]),
             )
-            entry = {"id": item["capture_id"], "content": item["content"],
+            entry = {"id": cid, "content": item["content"],
                      "source": "golden", "created_at": item["created_at"]}
             entity_ids, new_facts = cycle._process_entry(
                 entry, None, conn, REPLAY_NOW, dry_run=False, verbose=False,
@@ -86,7 +89,10 @@ def main() -> int:
             print(f"  routed id={item['capture_id']} "
                   f"({len(entity_ids)} entité(s)) → {per_entry[-1]['state_hash']}")
 
-        promoted = cycle.step5_validate_pending(all_new_facts, conn, False, False)
+        from core_store import get_brain
+        promoted = get_brain().validate_pending(
+            json.dumps(all_new_facts, ensure_ascii=False)
+        )
         print(f"step5: {promoted} pending fact(s) promoted")
     finally:
         conn.close()

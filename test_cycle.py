@@ -79,7 +79,7 @@ def test_episodic_capture_creates_vectorized_note(isolated_db):
         assert memory_strength == 1.0
 
         vec = conn.execute(
-            "SELECT embedding FROM atomic_notes_vec WHERE rowid = ?", (note_id,)
+            "SELECT embedding FROM atomic_notes_vec WHERE note_id = ?", (note_id,)
         ).fetchone()
         assert vec is not None, "episodic note was not vectorized"
     finally:

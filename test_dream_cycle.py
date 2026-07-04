@@ -39,11 +39,13 @@ def _add_inbox(content: str, source: str = "test") -> int:
     from db import get_connection
     conn = get_connection()
     try:
+        import uuid
+        cid = str(uuid.uuid4())
         with conn:
             conn.execute(
-                "INSERT INTO inbox (content, source) VALUES (?,?)", (content, source)
+                "INSERT INTO inbox (id, content, source) VALUES (?,?,?)", (cid, content, source)
             )
-        return conn.last_insert_rowid()
+        return cid
     finally:
         conn.close()
 

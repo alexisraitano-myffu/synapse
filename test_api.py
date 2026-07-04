@@ -339,8 +339,8 @@ def _seed_type_proposal():
     conn = _conn()
     try:
         with conn:
-            conn.execute("INSERT INTO inbox (content, source) VALUES ('recette udon','test')")
-            cid = conn.last_insert_rowid()
+            cid = str(_uuid.uuid4())
+            conn.execute("INSERT INTO inbox (id, content, source) VALUES (?,'recette udon','test')", (cid,))
             eid = str(_uuid.uuid4())
             conn.execute(
                 "INSERT INTO entities (id, type, canonical_name, status) VALUES (?,?,?,?)",
@@ -498,8 +498,9 @@ def _seed_pending():
     conn = _conn()
     try:
         with conn:
-            conn.execute("INSERT INTO inbox (content, source) VALUES ('Marie bosse à l hôpital','test')")
-            inbox_id = conn.last_insert_rowid()
+            import uuid as _uuid2
+            inbox_id = str(_uuid2.uuid4())
+            conn.execute("INSERT INTO inbox (id, content, source) VALUES (?,'Marie bosse à l hôpital','test')", (inbox_id,))
             fact_data = json.dumps({
                 "entity_canonical": "Marie", "predicate": "works_at",
                 "value": "Hôpital", "confidence": 0.6,

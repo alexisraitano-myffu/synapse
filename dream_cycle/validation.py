@@ -61,10 +61,10 @@ def record_and_apply_validation(
     eid = get_brain().find_entity(entity_name, [])
     row = {"id": eid} if eid else None
     # SYN-41: provenance traces back to the capture that spawned the pending.
-    try:
-        prov_id = int(fact_data.get("source_inbox_id")) if fact_data.get("source_inbox_id") else None
-    except (TypeError, ValueError):
-        prov_id = None
+    # SYN-112: capture ids are uuid strings; a pre-migration integer payload
+    # is kept as its text form (same dangling-ref policy as the migration).
+    raw_prov = fact_data.get("source_inbox_id")
+    prov_id = str(raw_prov) if raw_prov not in (None, "") else None
 
     if row:
         entity_id = row["id"]

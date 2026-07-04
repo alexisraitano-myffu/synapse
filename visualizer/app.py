@@ -53,7 +53,7 @@ async def get_nodes():
     conn = get_connection()
     try:
         cur = conn.execute(
-            "SELECT id, title, content, source_ids, created_at FROM atomic_notes ORDER BY id"
+            "SELECT id, title, content, source_ids, created_at FROM atomic_notes ORDER BY created_at, id"
         )
         cols = [d[0] for d in cur.description]
         notes = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -106,7 +106,7 @@ def _build_edges(conn) -> list[dict]:
     if get_store().get_note_vector(first_note[0]) is None:
         return []
 
-    note_ids = [r[0] for r in conn.execute("SELECT id FROM atomic_notes ORDER BY id").fetchall()]
+    note_ids = [r[0] for r in conn.execute("SELECT id FROM atomic_notes ORDER BY created_at, id").fetchall()]
 
     seen: set[tuple] = set()
     edges = []
@@ -143,7 +143,7 @@ async def get_edges():
 
 
 @app.get("/api/note/{note_id}")
-async def get_note(note_id: int):
+async def get_note(note_id: str):
     conn = get_connection()
     try:
         cur = conn.execute(

@@ -25,6 +25,7 @@ Run: python -m dream_cycle.digest          (+ --dry-run to preview without writi
 import argparse
 import json
 import sys
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -297,13 +298,14 @@ def write_digest_note(conn, week: dict, markdown: str) -> int:
         for nid in stale:
             conn.execute("DELETE FROM atomic_notes WHERE id = ?", (nid,))
 
+        note_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO atomic_notes "
-            "(title, content, summary, entities_mentioned, memory_strength, kind) "
-            "VALUES (?,?,?,?,?, 'digest')",
-            (title, markdown, summary, json.dumps(names, ensure_ascii=False), 1.0),
+            "(id, title, content, summary, entities_mentioned, memory_strength, kind) "
+            "VALUES (?,?,?,?,?,?, 'digest')",
+            (note_id, title, markdown, summary,
+             json.dumps(names, ensure_ascii=False), 1.0),
         )
-        note_id = conn.last_insert_rowid()
 
     for nid in stale:
         store.delete_note_vector(nid)

@@ -3,6 +3,7 @@ import io
 import json
 import sys
 import traceback
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -101,12 +102,12 @@ def add_to_inbox(content: str, source: str = "manual") -> str:
     """
     conn = get_connection()
     try:
+        row_id = str(uuid.uuid4())
         with conn:
             conn.execute(
-                "INSERT INTO inbox (content, source) VALUES (?, ?)",
-                (content, source),
+                "INSERT INTO inbox (id, content, source) VALUES (?, ?, ?)",
+                (row_id, content, source),
             )
-        row_id = conn.last_insert_rowid()
         return json.dumps({"id": row_id, "status": "added", "source": source})
     finally:
         conn.close()

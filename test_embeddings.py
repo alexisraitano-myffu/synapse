@@ -79,12 +79,14 @@ def test_related_text_is_closer_than_unrelated():
 
 # ── search_memory end-to-end ─────────────────────────────────────────────────
 
-def _insert_note(conn, title: str, content: str, with_vector: bool = True) -> int:
-    conn.execute("INSERT INTO atomic_notes (title, content) VALUES (?, ?)", (title, content))
-    note_id = conn.last_insert_rowid()
+def _insert_note(conn, title: str, content: str, with_vector: bool = True) -> str:
+    import uuid
+    note_id = str(uuid.uuid4())
+    conn.execute("INSERT INTO atomic_notes (id, title, content) VALUES (?, ?, ?)",
+                 (note_id, title, content))
     if with_vector:
         conn.execute(
-            "INSERT OR REPLACE INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO atomic_notes_vec(note_id, embedding) VALUES (?, ?)",
             (note_id, embed_text(f"{title}\n{content}")),
         )
     return note_id

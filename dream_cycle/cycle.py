@@ -556,7 +556,7 @@ def _append_project_summary(
 def _persist_project_entry(
     project_canonical: str,
     content: str,
-    capture_id: int,
+    capture_id: str,
     conn,
     is_new_project: bool = False,
     verbose: bool = False,
@@ -626,7 +626,7 @@ def _persist_project_entry(
 
 # ── Per-entry processing ─────────────────────────────────────────────────────
 
-def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False,
+def _mark(conn, entry_id: str, now: str, status: str, dry_run: bool = False,
           error: str | None = None) -> None:
     """Mark an inbox entry done with an outcome status (processed | failed)."""
     if dry_run:

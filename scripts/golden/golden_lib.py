@@ -128,11 +128,14 @@ def normalize_db(db_path) -> dict:
         for r in relations
     ]
 
-    notes = rows("SELECT n.*, (SELECT COUNT(*) FROM atomic_notes_vec v WHERE v.rowid = n.id)"
-                 " AS has_vec FROM atomic_notes n ORDER BY n.id")
+    notes = rows("SELECT n.*, (SELECT COUNT(*) FROM atomic_notes_vec v WHERE v.note_id = n.id)"
+                 " AS has_vec FROM atomic_notes n")
+    # SYN-112: note ids are random uuid4 — sort/tokenize on natural keys.
+    notes.sort(key=lambda n: (n["content"], n.get("kind") or "", str(n.get("provenance_capture_id"))))
+    note_token = {n["id"]: f"N{i + 1}" for i, n in enumerate(notes)}
     out["atomic_notes"] = [
         {
-            "id": n["id"],
+            "id": note_token[n["id"]],
             "title": n.get("title"),
             "content": n["content"],
             "summary": n.get("summary"),
@@ -230,7 +233,7 @@ def normalize_db(db_path) -> dict:
         [
             {
                 "capture_id": a.get("capture_id"),
-                "note_id": a.get("note_id"),
+                "note_id": note_token.get(a.get("note_id"), a.get("note_id")),
                 "project_id": token(a.get("project_id")),
                 "content": a["content"],
                 "score": None if a.get("similarity_score") is None
