@@ -171,6 +171,32 @@ Triggered by a tester: actionable captures were dropped or mis-routed.
 - **« À valider » queue for low-confidence tasks**: classifier now emits `classification_confidence` (0-1); a task/event below `SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD` (0.7) is written with **`atomic_notes.review_status='pending'`** (default `'confirmed'`) instead of silently dropped. Pending notes are **hidden from every read surface** (`/atomic-notes` default, `/graph`, digest retrospective + « à venir » + open-tasks) and surface only via `GET /atomic-notes?review_status=pending`; `POST /atomic-note/{id}/confirm` promotes (reject = `/archive`). App: a "Tâches" segment in « À valider ».
 - **Reprocess (`POST /inbox/{id}/reprocess`)**: replay a capture through the cycle after a prompt fix: deletes only **that capture's** artifacts (atomic_notes + vec, facts, relations, project_entries), **keeps entities** (resolver dedupes; only `mention_count` may drift), re-queues. No global-wipe endpoint by design. To rebuild a tester's data: loop it over `/feed` ids then `POST /dream-cycle/run`.
 
+### Update 2026-07-04: the brain lives in synapse-core (SYN-110 + SYN-111, T1/T2 of SYN-96)
+
+- **Storage (SYN-110)**: the Rust core owns the SQLite schema and the ONLY SQLite library
+  in the process (see the Database section — adding a second binding corrupts the file).
+- **Brain (SYN-111)**: classification AND routing run in the core. `_process_entry` passes
+  the classified JSON to `Brain.route_capture` (resolution, confidence, buckets, anti-redite
+  dedup, review gates, merge/type/attach proposals, intentions, atomic note, project entries,
+  reactivation — all Rust, golden-tested against the frozen pre-port reference); the returned
+  work list drives the host-side LLM follow-ups (project synthesis SYN-43). `step1_classify`
+  goes through the core's HTTP client (key + fuel-proxy resolution stays in
+  `anthropic_client.py`); the Batch API path builds params via `Brain.build_classify_params`
+  and parses via the core. **The classifier prompt is DATA**: versioned in the synapse-core
+  repo (`prompts/classifier.md`), deployed to `~/.synapse/prompts/` (override:
+  `SYNAPSE_PROMPTS_DIR`), `{today}` substituted at runtime — edit + restart, no rebuild.
+- **Embeddings**: `embed_text` uses the core's Embedder (one ~235 MB model per process,
+  shared with the core's internal embeds — bit-identical vectors). fastembed and dateparser
+  left the Python runtime; model files are data in `~/.synapse/models/…` (`SYNAPSE_MODEL_DIR`).
+- **Still host-side (T5 scope)**: orchestrator loop + scheduler + Batch submission, resources
+  fetch, resummary, digest, decay, `facts_store`/`entity_search` shims for user-action
+  endpoints (validation, PATCH, MCP search shapes).
+- **Golden parity harness**: `scripts/golden/` (classify-record, replay, compare) against
+  `~/.synapse/golden/` (personal data, never committed). After any change to the core's
+  routing, re-run `python -m scripts.golden.golden_compare`.
+- Gotcha: `init_db()` warms the Brain — its idempotent schema writes must never run lazily
+  inside a caller's open transaction (SQLITE_BUSY).
+
 ### Update 2026-06-30: fact⇄relation de-dup + relations join the confidence gate
 
 - **A relation = a fact whose object is a named entity → no more "redite".** « Audric est le cousin d'Alexis » used to produce BOTH a fact (`is_cousin_of="Alexis"` on Audric) AND a relation (Audric→Alexis). Now: (1) prompt rule: if a fact's object is a named entity you also emit, emit ONLY the relation; (2) defensive de-dup in `step4_route`: a fact whose `value` matches a relation target from the same entity is **dropped** (Haiku is unreliable, so the routing net stays). The relation is the canonical form: traversable, and visible from both fiches. Literal-valued facts (`lives_in="Lyon"`) are untouched.

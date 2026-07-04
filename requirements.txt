@@ -11,11 +11,10 @@ mcp>=1.9.0
 # (a second one, e.g. apsw, cannot see its locks and corrupts the database).
 # synapse_core (local wheel)
 
-# Local embeddings (ONNX runtime, no PyTorch — runs fully offline)
-fastembed>=0.8.0
-
-# Date parsing (relative → absolute dates in Dream Cycle)
-dateparser>=1.2.0
+# Local embeddings + date resolution now run inside the Rust core (the
+# synapse_core wheel). The model files live in ~/.synapse/models/… — use
+# `pip install fastembed` once + tools/gen_reference_vectors.py in the
+# synapse-core repo, or copy them from another install.
 
 # .env loading
 python-dotenv>=1.0.0
