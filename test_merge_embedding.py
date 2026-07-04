@@ -1,9 +1,10 @@
 """
 Offline tests for the SYN-61 embedding fallback in entity merge proposals.
 
-No ANTHROPIC_API_KEY needed — embeddings are local. We drive
-`_propose_merge_if_similar` directly with hand-built entities, the same way
-`step4_route` calls it.
+No ANTHROPIC_API_KEY needed — embeddings are local. SYN-111: the merge scan
+runs inside the core's routing; we drive `_process_entry` with a classified
+that creates the new entity (a persistence≥2 fact passes the creation gate)
+and assert on the proposals it raises against pre-inserted candidates.
 """
 
 import json
@@ -32,6 +33,31 @@ def _insert(conn, name, type_="person", summary="", with_embedding=False):
     return eid
 
 
+
+def _route_new_entity(name, type_, summary, source_id=2):
+    """Create `name` through the core routing (which then runs the merge scan
+    against the committed candidates)."""
+    from datetime import datetime, timezone
+    from db import get_connection
+    from dream_cycle import cycle
+    classified = {
+        "input_type": "fact",
+        "entities": [{
+            "canonical_name": name, "type": type_, "aliases": [],
+            "summary": summary, "attributes": {},
+            "facts": [{"predicate": "is", "value": "x",
+                       "persistence_value": 3, "evidence_strength": "explicit"}],
+        }],
+        "relations": [], "project_entries": [],
+    }
+    conn = get_connection()
+    try:
+        cycle._process_entry({"id": source_id, "content": "capture de test"},
+                             None, conn, datetime.now(timezone.utc).isoformat(),
+                             False, False, classified=classified)
+    finally:
+        conn.close()
+
 def _proposals(conn):
     from db import cursor_to_dicts
     return cursor_to_dicts(conn.execute(
@@ -46,19 +72,20 @@ def test_embedding_fallback_proposes_merge_without_substring(isolated_db, monkey
     well past threshold."""
     monkeypatch.setenv("SYNAPSE_MERGE_EMBEDDING_THRESHOLD", "0.7")
     from db import get_connection
-    from dream_cycle.cycle import _propose_merge_if_similar
 
     summary = "Amie proche de l'utilisateur, habite à Lyon, travaille dans la finance"
     conn = get_connection()
     try:
-        # SYN-110: commit the setup first — the similarity scan runs in the
-        # core and, like production, only sees committed entities.
         with conn:
             _insert(conn, "Marie Dupont", "person", summary, with_embedding=True)
-            new_id = _insert(conn, "M. Dupont", "person", summary)
-        with conn:
-            _propose_merge_if_similar(new_id, "M. Dupont", "person", 1, conn)
+    finally:
+        conn.close()
+    _route_new_entity("M. Dupont", "person", summary)
+    conn = get_connection()
+    try:
         props = _proposals(conn)
+        new_id = conn.execute(
+            "SELECT id FROM entities WHERE canonical_name='M. Dupont'").fetchone()[0]
     finally:
         conn.close()
 
@@ -73,14 +100,16 @@ def test_substring_wins_over_embedding(isolated_db):
     """When the substring heuristic matches, it fires and the embedding fallback
     is not consulted (reason stays name_substring)."""
     from db import get_connection
-    from dream_cycle.cycle import _propose_merge_if_similar
 
     conn = get_connection()
     try:
         with conn:
             _insert(conn, "Martin Bari", "person", "Collègue", with_embedding=True)
-            new_id = _insert(conn, "Martin", "person", "Collègue")
-            _propose_merge_if_similar(new_id, "Martin", "person", 1, conn)
+    finally:
+        conn.close()
+    _route_new_entity("Martin", "person", "Collègue")
+    conn = get_connection()
+    try:
         props = _proposals(conn)
     finally:
         conn.close()
@@ -93,16 +122,17 @@ def test_embedding_fallback_respects_type_filter(isolated_db, monkeypatch):
     """A semantically similar entity of a *different* type is never proposed."""
     monkeypatch.setenv("SYNAPSE_MERGE_EMBEDDING_THRESHOLD", "0.5")
     from db import get_connection
-    from dream_cycle.cycle import _propose_merge_if_similar
 
     summary = "Concept lié à l'escalade et à la grimpe de bloc"
     conn = get_connection()
     try:
         with conn:
             _insert(conn, "Bloc", "concept", summary, with_embedding=True)
-            new_id = _insert(conn, "Quelqu'un", "person", summary)
-        with conn:
-            _propose_merge_if_similar(new_id, "Quelqu'un", "person", 1, conn)
+    finally:
+        conn.close()
+    _route_new_entity("Quelqu'un", "person", summary)
+    conn = get_connection()
+    try:
         props = _proposals(conn)
     finally:
         conn.close()
@@ -114,17 +144,17 @@ def test_high_threshold_blocks_unrelated(isolated_db, monkeypatch):
     """A near-1.0 threshold means unrelated entities raise no proposal."""
     monkeypatch.setenv("SYNAPSE_MERGE_EMBEDDING_THRESHOLD", "0.99")
     from db import get_connection
-    from dream_cycle.cycle import _propose_merge_if_similar
 
     conn = get_connection()
     try:
         with conn:
             _insert(conn, "Banque centrale", "concept",
                     "Politique monétaire et taux directeurs", with_embedding=True)
-            new_id = _insert(conn, "Vélo de route", "concept",
-                             "Sport d'endurance en plein air")
-        with conn:
-            _propose_merge_if_similar(new_id, "Vélo de route", "concept", 1, conn)
+    finally:
+        conn.close()
+    _route_new_entity("Vélo de route", "concept", "Sport d'endurance en plein air")
+    conn = get_connection()
+    try:
         props = _proposals(conn)
     finally:
         conn.close()
@@ -136,17 +166,21 @@ def test_embedding_proposal_is_deduped(isolated_db, monkeypatch):
     """Running the fallback twice on the same pair doesn't double-propose."""
     monkeypatch.setenv("SYNAPSE_MERGE_EMBEDDING_THRESHOLD", "0.7")
     from db import get_connection
-    from dream_cycle.cycle import _propose_merge_if_similar
 
     summary = "Laboratoire de recherche en intelligence artificielle"
     conn = get_connection()
     try:
         with conn:
             _insert(conn, "OpenAI", "organization", summary, with_embedding=True)
-            new_id = _insert(conn, "Open AI", "organization", summary)
-        with conn:
-            _propose_merge_if_similar(new_id, "Open AI", "organization", 1, conn)
-            _propose_merge_if_similar(new_id, "Open AI", "organization", 1, conn)
+    finally:
+        conn.close()
+    # Two captures naming the same new entity: the first creates it and raises
+    # the proposal; the second resolves to the existing row (no re-scan) — the
+    # pair must not be proposed twice either way.
+    _route_new_entity("Open AI", "organization", summary, source_id=2)
+    _route_new_entity("Open AI", "organization", summary, source_id=3)
+    conn = get_connection()
+    try:
         props = _proposals(conn)
     finally:
         conn.close()

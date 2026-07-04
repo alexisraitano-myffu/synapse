@@ -34,17 +34,10 @@ import anthropic
 from config import CLAUDE_MODEL
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
-from core_store import get_store
-from entity_search import entity_embedding_text, search_entities_by_vector
-from facts_store import insert_fact
-from dream_cycle.decay import apply_decay, apply_entity_decay, reactivate_notes_for_entities
+from core_store import get_brain, get_store
+from entity_search import entity_embedding_text
+from dream_cycle.decay import apply_decay, apply_entity_decay
 from dream_cycle.resources import process_capture_resources
-
-try:
-    import dateparser
-    _HAS_DATEPARSER = True
-except ImportError:
-    _HAS_DATEPARSER = False
 
 _TODAY = date.today().isoformat()
 
@@ -59,257 +52,10 @@ def _get_client() -> anthropic.Anthropic:
 
 # ── Step 1 — Classifier ────────────────────────────────────────────────────────
 
-_SYSTEM_CLASSIFIER = """\
-Tu es un extracteur de mémoire pour un second cerveau personnel.
-
-Une même capture peut produire PLUSIEURS sorties simultanément (routing non-exclusif).
-Une réflexion dense qui mentionne plusieurs projets, des personnes et énonce des faits,
-doit produire à la fois project_entries (N items) + atomic_note + entities + facts dans
-le même JSON.
-
-Retourne UNIQUEMENT un JSON valide (sans markdown) :
-{{
-  "input_type": "fact|episodic|ephemeral|resource",
-  "atomic_note": "string ou null (réflexion libre / pensée non-factuelle ; on la garde comme nœud à part qui MENTIONNE des entités sans en devenir une)",
-  "atomic_note_kind": "note|task|event (qualifie atomic_note quand il est non-null ; défaut: note)",
-  "event_date": "YYYY-MM-DD ou null (date ABSOLUE — pour un event: la date de l'occurrence ; pour une task: l'échéance si elle en a une)",
-  "event_recurring": false,
-  "project_entries": [
-    {{
-      "project_canonical": "string (nom du projet auquel rattacher ; si 'nouveau projet : X', mets X)",
-      "content": "string (l'extrait de la capture pertinent pour CE projet précis)",
-      "is_new": true|false
-    }}
-  ],
-  "entities": [
-    {{
-      "canonical_name": "string",
-      "type": "string (un des TYPES D'ENTITÉ ACTIFS fournis en contexte)",
-      "type_proposal": null,
-      "aliases": ["string"],
-      "summary": "string (1 phrase INTEMPORELLE qui décrit cette entité — dates ABSOLUES uniquement ('anniversaire le 16 juin'), JAMAIS de relatif qui expire ('la semaine prochaine', 'bientôt', 'récemment') ; null si rien de notable)",
-      "attributes": {{"clé": "valeur"}},
-      "facts": [
-        {{
-          "predicate": "string (snake_case ex: has_birthday, works_at, lives_in)",
-          "value": "string",
-          "persistence_value": 1,
-          "evidence_strength": "explicit|hedged|implicit",
-          "category": "identity|dates|work|places|relations|preferences|health|other (thème du fait — sert à grouper l'affichage de la fiche)"
-        }}
-      ]
-    }}
-  ],
-  "relations": [
-    {{
-      "from": "canonical_name",
-      "predicate": "string (snake_case relationnel ex: sibling_of, works_with, cousin_of, employed_by)",
-      "to": "canonical_name",
-      "confidence": 1.0
-    }}
-  ],
-  "summary": "string (résumé en 1 phrase)",
-  "is_ephemeral": false,
-  "ephemeral_content": null,
-  "classification_confidence": 1.0
-}}
-
-Règles atomic_note :
-Un atomic_note est une PENSÉE de l'auteur qui doit pouvoir resurgir plus tard (insight,
-idée, citation marquante, décision). Ce N'EST PAS un compte-rendu d'événement courant ni
-une affirmation factuelle sur des tiers.
-
-Émettre atomic_note SEULEMENT si AU MOINS UN critère positif est rempli :
- (a) Première personne réflexive : "je pense que…", "j'ai réalisé que…", "je me demande si…",
-     "je vais essayer de…", "je veux arrêter de…".
- (b) Citation ou référence à une œuvre / un auteur / une idée externe sur laquelle l'auteur
-     se positionne ("Schopenhauer dit X, mais je trouve que Y").
- (c) Observation contemplative non-actionnable : "c'est marrant comme…", "j'ai remarqué que…",
-     une intuition générale qui ne se réduit pas à un fait sur une personne.
- (d) TÂCHE / BACKLOG (kind="task") : une chose à FAIRE dont le CONTENU mérite d'être retrouvé
-     plus tard — idée de backlog, amélioration à apporter, démarche à entreprendre ("il faut
-     qu'on ajoute un type de note dans les projets…", "penser à proposer X à Y"). Souvent
-     rattachée à un projet (émettre AUSSI le project_entry). kind="task" même si la phrase
-     est réflexive ("il faut que je…" actionnable → task, pas note).
-     Une tâche PEUT porter une échéance : si elle a une date limite ("finir le deck pour
-     vendredi", "rappeler le dentiste avant le 20"), garde kind="task" ET renseigne event_date
-     (date ABSOLUE). Une tâche datée N'EST PAS un événement — c'est une chose à faire, pas une
-     occurrence qui se produit.
-     RÈGLE DURE — toute capture qui est une ACTION À FAIRE doit donner atomic_note != null ET
-     atomic_note_kind="task" (JAMAIS null, JAMAIS is_ephemeral seul). Une action ADRESSÉE à une
-     personne/organisation nommée ("répondre à l'e-mail de Vincent", "présenter le plan
-     d'affaires à Ziyu", "parler à Vincent de l'appartement"), ou une DÉMARCHE/un ENGAGEMENT
-     ("déclarer mes revenus à l'URSSAF", "envoyer la facture à efcsn") = TÂCHE, même formulée
-     en deux mots ou à l'impératif/2ᵉ personne. Ne te contente JAMAIS d'en extraire des faits
-     sur les entités citées en laissant tomber l'action elle-même.
- (e) ÉVÉNEMENT DATÉ (kind="event") : une occurrence qui SE PRODUIT à une date — rendez-vous,
-     salon, anniversaire, échéance d'agenda. La distinction avec une tâche datée : un event tu
-     y ASSISTES / il ARRIVE (passif) ; une tâche tu la FAIS (actif). "Salon Vivatech le 24" →
-     event ; "préparer la démo pour le salon" → task. event_date = date ABSOLUE (résoudre
-     "mardi" via {today}).
-     Anniversaire / récurrence annuelle → event_recurring=true (et émettre AUSSI le fact
-     has_birthday sur la personne). Un événement passé raconté ("hier j'ai vu X") n'est PAS
-     un event — seules les occurrences à venir ou récurrentes en sont.
-     IMPORTANT : émets l'atomic_note kind="event" MÊME si is_ephemeral=true — le rappel
-     court terme (intention) et l'événement durable coexistent dans le même JSON.
-
-Sinon atomic_note = null. En particulier, atomic_note = null pour TOUS ces cas :
- - "X a/est/fait Y" → fact sur X (ex : "Karim a un projet appelé Atlas", "Marie a un chat Gipsy",
-   "Léa a probablement adopté un chien", "ma mère a un nouveau chat").
- - "j'ai fait/mangé/vu/travaillé sur …" → événement courant, va dans inbox + entities/facts,
-   pas en atomic_note (sauf si l'auteur en tire explicitement une réflexion, cf. (a)).
- - Compte-rendu projet ("j'ai avancé sur X aujourd'hui, j'ai testé Y") → project_entries, pas
-   atomic_note (sauf réflexion explicite en plus).
- - Micro-course triviale, SANS destinataire ni enjeu, SANS contenu durable ni date
-   ("il faut que j'achète du pain", "acheter un baudrier") → intention éphémère uniquement,
-   pas de note. MAIS dès qu'il y a un destinataire nommé, un engagement ou une date, ce N'EST
-   PLUS éphémère → task (d) (avec event_date si échéance) ou event (e).
-
-Fail-safe SVO : si la capture peut intégralement se reformuler en (sujet, prédicat, objet) ou
-en liste de tels triplets, c'est un fact, pas une note. Une note contient toujours un
-mouvement réflexif qui ne tient pas dans un triplet.
-
-Règle PROJET vs TÂCHE (priorité haute — tranche AVANT d'émettre kind="task") :
-Un PROJET est une entreprise à PLUSIEURS étapes ou qui s'étale dans le TEMPS, portée par un
-objectif (apprendre X, atteindre un niveau, construire/rénover Y, organiser un voyage). Une
-TÂCHE est une action unique et bornée ("rappeler le dentiste", "acheter du pain").
-- Si la capture qualifie explicitement quelque chose de « projet » ("j'ai un projet de…",
-  "mon projet X", "nouveau projet : X") → c'est un PROJET, JAMAIS une simple tâche. Émets un
-  project_entry (is_new=true s'il est absent des PROJETS EXISTANTS) ET une entité type="project".
-- Si l'objectif implique PLUSIEURS étapes ou une LONGUE durée ("faire une 7a en escalade",
-  "apprendre le japonais", "rénover l'appartement", "courir un marathon") → traite-le comme un
-  PROJET même sans le mot « projet » : crée le projet (is_new) et mets l'objectif dans `content`.
-- Nomme le projet par son DOMAINE durable plutôt que par l'action ponctuelle (ex : « j'ai un
-  projet d'escalade de faire une 7a » → project_canonical="Escalade", content="Objectif : faire
-  une 7a") — ainsi les avancées futures ("j'ai fait une 6a") se rattachent au même projet.
-- Le projet est un PARAPLUIE : les sous-tâches et avancées ultérieures du domaine s'y rattachent
-  via project_entries plutôt que de vivre comme des tâches isolées.
-- Une vraie action isolée, sans projet parent évident, reste kind="task" (cf. règle (d)).
-
-Règles project_entries :
-- Si la capture est explicitement liée à un OU PLUSIEURS projets (déclarés ou nommés), produire UNE entrée par projet dans le tableau project_entries.
-- Une même capture peut mentionner plusieurs projets ("j'ai avancé Synapse et Atlas aujourd'hui") → 2 items, un pour chaque projet, avec un `content` propre qui reprend uniquement l'extrait pertinent à ce projet.
-- "nouveau projet : X" → is_new=true, project_canonical=X (et toujours dans le tableau, même s'il n'y a qu'un seul item).
-- La liste des projets existants te sera fournie en contexte ci-dessous — préfère un nom existant à une variante orthographique.
-- Si aucun projet identifiable → project_entries = [] (tableau vide).
-- Ne jamais émettre deux items pour le même project_canonical dans une même capture — fusionne le contenu dans un seul item.
-
-Règles type d'entité :
-- Choisis `type` STRICTEMENT parmi les TYPES D'ENTITÉ ACTIFS fournis en contexte ci-dessous (la liste s'étend avec le temps).
-- Si une entité ne rentre dans AUCUN type actif (ex : une recette, un outil logiciel, un événement, un plat), NE force PAS un type approximatif : mets `"type": "concept"` ET renseigne `"type_proposal": {{"value": "<type_en_snake_case>", "reason": "<pourquoi ce nouveau type>"}}`. Sinon laisse `"type_proposal": null`.
-- Garde-fou "projet" : n'émets `"type": "project"` QUE si tu produis aussi un item project_entries pour CETTE entité dans le même JSON. Un nom ambigu (souvent issu d'une transcription approximative) ne doit jamais créer un projet : dans le doute → `"type": "concept"`.
-
-Règle classification_confidence (0.0–1.0) :
-Note ta confiance dans le ROUTAGE choisi (input_type / atomic_note_kind / is_ephemeral).
-- 1.0 = sans ambiguïté. ~0.9 = clair. < 0.6 = tu hésites réellement (ex : action minimale dont
-  tu ne sais pas si elle vaut une tâche durable, ou capture cryptique/tronquée).
-- En cas d'hésitation sur « action durable vs éphémère » : NE jette PAS — choisis
-  atomic_note_kind="task" et baisse classification_confidence (< 0.6). Mieux vaut une tâche à
-  valider qu'une intention perdue.
-
-Règles persistence_value :
-5 = permanent (date naissance, lien familial, prénom)
-4 = stable modifiable (lieu de travail, adresse)
-3 = état actuel (projet en cours)
-2 = contextuel (événement ponctuel)
-1 = bruit (mention passagère)
-Règles evidence_strength (s'applique à la langue de la capture, FR/EN/autre) :
-explicit = fait énoncé directement, sans marqueur d'incertitude
-hedged   = marqueur d'incertitude épistémique présent (ex FR: "semble", "je crois", "il paraît", "devrait", "peut-être", "probablement" ; EN: "seems", "I think", "apparently", "probably", "might" ; même critère dans toute autre langue)
-implicit = fait non énoncé mais déduit du contexte (inférence indirecte, ex: on parle du déménagement de Pierre sans dire où)
-
-Règle fact vs relation (anti-redite) :
-Une RELATION lie deux ENTITÉS NOMMÉES ; un FACT décrit une entité par une valeur LITTÉRALE.
-- Si l'objet d'une information est une entité nommée (personne / organisation / lieu qui est
-  AUSSI une entité que tu émets), émets UNIQUEMENT la relation — JAMAIS en plus un fact qui
-  répète la même chose. Ex : « Audric est le cousin d'Alexis » → relation
-  (Audric, cousin_of, Alexis) SEULE, PAS de fact (cousin_de = "Alexis") sur Audric.
-- N'émets un fact que si la valeur est littérale et n'est pas une entité : « Alexis habite Lyon »
-  → fact (lives_in, "Lyon"). « Pierre travaille chez Acme » où Acme EST une entité → relation
-  (Pierre, works_at, Acme), pas de fact.
-- confidence d'une relation : 1.0 = énoncé sans ambiguïté ; baisse-la (< 0.7) si le lien est
-  hedged/déduit ou si tu hésites sur l'identité d'un des deux bouts. Une relation peu sûre part
-  en « À valider », jamais en dur — même logique que les tâches.
-
-Résous les dates relatives vers des dates absolues.
-La date d'aujourd'hui est : {today}.\
-"""
-
-
-def _load_active_projects_block(conn) -> str:
-    """Builds the context block listing existing project entities for the prompt.
-
-    Returned as a separate (uncached) system text block so changes to the project
-    list don't bust the cache of the stable rules above.
-    """
-    rows = cursor_to_dicts(conn.execute(
-        "SELECT canonical_name, summary, aliases FROM entities "
-        "WHERE type='project' AND merged_into_id IS NULL "
-        "ORDER BY mention_count DESC, last_mentioned DESC LIMIT 50"
-    ))
-    if not rows:
-        return "[PROJETS EXISTANTS]\n(aucun pour l'instant — toute mention de 'nouveau projet : X' doit créer l'entité)"
-    lines = ["[PROJETS EXISTANTS — utilise leur canonical_name exact pour le rattachement]"]
-    for r in rows:
-        try:
-            aliases = json.loads(r.get("aliases") or "[]")
-        except (ValueError, TypeError):
-            aliases = []
-        alias_str = f" (alias: {', '.join(aliases)})" if aliases else ""
-        summary = (r.get("summary") or "").strip().replace("\n", " ")[:120]
-        lines.append(f"- {r['canonical_name']}{alias_str}{(' — ' + summary) if summary else ''}")
-    return "\n".join(lines)
-
-
-def _load_active_types_block(conn) -> str:
-    """SYN-58: list the live entity-type vocabulary for the prompt.
-
-    Separate (uncached) system block so vocab growth doesn't bust the cache of
-    the stable rules. Falls back to the six built-ins if the table is somehow
-    empty (defensive — init_db seeds them)."""
-    rows = cursor_to_dicts(conn.execute(
-        "SELECT type FROM active_entity_types ORDER BY source, type"
-    ))
-    types = [r["type"] for r in rows] or [
-        "person", "place", "project", "concept", "organization", "animal",
-    ]
-    return (
-        "[TYPES D'ENTITÉ ACTIFS — choisis EXACTEMENT l'un d'eux pour `type`]\n"
-        + ", ".join(types)
-        + "\nAucun ne convient ? → type=\"concept\" + type_proposal "
-        "{\"value\": \"<type_snake>\", \"reason\": \"...\"}."
-    )
-
-
-def _load_owner_block(conn) -> str | None:
-    """Point 2 — tell the classifier who « moi » is, so first-person captures resolve
-    to the user's own entity instead of a phantom 'auteur'/'Auteur'. Separate (uncached)
-    block — the owner can change and shouldn't bust the stable-rules cache."""
-    from config_store import get_owner_entity_id
-    oid = get_owner_entity_id()
-    if not oid:
-        return None
-    row = first_row(conn.execute(
-        "SELECT canonical_name, aliases FROM entities "
-        "WHERE id = ? AND merged_into_id IS NULL", (oid,)))
-    if not row:
-        return None
-    name = row["canonical_name"]
-    try:
-        aliases = json.loads(row.get("aliases") or "[]")
-    except (ValueError, TypeError):
-        aliases = []
-    alias_str = f" (alias : {', '.join(aliases)})" if aliases else ""
-    return (
-        f"[AUTEUR — l'utilisateur de ce second cerveau]\n"
-        f"L'auteur des captures est « {name} »{alias_str}. Toute référence à la PREMIÈRE "
-        f"PERSONNE (je, j', me, m', moi, mon, ma, mes, le mien/la mienne…) le désigne. "
-        f"Utilise EXACTEMENT le canonical_name « {name} » comme entité pour les faits et "
-        f"relations le concernant — ex : « Romain est mon frère » → relation "
-        f"(Romain, is_sibling_of, {name}) ; « j'habite à Lyon » → fact (lives_in, Lyon) sur "
-        f"« {name} ». Ne crée JAMAIS d'entité générique « auteur », « Auteur », « User » ou « moi »."
-    )
-
+# ── SYN-111 : le cerveau (classif + routing) vit dans le cœur Rust ───────────
+# Le prompt classifieur est une DONNÉE versionnée dans le repo synapse-core
+# (prompts/classifier.md), déployée ici et lue à l'exécution par le core.
+PROMPTS_DIR = Path(os.getenv("SYNAPSE_PROMPTS_DIR", Path.home() / ".synapse" / "prompts"))
 
 # SYN-93 — working memory. Recent captures are handed to the classifier as a
 # read-only context block so coreference ("il / elle / ce projet / hier") resolves
@@ -358,45 +104,20 @@ def _build_day_context(conn, batch_entries, now) -> str | None:
         used += len(line)
     return "\n".join(lines)
 
-
 def _classify_params(entry: dict, conn=None, day_context: str | None = None) -> dict:
-    """The `messages.create` kwargs for classifying one capture. Shared by the
-    synchronous path (step1_classify) and the Batch API path (_batch_classify) so
-    both build the exact same prompt (stable rules cached + working-memory + vocab)."""
-    system_blocks = [
-        {"type": "text", "text": _SYSTEM_CLASSIFIER.format(today=_TODAY),
-         "cache_control": {"type": "ephemeral"}},
-    ]
-    if day_context:
-        # SYN-93: stable across the run → cached so only the first entry pays for it.
-        system_blocks.append(
-            {"type": "text", "text": day_context, "cache_control": {"type": "ephemeral"}})
-    if conn is not None:
-        # NOT cached — vary as the user creates projects / extends the vocab / sets owner.
-        system_blocks.append({"type": "text", "text": _load_active_types_block(conn)})
-        system_blocks.append({"type": "text", "text": _load_active_projects_block(conn)})
-        owner_block = _load_owner_block(conn)
-        if owner_block:
-            system_blocks.append({"type": "text", "text": owner_block})
-    return {
-        "model": CLAUDE_MODEL,
-        # SYN-78: 1536 silently truncated the JSON on long entity/fact-dense captures.
-        "max_tokens": 4096,
-        "system": system_blocks,
-        "messages": [{"role": "user", "content": entry["content"]}],
-    }
+    """`messages.create` kwargs pour classifier une capture — construits par le
+    core (prompt-as-data + blocs vocab/projets/auteur lus dans SA base). Partagé
+    par le chemin synchrone et le chemin Batch API. `conn` est conservé pour la
+    signature historique ; le core lit toujours ses blocs lui-même."""
+    return json.loads(get_brain().build_classify_params(
+        entry["content"], day_context, CLAUDE_MODEL, str(PROMPTS_DIR), _TODAY))
 
 
 def _parse_classify_text(text: str, content_len: int, stop_reason: str | None) -> dict:
-    """Parse a classifier response into the routing dict. Shared by sync + batch."""
-    if stop_reason == "max_tokens":
-        raise ValueError(
-            "classification tronquée (max_tokens) — capture trop longue/dense "
-            f"({content_len} chars)")
-    raw = (text or "").strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    return json.loads(raw)
+    """Parse d'une réponse classifieur — implémenté dans le core (garde
+    max_tokens → ValueError, fence strip, JSON). Partagé sync + batch."""
+    import synapse_core
+    return json.loads(synapse_core.parse_classify_text(text, content_len, stop_reason))
 
 
 def step1_classify(
@@ -406,17 +127,34 @@ def step1_classify(
     conn=None,
     day_context: str | None = None,
 ) -> dict:
-    response = client.messages.create(**_classify_params(entry, conn, day_context))
-    result = _parse_classify_text(
-        response.content[0].text, len(entry["content"]), response.stop_reason)
+    """Classification synchrone via le core (build prompt + HTTP + parse).
+
+    La résolution de la clé (et le seam fuel-proxy, SYN-105) reste côté hôte ;
+    le core exécute. Une erreur réseau/HTTP remonte en ConnectionError (la boucle
+    interrompt le run, politique anthropic.APIError) ; un contenu invalide en
+    ValueError (l'entrée passe en 'failed'). `client`/`conn` gardés pour la
+    signature historique."""
+    from anthropic_client import is_fuel_token, _fuel_base_url
+    from config_store import get_anthropic_key
+
+    key = get_anthropic_key()
+    if not key:
+        raise EnvironmentError(
+            "ANTHROPIC_API_KEY manquante — exporte-la, mets-la dans .env, ou "
+            "règle-la depuis l'app (Réglages → Clé Anthropic API)."
+        )
+    fuel = is_fuel_token(key)
+    raw = get_brain().classify(
+        entry["content"], day_context, CLAUDE_MODEL,
+        "" if fuel else key, str(PROMPTS_DIR), _TODAY,
+        base_url=_fuel_base_url() if fuel else None,
+        fuel_token=key if fuel else None,
+    )
+    result = json.loads(raw)
     if verbose:
-        u = response.usage
-        cache_read = getattr(u, "cache_read_input_tokens", 0)
-        print(f"    [classify] type={result.get('input_type')} "
-              f"entities={len(result.get('entities', []))} "
-              f"tokens={u.input_tokens}/{u.output_tokens}"
-              + (f" cache_hit={cache_read}" if cache_read else ""))
+        print(f"    [classify] {entry['id']}: input_type={result.get('input_type')}")
     return result
+
 
 
 def _batch_classify(
@@ -468,689 +206,8 @@ def _batch_classify(
 
 # ── Step 2 — Resolver ─────────────────────────────────────────────────────────
 
-def _resolve_date(value: str) -> str:
-    if not _HAS_DATEPARSER:
-        return value
-    parsed = dateparser.parse(
-        value,
-        settings={"PREFER_DAY_OF_MONTH": "first", "RETURN_AS_TIMEZONE_AWARE": False},
-    )
-    return parsed.date().isoformat() if parsed else value
 
 
-def _find_existing_entity(canonical_name: str, aliases: list[str], conn) -> dict | None:
-    # SYN-39: ignore soft-merged rows so a resolved match never points at a
-    # row that's been absorbed into another canonical entity.
-    row = first_row(conn.execute(
-        "SELECT * FROM entities WHERE LOWER(canonical_name) = LOWER(?) "
-        "AND merged_into_id IS NULL", (canonical_name,)
-    ))
-    if row:
-        return row
-
-    search_names = {n.lower() for n in [canonical_name] + aliases}
-    for entity in cursor_to_dicts(conn.execute(
-        "SELECT * FROM entities WHERE merged_into_id IS NULL"
-    )):
-        try:
-            entity_aliases = json.loads(entity.get("aliases", "[]"))
-        except (ValueError, TypeError):
-            entity_aliases = []
-        existing_names = {entity["canonical_name"].lower()} | {a.lower() for a in entity_aliases}
-        if search_names & existing_names:
-            return entity
-    return None
-
-
-# SYN-61: cosine threshold above which the embedding fallback proposes a merge.
-# Sensitive knob — too low spams noise, too high misses real dups. Overridable
-# per-run via SYNAPSE_MERGE_EMBEDDING_THRESHOLD; verbose logs every hit + score.
-_MERGE_EMBEDDING_THRESHOLD_DEFAULT = 0.85
-
-
-def _merge_proposal_exists(conn, a_id: str, b_id: str) -> bool:
-    """True if a proposal already pairs these two entities (any status) — we
-    don't want to re-prompt the user about the same pair every cycle."""
-    return first_row(conn.execute(
-        "SELECT id FROM entity_merge_proposals "
-        "WHERE (candidate_entity_id=? AND existing_entity_id=?) "
-        "   OR (candidate_entity_id=? AND existing_entity_id=?)",
-        (a_id, b_id, b_id, a_id),
-    )) is not None
-
-
-def _record_merge_proposal(conn, new_id, new_name, existing, score, reason,
-                           capture_id, verbose=False) -> bool:
-    """Insert one merge proposal unless the pair is already proposed. Returns
-    True if a row was written."""
-    if _merge_proposal_exists(conn, new_id, existing["id"]):
-        return False
-    prop_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO entity_merge_proposals "
-        "(id, candidate_entity_id, existing_entity_id, similarity_score, "
-        " similarity_reason, evidence_capture_id) "
-        "VALUES (?,?,?,?,?,?)",
-        (prop_id, new_id, existing["id"], score, reason, capture_id),
-    )
-    if verbose:
-        print(f"    [merge?] '{new_name}' ↔ '{existing['canonical_name']}' "
-              f"→ proposal {prop_id} ({reason})")
-    return True
-
-
-def _record_type_proposal(conn, entity_id, proposed_type, reason, capture_id,
-                          verbose=False) -> str:
-    """SYN-58: queue a new-entity-type proposal for user validation. The candidate
-    entity is already inserted (in status='pending'); accepting the proposal
-    extends the vocab and flips the entity to active (see the API endpoints)."""
-    prop_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO entity_type_proposals "
-        "(id, proposed_type, reason, evidence_capture_id, candidate_entity_id) "
-        "VALUES (?,?,?,?,?)",
-        (prop_id, proposed_type, reason, capture_id, entity_id),
-    )
-    if verbose:
-        print(f"    [type?] '{proposed_type}' proposed for entity {entity_id} → {prop_id}")
-    return prop_id
-
-
-def _propose_merge_if_similar(
-    new_id: str,
-    new_name: str,
-    new_type: str,
-    capture_id: int | None,
-    conn,
-    verbose: bool = False,
-) -> None:
-    """Raise a pending proposal when a freshly created entity looks like a
-    duplicate of an existing same-type one.
-
-    Two layers, cheapest first; the one that fires first wins (one proposal per
-    new entity is enough — the user picks):
-      1. SYN-39 substring heuristic — one name fully contained in the other plus
-         a shared full token ('Martin' ↔ 'Martin Bari'; the token check dodges
-         'Pi' ⊂ 'Pierre').
-      2. SYN-61 embedding fallback — when substring finds nothing, cosine
-         similarity over same-type entities catches dups that share no
-         substring ('Marie Dupont' ↔ 'M. Dupont', 'OpenAI' ↔ 'Open AI').
-    """
-    if not new_name:
-        return
-    needle = new_name.lower().strip()
-    needle_tokens = set(needle.split())
-    candidates = cursor_to_dicts(conn.execute(
-        "SELECT id, canonical_name FROM entities "
-        "WHERE id != ? AND type = ? AND merged_into_id IS NULL",
-        (new_id, new_type),
-    ))
-    for c in candidates:
-        ex_name = (c["canonical_name"] or "").strip()
-        ex_lower = ex_name.lower()
-        if ex_lower == needle:
-            continue  # exact match should have been resolved earlier
-        contains = needle in ex_lower or ex_lower in needle
-        if not contains:
-            continue
-        # Token check: require at least one full word in common to dodge
-        # spurious substring hits ("Pi" ⊂ "Pierre", "Al" ⊂ "Alice").
-        ex_tokens = set(ex_lower.split())
-        if not (needle_tokens & ex_tokens):
-            continue
-        if _record_merge_proposal(conn, new_id, new_name, c, 0.9,
-                                  "name_substring", capture_id, verbose):
-            return  # substring matched — don't also run the embedding fallback
-
-    # No substring proposal → SYN-61 embedding fallback.
-    _propose_merge_by_embedding(new_id, new_name, new_type, capture_id, conn, verbose)
-
-
-def _propose_merge_by_embedding(
-    new_id: str,
-    new_name: str,
-    new_type: str,
-    capture_id: int | None,
-    conn,
-    verbose: bool = False,
-) -> bool:
-    """SYN-61: embedding-similarity fallback for `_propose_merge_if_similar`.
-
-    The new entity isn't vectorized yet (step6 runs at the end of the cycle), so
-    we embed it on the fly and cosine-search same-type entities. Matches the new
-    entity only against the *historical* graph — same-run entities also lack an
-    embedding until step6, which is fine: substring already catches obvious
-    in-run dups. Threshold tunable via SYNAPSE_MERGE_EMBEDDING_THRESHOLD.
-    Returns True if a proposal was created.
-    """
-    threshold = float(os.getenv(
-        "SYNAPSE_MERGE_EMBEDDING_THRESHOLD", str(_MERGE_EMBEDDING_THRESHOLD_DEFAULT)
-    ))
-    entity = first_row(conn.execute("SELECT * FROM entities WHERE id=?", (new_id,)))
-    if not entity:
-        return False
-    try:
-        new_vec = embed_text(entity_embedding_text(entity))
-    except Exception as exc:
-        if verbose:
-            print(f"    [merge?] embedding fallback skipped for '{new_name}': {exc}")
-        return False
-
-    matches = search_entities_by_vector(
-        conn, new_vec, limit=5, min_score=threshold,
-        type_filter=new_type, exclude_ids={new_id},
-    )
-    for m in matches:
-        if _record_merge_proposal(conn, new_id, new_name, m, m["score"],
-                                  f"embedding_{m['score']:.2f}", capture_id, verbose):
-            return True  # one proposal per new entity is enough
-    return False
-
-
-# Point 1 (C): how close a task/intention must sit to an existing project before we
-# *propose* attaching it (soft, via « À valider » — never auto-attached). Far below the
-# merge bar (0.85): the `1 - dist/2` score tops out ~0.3-0.4 for topical relatedness on
-# short captures (measured), not identity. The MARGIN guards against "all projects equally
-# vaguely related" noise — the top project must clearly beat the runner-up. Both tunable.
-_PROJECT_ATTACH_THRESHOLD_DEFAULT = 0.30
-_PROJECT_ATTACH_MARGIN_DEFAULT = 0.03
-
-# Classifier self-reported confidence below which a task/event note lands in « À valider »
-# (review_status='pending') instead of straight into the backlog. The classifier is told to
-# KEEP-as-task with low confidence rather than drop, so this catches the genuinely ambiguous
-# "is this a durable task or a throwaway?" cases for a one-tap user confirm. Tunable per-run.
-_REVIEW_CONFIDENCE_THRESHOLD_DEFAULT = 0.7
-
-
-def _propose_project_attach_if_similar(
-    capture_id: int | None,
-    content: str,
-    note_id: int | None,
-    conn,
-    verbose: bool = False,
-) -> bool:
-    """Point 1 (C) — when an actionable capture (task / ephemeral intention) wasn't
-    routed to any project but sits close to an EXISTING project in embedding space,
-    queue a soft attachment proposal for « À valider ». Never forces the link; the
-    user accepts (→ project_entry) or rejects. One pending proposal per (capture,
-    project). Brand-new projects (not yet vectorized) simply won't match — by design,
-    this is about rattaching to projects that already exist."""
-    if capture_id is None or not content.strip():
-        return False
-    # Already routed to a project for this capture → nothing to propose.
-    if first_row(conn.execute(
-            "SELECT 1 FROM project_entries WHERE capture_id = ?", (capture_id,))):
-        return False
-    threshold = float(os.getenv(
-        "SYNAPSE_PROJECT_ATTACH_THRESHOLD", str(_PROJECT_ATTACH_THRESHOLD_DEFAULT)))
-    margin = float(os.getenv(
-        "SYNAPSE_PROJECT_ATTACH_MARGIN", str(_PROJECT_ATTACH_MARGIN_DEFAULT)))
-    try:
-        vec = embed_text(content)
-    except Exception as exc:
-        if verbose:
-            print(f"    [attach?] embedding skipped: {exc}")
-        return False
-    matches = search_entities_by_vector(
-        conn, vec, limit=2, min_score=0.0, type_filter="project")
-    if not matches or matches[0]["score"] < threshold:
-        return False
-    # The top project must clearly lead — else the capture isn't really "about" any project.
-    if len(matches) > 1 and (matches[0]["score"] - matches[1]["score"]) < margin:
-        if verbose:
-            print(f"    [attach?] ambiguous (top {matches[0]['score']:.2f} vs "
-                  f"{matches[1]['score']:.2f}) — skipped")
-        return False
-    m = matches[0]
-    if first_row(conn.execute(
-            "SELECT 1 FROM project_attach_proposals "
-            "WHERE capture_id = ? AND project_id = ? AND status = 'pending'",
-            (capture_id, m["id"]))):
-        return False
-    prop_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO project_attach_proposals "
-        "(id, capture_id, note_id, project_id, content, similarity_score) "
-        "VALUES (?,?,?,?,?,?)",
-        (prop_id, capture_id, note_id, m["id"], content.strip(), m["score"]),
-    )
-    if verbose:
-        print(f"    [attach?] capture {capture_id} ~ projet '{m['canonical_name']}' "
-              f"({m['score']:.2f}) → {prop_id}")
-    return True
-
-
-def step2_resolve(classified: dict, conn, verbose: bool = False) -> dict:
-    resolved_entities = []
-    for entity_data in classified.get("entities", []):
-        aliases = entity_data.get("aliases", [])
-        existing = _find_existing_entity(entity_data["canonical_name"], aliases, conn)
-
-        resolved_facts = []
-        for fact in entity_data.get("facts", []):
-            value = fact["value"]
-            if any(kw in fact["predicate"] for kw in
-                   ("birthday", "birth", "date", "born", "anniversary", "anniversaire")):
-                value = _resolve_date(value)
-            resolved_facts.append({**fact, "value": value})
-
-        resolved_entities.append({
-            **entity_data,
-            "facts": resolved_facts,
-            "existing_entity": existing,
-        })
-        if verbose and existing:
-            print(f"    [resolve] '{entity_data['canonical_name']}' → existing id={existing['id']}")
-
-    return {**classified, "resolved_entities": resolved_entities}
-
-
-# ── Step 3 — Confidence ────────────────────────────────────────────────────────
-
-_PERSISTENCE_BONUS = {5: 0.2, 4: 0.15, 3: 0.05, 2: 0.0, 1: -0.1}
-
-# Evidence strength → confidence floor. The pivot of routing: Claude decides
-# how the fact is asserted in the source text, Python adds marginal bonuses.
-#   - explicit  → directly stated, no hedge → tends to land in `facts`
-#   - hedged    → modal of uncertainty present → tends to land in `pending`
-#   - implicit  → inferred from context, not stated → tends to be rejected
-_EVIDENCE_BASE = {"explicit": 0.92, "hedged": 0.65, "implicit": 0.40}
-
-# Anti-pollution garde-fou for entity creation: an entity is created on mention
-# only if it carries at least this much persistence in one of its facts (i.e. it
-# is more than pure noise) — unless it already exists or appears in a relation.
-# Tune UP to be stricter (fewer entities), DOWN to capture more. 1 = create for
-# everything mentioned (noisiest), 2 = skip pure "mention passagère".
-MIN_ENTITY_PERSISTENCE = 2
-
-
-def compute_confidence(
-    fact: dict,
-    evidence_strength: str,
-    existing: bool,
-    mention_count: int,
-) -> float:
-    base = _EVIDENCE_BASE.get(evidence_strength, _EVIDENCE_BASE["explicit"])
-    bonus = 0.0
-    if existing:
-        bonus += 0.05
-    bonus += min(0.05, mention_count * 0.02)
-    bonus += _PERSISTENCE_BONUS.get(fact.get("persistence_value", 3), 0)
-    score = base + bonus
-    # Invariant: a hedged fact must remain in the pending zone for user validation,
-    # regardless of how high its persistence is. Clamp just under the facts threshold.
-    if evidence_strength == "hedged":
-        score = min(score, 0.84)
-    return min(1.0, max(0.0, score))
-
-
-# ── Step 4 — Router ────────────────────────────────────────────────────────────
-
-def _entity_persistence(entity_data: dict) -> int:
-    """Entity persistence = the strongest persistence among its facts (default 3)."""
-    vals = [f.get("persistence_value", 3) for f in entity_data.get("facts", [])]
-    return max(vals) if vals else 3
-
-
-def _upsert_entity(entity_data: dict, conn, capture_id: int | None = None,
-                   status: str = "active") -> str:
-    """Create or update an entity node, filling summary / attributes / persistence.
-
-    SYN-41: a newly created entity carries its `provenance_capture_id` back to
-    the immutable inbox row that spawned it. UPDATE path leaves provenance alone
-    (first-mention provenance is the lineage we care about; subsequent mentions
-    don't overwrite history).
-
-    SYN-58: `status` ('active' | 'pending') is set on INSERT only. A re-mention of
-    an existing entity never silently flips its status — that's the type-proposal
-    accept/reject flow's job.
-    """
-    existing = entity_data.get("existing_entity")
-    now = datetime.now(timezone.utc).date().isoformat()
-    summary = entity_data.get("summary")
-    attributes = entity_data.get("attributes") or {}
-    persistence = _entity_persistence(entity_data)
-
-    if existing:
-        entity_id = existing["id"]
-        try:
-            existing_aliases = json.loads(existing.get("aliases", "[]"))
-        except (ValueError, TypeError):
-            existing_aliases = []
-        merged_aliases = json.dumps(list(set(existing_aliases + entity_data.get("aliases", []))))
-        try:
-            existing_attrs = json.loads(existing.get("attributes", "{}"))
-        except (ValueError, TypeError):
-            existing_attrs = {}
-        merged_attrs = {**existing_attrs, **attributes}  # new keys win
-        new_summary = summary or existing.get("summary")  # keep old summary if none provided
-        conn.execute(
-            "UPDATE entities SET aliases=?, attributes=?, summary=?, "
-            "mention_count=mention_count+1, last_mentioned=?, "
-            "persistence_value=MAX(persistence_value, ?) WHERE id=?",
-            (
-                merged_aliases,
-                json.dumps(merged_attrs, ensure_ascii=False),
-                new_summary,
-                now,
-                persistence,
-                entity_id,
-            ),
-        )
-    else:
-        entity_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO entities "
-            "(id, type, canonical_name, aliases, attributes, summary, last_mentioned, "
-            " persistence_value, provenance_capture_id, status) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                entity_id,
-                entity_data.get("type", "concept"),
-                entity_data["canonical_name"],
-                json.dumps(entity_data.get("aliases", [])),
-                json.dumps(attributes, ensure_ascii=False),
-                summary,
-                now,
-                persistence,
-                capture_id,
-                status,
-            ),
-        )
-    return entity_id
-
-
-def step4_route(
-    resolved: dict,
-    source_inbox_id: int,
-    conn,
-    dry_run: bool = False,
-    verbose: bool = False,
-    anchors_durable_note: bool = False,
-) -> list[str]:
-    entity_ids: list[str] = []
-
-    # Names appearing in relations — these entities are created so the relation
-    # has both endpoints (an entity may be mentioned only as a relation target).
-    relation_names = set()
-    # Anti-redite: a fact whose VALUE names an entity that the same source entity
-    # already points to via a relation is the degraded textual twin of that edge —
-    # we drop it and keep the (traversable, bidirectional) relation. Map from→{targets}.
-    relation_targets_by_from: dict[str, set[str]] = {}
-    for rel in resolved.get("relations", []):
-        for key in ("from", "to"):
-            if rel.get(key):
-                relation_names.add(rel[key].strip().lower())
-        rfrom, rto = (rel.get("from") or "").strip().lower(), (rel.get("to") or "").strip().lower()
-        if rfrom and rto:
-            relation_targets_by_from.setdefault(rfrom, set()).add(rto)
-
-    # SYN-58: live type vocabulary + the project names declared in THIS capture
-    # (the project-shell guard below needs the latter).
-    active_types = {r["type"] for r in cursor_to_dicts(conn.execute(
-        "SELECT type FROM active_entity_types"))}
-    project_canonicals = {
-        (pe.get("project_canonical") or "").strip().lower()
-        for pe in resolved.get("project_entries") or []
-    }
-
-    for entity_data in resolved.get("resolved_entities", []):
-        canonical = (entity_data.get("canonical_name") or "").strip()
-        if not canonical:
-            continue  # garde-fou: never create a nameless entity
-
-        existing = entity_data.get("existing_entity")
-        mention_count = (existing.get("mention_count", 1) + 1) if existing else 1
-
-        # ── SYN-58: type guards (new entities only — a re-mention keeps its
-        # established type/status; that's the accept/reject flow's job) ──
-        type_proposal: dict | None = None
-        entity_status = "active"
-        if not existing:
-            etype = (entity_data.get("type") or "concept").strip()
-            # Project-shell guard: type=project requires a matching project_entries
-            # item in the same capture, else it's a mis-tag (often a transcription
-            # artefact) → fall back to concept rather than spawn an empty project.
-            if etype == "project" and canonical.lower() not in project_canonicals:
-                if verbose:
-                    print(f"    [type] '{canonical}' project→concept (no project_entry)")
-                entity_data = {**entity_data, "type": "concept"}
-            # Vocab-gap proposal: the classifier flagged a type it couldn't place.
-            # Park the entity in 'pending' and queue a proposal for the user.
-            tp = entity_data.get("type_proposal")
-            proposed = ((tp or {}).get("value") or "").strip() if isinstance(tp, dict) else ""
-            if proposed and proposed not in active_types:
-                type_proposal = {"value": proposed, "reason": (tp or {}).get("reason")}
-                entity_status = "pending"
-
-        scored: list[tuple[dict, float]] = []
-        _rel_targets = relation_targets_by_from.get(canonical.lower(), set())
-        for fact in entity_data.get("facts", []):
-            # Anti-redite: this fact restates a relation edge from the same entity →
-            # drop it (the relation carries it, queryably and from both fiches).
-            if (fact.get("value") or "").strip().lower() in _rel_targets:
-                if verbose:
-                    print(f"    [route] fact '{fact.get('predicate')}={fact.get('value')}'"
-                          f" dropped — covered by relation")
-                continue
-            confidence = compute_confidence(
-                fact,
-                evidence_strength=fact.get("evidence_strength", "explicit"),
-                existing=bool(existing),
-                mention_count=mention_count,
-            )
-            scored.append((fact, confidence))
-
-        # ── Entity creation is DECOUPLED from fact confidence ──
-        # Create the node as soon as the entity is mentioned, provided it carries
-        # a minimal signal (anti-pollution garde-fou):
-        #   - already known (re-mention → bump mention_count), OR
-        #   - part of a relation, OR
-        #   - has a fact with persistence >= MIN_ENTITY_PERSISTENCE (not pure noise).
-        # Its facts are still confidence-routed below (a fresh entity's facts
-        # typically land in pending until corroborated/validated).
-        max_persistence = _entity_persistence(entity_data) if entity_data.get("facts") else 0
-        should_create = (
-            bool(existing)
-            or canonical.lower() in relation_names
-            or max_persistence >= MIN_ENTITY_PERSISTENCE
-            # SYN-86: an entity anchoring a durable task/event note is real signal,
-            # even with zero facts (dogfood: 'salon Vivatech' had its date in the
-            # event note, no fact → dropped as noise → no fiche to link the note to).
-            or anchors_durable_note
-        )
-
-        entity_id: str | None = None
-        if should_create and not dry_run:
-            entity_id = _upsert_entity(
-                entity_data, conn, capture_id=source_inbox_id, status=entity_status,
-            )
-            if entity_id not in entity_ids:
-                entity_ids.append(entity_id)
-            # SYN-58: queue the type proposal once the candidate entity exists.
-            if not existing and type_proposal:
-                _record_type_proposal(
-                    conn, entity_id, type_proposal["value"],
-                    type_proposal.get("reason"), source_inbox_id, verbose,
-                )
-            # SYN-39: only INSERT path (existing is None) is worth scanning —
-            # an UPDATE means we already merged into the canonical entity.
-            if not existing:
-                _propose_merge_if_similar(
-                    new_id=entity_id,
-                    new_name=canonical,
-                    new_type=entity_data.get("type", "concept"),
-                    capture_id=source_inbox_id,
-                    conn=conn,
-                    verbose=verbose,
-                )
-        elif verbose and not should_create:
-            print(f"    [route] entity '{canonical}' skipped — noise, no relation")
-
-        for fact, confidence in scored:
-            bucket = (
-                "entities" if confidence > 0.85
-                else "pending" if confidence >= 0.5
-                else "review"
-            )
-            if verbose:
-                print(f"    [route] '{fact['predicate']}' conf={confidence:.2f} → {bucket}")
-
-            fact_data = {
-                "entity_canonical": entity_data["canonical_name"],
-                "predicate": fact["predicate"],
-                "value": fact["value"],
-                "persistence_value": fact.get("persistence_value", 3),
-                "evidence_strength": fact.get("evidence_strength", "explicit"),
-                "category": fact.get("category"),
-                "confidence": confidence,
-                "source_inbox_id": source_inbox_id,
-            }
-
-            if dry_run:
-                continue
-
-            if confidence > 0.85:
-                if entity_id:
-                    insert_fact(
-                        conn, entity_id=entity_id,
-                        predicate=fact["predicate"], value=fact["value"],
-                        confidence=confidence,
-                        source_inbox_id=str(source_inbox_id),
-                        persistence_value=fact.get("persistence_value", 3),
-                        provenance_capture_id=source_inbox_id,
-                        category=fact.get("category"),
-                    )
-            elif confidence >= 0.5:
-                conn.execute(
-                    "INSERT INTO pending_facts (id, fact_data, validation_strategy) VALUES (?,?,?)",
-                    (str(uuid.uuid4()), json.dumps(fact_data), "passive"),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO review_queue (id, fact_data, suggested_entity) VALUES (?,?,?)",
-                    (str(uuid.uuid4()), json.dumps(fact_data), entity_data["canonical_name"]),
-                )
-
-    # Relations — only if both entities already exist. Same confidence gate as facts/tasks:
-    # a low-confidence edge lands in « À valider » (review_status='pending') rather than
-    # persisting hard. The classifier emits per-relation confidence; missing/garbled ⇒ 1.0.
-    if not dry_run:
-        rel_threshold = float(os.getenv(
-            "SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD", str(_REVIEW_CONFIDENCE_THRESHOLD_DEFAULT)))
-        for rel in resolved.get("relations", []):
-            from_name, predicate, to_name = (
-                rel.get("from"), rel.get("predicate"), rel.get("to")
-            )
-            if not (from_name and predicate and to_name):
-                continue
-            try:
-                rel_conf = float(rel.get("confidence"))
-            except (TypeError, ValueError):
-                rel_conf = 1.0
-            review_status = "pending" if rel_conf < rel_threshold else "confirmed"
-            from_row = conn.execute(
-                "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (from_name,)
-            ).fetchone()
-            to_row = conn.execute(
-                "SELECT id FROM entities WHERE LOWER(canonical_name)=LOWER(?)", (to_name,)
-            ).fetchone()
-            if from_row and to_row:
-                conn.execute(
-                    "INSERT INTO relations "
-                    "(id, entity_from, predicate, entity_to, confidence, review_status, "
-                    " provenance_capture_id) "
-                    "VALUES (?,?,?,?,?,?,?)",
-                    (str(uuid.uuid4()), from_row[0], predicate, to_row[0],
-                     rel_conf, review_status, source_inbox_id),
-                )
-                if verbose:
-                    print(f"    [route] relation {from_name} —{predicate}→ {to_name}"
-                          f" conf={rel_conf:.2f} → {review_status}")
-
-    return entity_ids
-
-
-# ── Step 5 — Behavioral validation ────────────────────────────────────────────
-
-def step5_validate_pending(
-    new_facts: list[dict],
-    conn,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> int:
-    promoted = 0
-    pending = conn.execute(
-        "SELECT id, fact_data FROM pending_facts"
-    ).fetchall()
-
-    for pending_id, fact_data_raw in pending:
-        try:
-            pf = json.loads(fact_data_raw)
-        except (ValueError, TypeError):
-            continue
-
-        # A pending is promoted only when *another* note corroborates it.
-        # Excluding the pending's own source prevents self-corroboration (the
-        # very fact that created the pending would otherwise auto-promote it).
-        corroborator = next(
-            (nf for nf in new_facts
-             if nf.get("predicate") == pf.get("predicate")
-             and nf.get("entity_canonical", "").lower() == pf.get("entity_canonical", "").lower()
-             and str(nf.get("source_inbox_id")) != str(pf.get("source_inbox_id"))),
-            None,
-        )
-        if corroborator is None:
-            continue
-
-        # Use the corroborator's evidence_strength so two hedged sources stay
-        # in pending (the SYN-30 clamp keeps the score below the facts threshold);
-        # only an explicit corroboration lifts the doubt.
-        new_conf = compute_confidence(
-            {"predicate": pf.get("predicate"), "value": pf.get("value"),
-             "persistence_value": pf.get("persistence_value", 3)},
-            evidence_strength=corroborator.get("evidence_strength", "explicit"),
-            existing=True,
-            mention_count=2,
-        )
-        if new_conf <= 0.85:
-            continue
-
-        if verbose:
-            print(f"    [validate] promoting '{pf.get('predicate')}' conf={new_conf:.2f}")
-
-        if not dry_run:
-            entity_name = pf.get("entity_canonical", "unknown")
-            # SYN-87: alias-aware lookup — resolving by canonical_name only spawned
-            # duplicate shells (dogfood: 'Cici' recreated although it is an alias
-            # of 'Cici Huang').
-            row = _find_existing_entity(entity_name, [], conn)
-            # SYN-41: provenance traces back to the original capture that spawned
-            # the pending fact (or whichever corroborator promoted it).
-            try:
-                prov_id = int(pf.get("source_inbox_id")) if pf.get("source_inbox_id") else None
-            except (TypeError, ValueError):
-                prov_id = None
-            if row:
-                entity_id = row["id"]
-            else:
-                entity_id = str(uuid.uuid4())
-                conn.execute(
-                    "INSERT INTO entities (id, canonical_name, provenance_capture_id) VALUES (?,?,?)",
-                    (entity_id, entity_name, prov_id),
-                )
-            insert_fact(
-                conn, entity_id=entity_id,
-                predicate=pf.get("predicate"), value=pf.get("value"),
-                confidence=new_conf, source_inbox_id=pf.get("source_inbox_id"),
-                persistence_value=pf.get("persistence_value", 3),
-                provenance_capture_id=prov_id,
-                category=pf.get("category"),
-            )
-            conn.execute("DELETE FROM pending_facts WHERE id=?", (pending_id,))
-        promoted += 1
-
-    return promoted
 
 
 # ── SYN-89 — Entity re-summary ────────────────────────────────────────────────
@@ -1282,145 +339,6 @@ def step6_vectorize(
 
 # ── Intentions ─────────────────────────────────────────────────────────────────
 
-def _intention_text(value) -> str:
-    """Haiku occasionally returns ephemeral_content as an object ({'text': …,
-    'when': …}) or a list instead of a plain string; the INSERT needs TEXT
-    (SYN-78 — apsw raises TypeError on a dict binding and the entry failed)."""
-    if isinstance(value, dict):
-        value = (value.get("content") or value.get("text") or value.get("description")
-                 or value.get("items") or json.dumps(value, ensure_ascii=False))
-    if isinstance(value, (list, tuple)):
-        value = " · ".join(str(v) for v in value if v)
-    return str(value or "").strip()
-
-
-def handle_intentions(
-    resolved: dict,
-    conn,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> None:
-    if dry_run:
-        return
-    # Clean expired intentions
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
-    conn.execute(
-        "DELETE FROM intentions WHERE created_at < ? AND resolved = 0", (cutoff,)
-    )
-    if resolved.get("is_ephemeral") or resolved.get("input_type") == "ephemeral":
-        content = _intention_text(resolved.get("ephemeral_content") or resolved.get("summary", ""))
-        if content:
-            conn.execute(
-                "INSERT INTO intentions (id, content, ttl_hours) VALUES (?,?,?)",
-                (str(uuid.uuid4()), content, 48),
-            )
-            if verbose:
-                print(f"    [intention] created: '{content[:70]}'")
-
-
-# ── Episodic memory ──────────────────────────────────────────────────────────
-
-def write_episodic_note(
-    classified: dict,
-    entry: dict,
-    conn,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> None:
-    """Store an episodic entry as a vectorized atomic_note (spec §7, level 2)."""
-    content = entry["content"]
-    summary = classified.get("summary") or ""
-    entities_mentioned = [
-        e["canonical_name"]
-        for e in classified.get("entities", [])
-        if e.get("canonical_name")
-    ]
-    title = (summary or content)[:60]
-
-    if dry_run:
-        if verbose:
-            print(f"    [episodic] would write note: {title!r}")
-        return
-
-    conn.execute(
-        "INSERT INTO atomic_notes (title, content, summary, entities_mentioned, memory_strength) "
-        "VALUES (?,?,?,?,?)",
-        (title, content, summary, json.dumps(entities_mentioned, ensure_ascii=False), 1.0),
-    )
-    note_id = conn.last_insert_rowid()
-
-    try:
-        vec_bytes = embed_text(f"{title}\n{content}")
-        get_store().upsert_note_vector(note_id, vec_bytes)
-    except Exception as exc:
-        if verbose:
-            print(f"    [episodic] vectorize error: {exc}")
-
-    if verbose:
-        print(f"    [episodic] note id={note_id}: {title!r}")
-
-
-# ── SYN-42 — Multi-output routing helpers ────────────────────────────────────
-
-def _persist_atomic_note(
-    content: str,
-    summary: str,
-    entities_mentioned: list[str],
-    capture_id: int,
-    conn,
-    verbose: bool = False,
-    kind: str = "note",
-    event_date: str | None = None,
-    event_recurring: bool = False,
-    review_status: str = "confirmed",
-    pending_vecs: list | None = None,
-) -> int | None:
-    """Persist a free-form thought as an atomic_note with provenance.
-
-    Differs from the legacy write_episodic_note: doesn't require a full
-    `classified` dict, accepts an explicit content (so the multi-output router
-    can pass either the raw capture or a Claude-extracted excerpt), and carries
-    the provenance_capture_id from SYN-41.
-
-    SYN-85: `kind` partitions the notes view (note | task | event). Tasks are
-    durable retrievable to-dos (no due date / no checkbox — decay handles
-    forgetting); events carry an absolute `event_date` (+ yearly recurrence).
-    """
-    if kind not in ("note", "task", "event"):
-        kind = "note"
-    if review_status not in ("confirmed", "pending"):
-        review_status = "confirmed"
-    title = (summary or content)[:60]
-    conn.execute(
-        "INSERT INTO atomic_notes "
-        "(title, content, summary, entities_mentioned, memory_strength, provenance_capture_id, "
-        " kind, event_date, event_recurring, review_status) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (title, content, summary,
-         json.dumps(entities_mentioned, ensure_ascii=False),
-         1.0, capture_id,
-         # SYN-23: a task may also carry a date (échéance) without being an event.
-         kind, event_date if kind in ("event", "task") else None,
-         1 if (kind in ("event", "task") and event_recurring) else 0,
-         review_status),
-    )
-    note_id = conn.last_insert_rowid()
-    # SYN-110: the vector write goes through the core's own connection, so it
-    # must not run while this caller's apsw transaction holds the write lock.
-    # Callers inside a `with conn:` block pass `pending_vecs` and flush after
-    # commit; vectorization stays best-effort either way (same as before).
-    if pending_vecs is not None:
-        pending_vecs.append((note_id, f"{title}\n{content}"))
-    else:
-        try:
-            vec_bytes = embed_text(f"{title}\n{content}")
-            get_store().upsert_note_vector(note_id, vec_bytes)
-        except Exception as exc:
-            if verbose:
-                print(f"    [atomic_note] vectorize error: {exc}")
-    if verbose:
-        print(f"    [atomic_note] id={note_id}: {title!r}")
-    return note_id
 
 
 _PROJECT_SUMMARY_SYSTEM = """\
@@ -1722,56 +640,25 @@ def _mark(conn, entry_id: int, now: str, status: str, dry_run: bool = False,
 def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None, classified=None) -> tuple[list[str], list[dict]]:
     """Process one inbox entry; mark it processed. Returns (entity_ids, new_facts).
 
-    SYN-42 + SYN-57: routing is NON-EXCLUSIVE and N-per-projection. A single
-    capture can simultaneously produce N project_entries (one per mentioned
-    project), an atomic_note, entities, facts and relations. Each sub-routing
-    is gated by what Haiku put in the JSON, not by an exclusive if/elif chain.
+    SYN-111 : le routing déterministe (résolution, confiance, buckets, dédup
+    fait⇄relation, gates, intentions, note atomique, project entries, merge/
+    attach proposals, réactivation) vit dans le cœur Rust — classified JSON in,
+    écritures DB out. Restent côté hôte : la classification Batch API, le fetch
+    de ressources (réseau) et les sous-appels LLM (synthèse projet SYN-43),
+    exécutés à partir de la work-list du rapport.
 
-    Raises anthropic.APIError on infrastructure failure (caller aborts the run and
-    leaves the entry queued); other exceptions are content errors the caller marks
-    as 'failed'.
+    Raises ConnectionError (HTTP/réseau — le run s'interrompt, entrées laissées
+    en file) ; toute autre exception est une erreur de contenu que l'appelant
+    marque 'failed'.
     """
-    # SYN-93: the batch path pre-computes the classification; otherwise classify now.
     if classified is None:
         classified = step1_classify(entry, client, verbose, conn=conn, day_context=day_context)
-    capture_id = entry["id"]
-    entity_ids: list[str] = []
-    new_facts: list[dict] = []
-
-    # SYN-58: ephemeral routing is NON-EXCLUSIVE. We still record the expiring
-    # intention (handle_intentions runs in the router below), but a capture that
-    # also names durable things — "j'ai envie de refaire ma recette de Udon Dan
-    # Dan" — must NOT have those entities discarded: they flow through the router
-    # so the recipe entity (+ its type proposal, SYN-58) is captured. Only a
-    # *pure* intention (no entities, no project) takes the fast exit here.
-    is_ephemeral = classified.get("is_ephemeral") or classified.get("input_type") == "ephemeral"
-    # SYN-85: tasks and dated events are DURABLE notes — they must survive the
-    # ephemeral gates below (dogfood: "salon Vivatech le 20 juin" became a 48h
-    # intention and vanished; the event note was silently dropped).
-    note_kind = str(classified.get("atomic_note_kind") or "note")
-    durable_note = bool(
-        classified.get("atomic_note") and str(classified["atomic_note"]).strip()
-        and note_kind in ("task", "event")
-    )
 
     # SYN-21: resource fetch is URL-driven and independent of routing — run it
-    # for ANY capture, even a pure intention ("à lire : https://…"). Network +
-    # LLM happen outside the main transaction; failures never fail the entry.
+    # for ANY capture, even a pure intention. Network + LLM outside the core.
     if not dry_run:
         process_capture_resources(entry["content"], conn, client,
                                   capture_id=entry["id"], verbose=verbose)
-
-    if is_ephemeral and not (classified.get("entities") or classified.get("project_entries")
-                             or durable_note):
-        with conn:
-            # Point 1 (C): even a pure ephemeral intention ("acheter un baudrier") may
-            # belong to an existing project — propose the soft attachment in « À valider ».
-            if not dry_run:
-                _propose_project_attach_if_similar(
-                    entry["id"], entry["content"], None, conn, verbose)
-            handle_intentions(classified, conn, dry_run, verbose)
-            _mark(conn, entry["id"], now, "processed", dry_run)
-        return [], []
 
     if dry_run:
         if verbose:
@@ -1786,124 +673,32 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
             print(f"    [dry] would route: {', '.join(outs) or '(nothing)'}")
         return [], []
 
-    # 1. Graph (entities + facts + relations) — runs whenever Haiku found entities.
-    resolved = step2_resolve(classified, conn, verbose) if classified.get("entities") else None
-    if resolved:
-        new_facts = [
-            {**fact, "entity_canonical": ent["canonical_name"], "source_inbox_id": capture_id}
-            for ent in resolved.get("resolved_entities", [])
-            for fact in ent.get("facts", [])
-        ]
+    now_dt = datetime.now(timezone.utc)
+    report = json.loads(get_brain().route_capture(
+        json.dumps({"id": entry["id"], "content": entry["content"]}, ensure_ascii=False),
+        json.dumps(classified, ensure_ascii=False),
+        now,
+        now_dt.date().isoformat(),
+        (now_dt - timedelta(hours=48)).isoformat(),
+        now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+    ))
 
-    pending_note_vecs: list = []
-    with conn:
-        if resolved:
-            entity_ids = step4_route(resolved, capture_id, conn, dry_run=False, verbose=verbose,
-                                     anchors_durable_note=durable_note)
-
-        # 2. Atomic note — free-form thought that mentions entities without being one.
-        # SYN-56: no fallback on input_type=='episodic'. We trust the classifier's
-        # atomic_note decision; otherwise the Notes view fills up with non-reflective
-        # diary entries / fact restatements ("X a Y") that bypass the explicit rules.
-        # SYN-58: skip on ephemeral — the expiring intention already carries that
-        # thought; persisting it again as a durable note would double-store it.
-        # SYN-85: a task/event note is durable and bypasses the ephemeral skip —
-        # the short-term intention and the durable note legitimately coexist
-        # ("salon X le 20 juin" = reminder now + dated event note that stays).
-        atomic = classified.get("atomic_note")
-        created_note_id: int | None = None
-        atomic_kind = str(classified.get("atomic_note_kind") or "note")
-        if atomic and atomic.strip() and (not is_ephemeral or durable_note):
-            mentioned = [
-                e["canonical_name"]
-                for e in classified.get("entities", [])
-                if e.get("canonical_name")
-            ]
-            # SYN-86: a note routed to a project must MENTION it — the fiche's
-            # "notes liées" section links by entities_mentioned (dogfood: the
-            # 'refondre le design de Synapse' task carried no mention at all).
-            for pe in classified.get("project_entries") or []:
-                pc = (pe or {}).get("project_canonical")
-                if pc and pc not in mentioned:
-                    mentioned.append(pc)
-            # « À valider » gate: a task/event the classifier wasn't confident about lands in
-            # 'pending' (one-tap user confirm) rather than silently joining the backlog.
-            # Reflections (kind='note') are never gated. Missing/garbled confidence ⇒ 1.0.
-            try:
-                conf = float(classified.get("classification_confidence"))
-            except (TypeError, ValueError):
-                conf = 1.0
-            review_threshold = float(os.getenv(
-                "SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD", str(_REVIEW_CONFIDENCE_THRESHOLD_DEFAULT)))
-            review_status = ("pending" if atomic_kind in ("task", "event")
-                             and conf < review_threshold else "confirmed")
-            created_note_id = _persist_atomic_note(
-                content=atomic.strip(),
-                summary=classified.get("summary") or "",
-                entities_mentioned=mentioned,
-                capture_id=capture_id,
+    # SYN-43: la synthèse vivante des projets touchés (un appel Haiku chacun)
+    # reste côté hôte — le core a persisté les entrées et renvoie la work-list.
+    if client is not None:
+        for s in report["project_syntheses"]:
+            _append_project_summary(
+                project_id=s["project_id"],
+                project_name=s["project_name"],
+                new_entry_content=s["entry_content"],
+                new_entry_count=s["entry_count"],
                 conn=conn,
+                client=client,
                 verbose=verbose,
-                # SYN-85 — note kinds: task (backlog retrouvable) / event (occurrence datée).
-                kind=atomic_kind,
-                event_date=classified.get("event_date") or None,
-                event_recurring=bool(classified.get("event_recurring")),
-                review_status=review_status,
-                pending_vecs=pending_note_vecs,
             )
 
-        # 3. Project entries — N rattachements possibles (SYN-57). Une même
-        # capture peut alimenter la timeline de plusieurs projets en parallèle ;
-        # chaque projet reçoit son extrait (`content`) et déclenche sa propre
-        # mise à jour de synthèse. Dedup par nom canonique au cas où le LLM
-        # émettrait des doublons (premier extrait gagne).
-        seen_projects: set[str] = set()
-        for proj in classified.get("project_entries") or []:
-            if not proj or not proj.get("project_canonical"):
-                continue
-            key = proj["project_canonical"].strip().lower()
-            if not key or key in seen_projects:
-                continue
-            seen_projects.add(key)
-            _persist_project_entry(
-                project_canonical=proj["project_canonical"],
-                content=(proj.get("content") or entry["content"]).strip(),
-                capture_id=capture_id,
-                conn=conn,
-                is_new_project=bool(proj.get("is_new")),
-                verbose=verbose,
-                client=client,  # SYN-43: triggers live synthesis append per project
-            )
+    return report["entity_ids"], report["new_facts"]
 
-        # Point 1 (C): an actionable capture (task / ephemeral intention) that wasn't
-        # routed to any project but reads close to an existing one → propose attaching it
-        # (soft, via « À valider »). Guarded inside on « already routed to a project ».
-        if not seen_projects and (atomic_kind == "task" or is_ephemeral):
-            attach_content = (atomic.strip() if (atomic and atomic.strip())
-                              else entry["content"]).strip()
-            _propose_project_attach_if_similar(
-                capture_id, attach_content, created_note_id, conn, verbose)
-
-        handle_intentions(classified, conn, dry_run=False, verbose=verbose)
-
-        # SYN-19: a new capture mentioning an entity reactivates the notes that
-        # reference it (strong bump → memory_strength springs back).
-        mentioned = [e.get("canonical_name") for e in classified.get("entities", [])
-                     if e.get("canonical_name")]
-        reactivate_notes_for_entities(conn, mentioned)
-
-        _mark(conn, capture_id, now, "processed", dry_run=False)
-
-    # Post-commit: flush the deferred note vectors (embed + core write, both
-    # outside the transaction). Best-effort, like the old inline vec0 insert.
-    for note_id, text in pending_note_vecs:
-        try:
-            get_store().upsert_note_vector(note_id, embed_text(text))
-        except Exception as exc:  # noqa: BLE001 — vectorization is best-effort
-            if verbose:
-                print(f"    [atomic_note] vectorize error: {exc}")
-
-    return entity_ids, new_facts
 
 
 # ── Orchestrator ───────────────────────────────────────────────────────────────
@@ -1971,9 +766,10 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False, use_batch: boo
                 )
                 all_entity_ids.extend(e for e in entity_ids if e not in all_entity_ids)
                 all_new_facts.extend(new_facts)
-            except anthropic.APIError as exc:
-                # Infrastructure failure (no/invalid key, network, rate limit):
-                # abort the run and leave every remaining entry queued for a retry.
+            except (anthropic.APIError, ConnectionError) as exc:
+                # Infrastructure failure (no/invalid key, network, rate limit —
+                # anthropic SDK on the batch path, the core's HTTP on the sync
+                # path): abort the run, leave every remaining entry queued.
                 print(f"  ⚠ erreur API ({type(exc).__name__}) — run interrompu, entrées laissées en file")
                 raise
             except Exception as exc:  # noqa: BLE001 — content error for THIS entry
@@ -1989,8 +785,8 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False, use_batch: boo
         if all_new_facts:
             if verbose:
                 print("▸ Step 5 — Behavioral Validation")
-            with conn:
-                promoted = step5_validate_pending(all_new_facts, conn, dry_run, verbose)
+            promoted = 0 if dry_run else get_brain().validate_pending(
+                json.dumps(all_new_facts, ensure_ascii=False))
             if promoted:
                 print(f"  → {promoted} pending fact(s) promoted")
 

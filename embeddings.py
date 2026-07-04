@@ -1,11 +1,13 @@
 """
 Shared embedding logic used by both the Dream Cycle and the MCP server.
 
-Strategy: a local fastembed (ONNX) sentence-transformer model. Runs fully
-offline after a one-time model download (~220 MB) — no API call, no PyTorch.
-Vectors are L2-normalized so the sqlite-vec `vec0` L2 distance stays in [0, 2]
-and is monotonic with cosine similarity, which keeps the downstream
-`score = 1 - distance/2` mapping valid.
+Since SYN-111 the model runs inside the Rust core (`synapse_core.Embedder`,
+ONNX runtime, fully offline): one model in memory for the whole process, and
+the vectors are bit-identical to the core's own internal embeds (merge
+fallback, note vectorization). The model files are DATA in
+`~/.synapse/models/…` (or SYNAPSE_MODEL_DIR) — same files on desktop and
+mobile. Vectors stay L2-normalized so the sqlite-vec `vec0` L2 distance is
+monotonic with cosine and `score = 1 - distance/2` remains valid.
 """
 
 import struct
@@ -17,23 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from config import EMBEDDING_DIM, EMBEDDING_MODEL
 
-# Lazy singleton — loading the model is expensive, do it once per process.
-_model = None
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        import warnings
-        from fastembed import TextEmbedding  # imported lazily to keep startup cheap
-        # This model uses mean pooling (the correct modern default); silence the
-        # one-time migration warning so it doesn't pollute the MCP server logs.
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*mean pooling.*")
-            _model = TextEmbedding(EMBEDDING_MODEL)
-    return _model
-
-
 def embed_text(text: str, client=None) -> bytes:
     """
     Embed text into a serialized, L2-normalized 384-dim float vector.
@@ -41,18 +26,17 @@ def embed_text(text: str, client=None) -> bytes:
     `client` is accepted for backward compatibility with the previous
     API-based implementation but is ignored — embedding is now fully local.
     """
-    model = _get_model()
-    vec = list(next(model.embed([text])))
+    from core_store import get_embedder
 
-    magnitude = sum(x * x for x in vec) ** 0.5
-    if magnitude > 0:
-        vec = [x / magnitude for x in vec]
-
-    if len(vec) != EMBEDDING_DIM:
-        raise ValueError(
-            f"Embedding model returned {len(vec)} dims, expected {EMBEDDING_DIM}. "
-            f"Check EMBEDDING_MODEL ({EMBEDDING_MODEL}) matches EMBEDDING_DIM."
+    embedder = get_embedder()
+    if embedder is None:
+        raise EnvironmentError(
+            "Fichiers du modèle d'embedding introuvables — attendus dans "
+            "~/.synapse/models/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q "
+            "(ou SYNAPSE_MODEL_DIR)."
         )
+    # Le core garantit 384-d L2-normalisé (mêmes checks qu'ici avant).
+    vec = embedder.embed(text)
 
     # Packed little-endian float32 — byte-identical to what the old
     # serialize_float32 helper produced; the DB format doesn't change.

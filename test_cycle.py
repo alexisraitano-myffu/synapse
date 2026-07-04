@@ -37,24 +37,37 @@ def test_atomic_notes_has_episodic_columns(isolated_db):
 
 
 # ── Episodic note writer ─────────────────────────────────────────────────────
+# SYN-111: episodic notes flow through the core's routing (_process_entry with
+# the classifier's atomic_note), like production — the legacy writer is gone.
 
-def test_write_episodic_note_creates_vectorized_note(isolated_db):
-    from dream_cycle.cycle import write_episodic_note
+def _process(classified: dict, entry_id: int = 1, content: str = "capture de test"):
+    from datetime import datetime, timezone
+    from db import get_connection
+    from dream_cycle import cycle
+    conn = get_connection()
+    try:
+        return cycle._process_entry(
+            {"id": entry_id, "content": content}, None, conn,
+            datetime.now(timezone.utc).isoformat(), False, False,
+            classified=classified)
+    finally:
+        conn.close()
+
+
+def test_episodic_capture_creates_vectorized_note(isolated_db):
     from db import get_connection
 
+    entry_content = "Hier soir, super dîner avec Marie à Lyon."
     classified = {
         "input_type": "episodic",
         "summary": "Dîné avec Marie à Lyon",
+        "atomic_note": entry_content,
         "entities": [{"canonical_name": "Marie"}, {"canonical_name": "Lyon"}],
     }
-    entry = {"id": 1, "content": "Hier soir, super dîner avec Marie à Lyon."}
+    _process(classified, content=entry_content)
 
     conn = get_connection()
     try:
-        # SYN-110: no transaction wrapper — the vector write goes through the
-        # core's own connection and must not run inside an open write txn.
-        write_episodic_note(classified, entry, conn)
-
         row = conn.execute(
             "SELECT id, summary, entities_mentioned, memory_strength FROM atomic_notes"
         ).fetchone()
@@ -74,21 +87,13 @@ def test_write_episodic_note_creates_vectorized_note(isolated_db):
 
 
 def test_episodic_note_is_searchable(isolated_db):
-    from dream_cycle.cycle import write_episodic_note
-    from db import get_connection
-
-    classified = {
+    entry_content = "Hier soir, super dîner avec Marie à Lyon."
+    _process({
         "input_type": "episodic",
         "summary": "Dîné avec Marie à Lyon",
+        "atomic_note": entry_content,
         "entities": [{"canonical_name": "Marie"}],
-    }
-    entry = {"id": 1, "content": "Hier soir, super dîner avec Marie à Lyon."}
-
-    conn = get_connection()
-    try:
-        write_episodic_note(classified, entry, conn)
-    finally:
-        conn.close()
+    }, content=entry_content)
 
     import mcp_server.server as server
     search = getattr(server.search_memory, "fn", server.search_memory)
@@ -99,17 +104,20 @@ def test_episodic_note_is_searchable(isolated_db):
 
 
 # ── Entity creation (decoupled from fact confidence) ─────────────────────────
-# step4_route is pure DB logic — testable offline by hand-building `resolved`.
+# SYN-111: routing lives in the core — the hand-built `resolved` dicts become
+# classifier-shaped `classified` dicts driven through `_process_entry` (the
+# core resolves entities itself against the database).
 
-def _route(resolved: dict, source_id: int = 1):
-    from dream_cycle.cycle import step4_route
-    from db import get_connection
-    conn = get_connection()
-    try:
-        with conn:
-            step4_route(resolved, source_id, conn)
-    finally:
-        conn.close()
+def _route(resolved: dict, source_id: int = 1, **extra):
+    classified = {
+        "input_type": "fact",
+        "entities": [{k: v for k, v in e.items() if k != "existing_entity"}
+                     for e in resolved.get("resolved_entities", [])],
+        "relations": resolved.get("relations", []),
+        "project_entries": resolved.get("project_entries", []),
+    }
+    classified.update(extra)
+    return _process(classified, entry_id=source_id)
 
 
 def _entities() -> list[dict]:
@@ -284,20 +292,16 @@ def test_nameless_entity_skipped(isolated_db):
 
 def test_intention_object_content_is_coerced_to_text(isolated_db):
     """Haiku sometimes returns ephemeral_content as an object ({'text': …}) or
-    a list; the INSERT must receive TEXT — a dict binding raised TypeError and
-    the whole entry was marked failed."""
+    a list; the stored intention must be TEXT (coercion now in the core)."""
     from db import get_connection
-    from dream_cycle.cycle import handle_intentions
 
+    _process({
+        "input_type": "ephemeral", "is_ephemeral": True,
+        "ephemeral_content": {"text": "aller chercher les croquettes",
+                              "when": "demain"},
+    })
     conn = get_connection()
     try:
-        with conn:
-            handle_intentions(
-                {"is_ephemeral": True,
-                 "ephemeral_content": {"text": "aller chercher les croquettes",
-                                       "when": "demain"}},
-                conn,
-            )
         rows = list(conn.execute("SELECT content FROM intentions"))
     finally:
         conn.close()
@@ -307,22 +311,21 @@ def test_intention_object_content_is_coerced_to_text(isolated_db):
 
 def test_durable_note_anchor_creates_factless_entity(isolated_db):
     """SYN-86: an entity anchoring a task/event note is created even with zero
-    facts (a salon's date lives in the event note, not in a fact)."""
+    facts (a salon's date lives in the event note, not in a fact). The anchor
+    now comes from the classified itself: a durable (task/event) atomic_note."""
     from db import get_connection
-    from dream_cycle.cycle import step4_route
 
-    resolved = {
+    ids, _ = _route({
         "resolved_entities": [{
             "canonical_name": "Vivatech", "type": "concept",
             "aliases": [], "summary": None, "attributes": {},
-            "facts": [], "existing_entity": None,
+            "facts": [],
         }],
         "relations": [],
-    }
+    }, atomic_note="Salon Vivatech le 20 juin", atomic_note_kind="event",
+       event_date="2026-06-20")
     conn = get_connection()
     try:
-        with conn:
-            ids = step4_route(resolved, 1, conn, anchors_durable_note=True)
         rows = list(conn.execute("SELECT canonical_name FROM entities"))
     finally:
         conn.close()

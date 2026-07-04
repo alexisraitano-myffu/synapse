@@ -1,8 +1,9 @@
 """
 Offline tests for SYN-58 — extensible entity-type vocabulary via pending.
 
-No ANTHROPIC_API_KEY: we drive step4_route directly (the classify step that
-emits type_proposal is API-bound and covered by test_dream_cycle.py).
+No ANTHROPIC_API_KEY: we drive the core's routing through `_process_entry`
+with hand-built classified dicts (the classify step that emits type_proposal
+is API-bound and covered by test_dream_cycle.py).
 """
 
 import sys
@@ -12,12 +13,21 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 
 def _route(resolved, source_id=1):
-    from dream_cycle.cycle import step4_route
+    from datetime import datetime, timezone
     from db import get_connection
+    from dream_cycle import cycle
+    classified = {
+        "input_type": "fact",
+        "entities": [{k: v for k, v in e.items() if k != "existing_entity"}
+                     for e in resolved.get("resolved_entities", [])],
+        "relations": resolved.get("relations", []),
+        "project_entries": resolved.get("project_entries", []),
+    }
     conn = get_connection()
     try:
-        with conn:
-            step4_route(resolved, source_id, conn)
+        cycle._process_entry({"id": source_id, "content": "capture de test"},
+                             None, conn, datetime.now(timezone.utc).isoformat(),
+                             False, False, classified=classified)
     finally:
         conn.close()
 
