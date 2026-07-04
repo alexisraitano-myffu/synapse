@@ -171,6 +171,33 @@ Triggered by a tester: actionable captures were dropped or mis-routed.
 - **« À valider » queue for low-confidence tasks**: classifier now emits `classification_confidence` (0-1); a task/event below `SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD` (0.7) is written with **`atomic_notes.review_status='pending'`** (default `'confirmed'`) instead of silently dropped. Pending notes are **hidden from every read surface** (`/atomic-notes` default, `/graph`, digest retrospective + « à venir » + open-tasks) and surface only via `GET /atomic-notes?review_status=pending`; `POST /atomic-note/{id}/confirm` promotes (reject = `/archive`). App: a "Tâches" segment in « À valider ».
 - **Reprocess (`POST /inbox/{id}/reprocess`)**: replay a capture through the cycle after a prompt fix: deletes only **that capture's** artifacts (atomic_notes + vec, facts, relations, project_entries), **keeps entities** (resolver dedupes; only `mention_count` may drift), re-queues. No global-wipe endpoint by design. To rebuild a tester's data: loop it over `/feed` ids then `POST /dream-cycle/run`.
 
+### Update 2026-07-04 (soir): P2P sync Mac↔Mac (SYN-112 phases 2+3, T3)
+
+- **The core owns a homemade sync engine** (`synapse-core/src/sync.rs`): `sync_log` =
+  per-(table, pk, column) HLC version map fed by **pure-SQL triggers** on the 18
+  replicated tables — every writer is journaled (Python gateway, core, even a
+  debugging sqlite3 CLI), no custom function registration. Protocol-v1 JSON
+  changesets ship whole rows with per-column versions; merge = per-column LWW under
+  an `applying` flag, row-level LWW tombstones, savepoint per row. NOT replicated:
+  `knowledge_graph` (dead), `atomic_notes_vec` (derived — receivers re-embed),
+  `node_positions`/`cluster_labels` (caches), `sync_meta`/`sync_log` (engine).
+- **Transport = pull mesh** (`api/sync_peers.py`): `GET /sync/changes` (verbatim core
+  passthrough), `GET /sync/status`, `POST /sync/pull` (one URL or every known peer),
+  peers = `SYNAPSE_SYNC_PEERS` (comma URLs) + mDNS browsing (`_synapse._tcp`, the
+  advert now carries the sync `device_id`). Periodic pull loop:
+  `SYNAPSE_SYNC_INTERVAL` seconds (default 600, `0` = off). Per-peer cursors live in
+  `sync_meta` (`cursor:<device>`), local by design. Peers share one
+  `SYNAPSE_API_TOKEN`.
+- **Owner-lock + run-guard**: `sync_owner` is a REPLICATED singleton row naming the
+  one device allowed to run the Dream Cycle (keeps the derived layer single-writer,
+  which is what makes LWW merging safe). `GET/PUT /sync/owner`; the first cycle on a
+  fresh install self-claims; a non-owner `POST /dream-cycle/run` gets **409**.
+  Safety net for a double-route: `dedup_after_pull()` collapses derived twins
+  (same natural identity + provenance) onto the smallest uuid — deletions replicate.
+- E2E validated: a fresh instance bootstrapped the full prod db from cursor 0
+  (18/18 tables equal), captures/deletes propagate both ways, 409 verified.
+  The re-embed pass also revealed and fixed 7 historically missing note vectors.
+
 ### Update 2026-07-04 (après-midi): uuid ids everywhere (SYN-112 phase 1, T3)
 
 - **`inbox.id` and `atomic_notes.id` are TEXT uuids** (P2P prerequisite: AUTOINCREMENT

@@ -27,7 +27,7 @@ load_dotenv()
 
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -245,17 +245,24 @@ def _recover_interrupted_runs() -> None:
 async def lifespan(_app):
     _recover_interrupted_runs()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
+    # SYN-112 T3 — periodic peer pull (no-op while no peer is known;
+    # SYNAPSE_SYNC_INTERVAL=0 disables the loop entirely).
+    from api.sync_peers import start_sync_thread
+    start_sync_thread()
     # Loopback-only builds (bundled tester binary) set SYNAPSE_DISABLE_MDNS=1
     # to skip zeroconf — mobile clients on the LAN won't reach this instance.
     azc = None
+    browser = None
     if not os.environ.get("SYNAPSE_DISABLE_MDNS"):
-        from api.discovery import start_advertising, stop_advertising
+        from api.discovery import start_advertising, start_browsing
         azc = await start_advertising()
+        browser = await start_browsing(azc)
     try:
         yield
     finally:
+        from api.discovery import stop_advertising, stop_browsing
+        await stop_browsing(browser)
         if azc is not None:
-            from api.discovery import stop_advertising
             await stop_advertising(azc)
 
 
@@ -351,6 +358,15 @@ class AnthropicKeyIn(BaseModel):
 
 class OwnerIn(BaseModel):
     entity_id: str | None = None  # the entity that IS the user (« moi »); null clears it
+
+
+# SYN-112 T3 — P2P sync bodies
+class SyncPullIn(BaseModel):
+    url: str | None = None  # pull one explicit peer; None = every known peer
+
+
+class SyncOwnerClaimIn(BaseModel):
+    device_id: str | None = None  # claim for this device; None = claim for self
 
 
 # SYN-45 — bodies for project-entry correction endpoints
@@ -450,6 +466,73 @@ def put_owner(body: OwnerIn):
             conn.close()
     config_store.set_owner_entity_id(eid)
     return {"status": "ok", "entity_id": eid}
+
+
+# ── P2P sync (SYN-112 T3) — Mac↔Mac transport over the core engine ──────────
+
+@app.get("/sync/changes", dependencies=[Depends(require_auth)])
+def sync_changes(since: int = 0, limit: int = 5000):
+    """Protocol-v1 changeset straight from the core (verbatim passthrough:
+    the JSON the engine produced is what goes on the wire)."""
+    from core_store import get_store
+    return Response(content=get_store().sync_changes_since(since, limit),
+                    media_type="application/json")
+
+
+@app.get("/sync/status", dependencies=[Depends(require_auth)])
+def sync_status():
+    from api import sync_peers
+    from core_store import get_store
+    store = get_store()
+    me = store.sync_device_id()
+    conn = get_connection()
+    try:
+        seq = conn.execute("SELECT COALESCE(max(seq), 0) FROM sync_log").fetchone()[0]
+        owner = sync_peers.get_owner(conn)
+        cursors = sync_peers.all_cursors(conn)
+    finally:
+        conn.close()
+    return {"device_id": me, "journal_seq": seq, "owner": owner,
+            "is_owner": bool(owner) and owner["device_id"] == me,
+            "peers": sync_peers.known_peers(), "cursors": cursors,
+            "interval_seconds": sync_peers.sync_interval()}
+
+
+@app.post("/sync/pull", dependencies=[Depends(require_auth)])
+def sync_pull(body: SyncPullIn | None = None):
+    """Pull now — from one explicit peer URL, or from every known peer."""
+    from api import sync_peers
+    if body and body.url:
+        return {"reports": [sync_peers.pull_from_peer(body.url)]}
+    reports = sync_peers.pull_all()
+    if not reports:
+        return {"reports": [], "note": "no peer known (mDNS quiet, SYNAPSE_SYNC_PEERS unset)"}
+    return {"reports": reports}
+
+
+@app.get("/sync/owner", dependencies=[Depends(require_auth)])
+def sync_owner_get():
+    from api import sync_peers
+    from core_store import get_store
+    me = get_store().sync_device_id()
+    conn = get_connection()
+    try:
+        owner = sync_peers.get_owner(conn)
+    finally:
+        conn.close()
+    return {"owner": owner, "device_id": me,
+            "is_owner": bool(owner) and owner["device_id"] == me}
+
+
+@app.put("/sync/owner", dependencies=[Depends(require_auth)])
+def sync_owner_claim(body: SyncOwnerClaimIn | None = None):
+    """Claim (or hand over) the Dream Cycle owner-lock. The claim replicates
+    with the next sync; concurrent claims resolve by LWW (latest wins)."""
+    from api import sync_peers
+    from core_store import get_store
+    device = (body.device_id if body else None) or get_store().sync_device_id()
+    owner = sync_peers.claim_owner(device)
+    return {"owner": owner}
 
 
 @app.post("/capture", dependencies=[Depends(require_auth)])
@@ -2093,6 +2176,11 @@ def dream_cycle_run(trigger: str = "manual", use_batch: bool = False):
     SYN-93: use_batch routes the classify step through the Message Batches API
     (~-50%) — set for the scheduled nightly "sleep" pass, off for size-valve /
     manual runs where immediacy matters."""
+    # SYN-112 T3 run-guard: only the owner device routes captures — the whole
+    # derived layer stays single-writer, which is what keeps the P2P LWW merge
+    # trivially correct. First run on a fresh install self-claims.
+    from api.sync_peers import ensure_cycle_owner
+    ensure_cycle_owner()
     run_id = str(uuid.uuid4())
     with cycle_lock():
         conn = get_connection()
