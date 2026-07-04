@@ -12,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from core_store import get_store
 from db import get_connection, cursor_to_dicts, init_db
 from embeddings import embed_text
 
@@ -29,11 +30,7 @@ def reembed() -> None:
         for note in notes:
             text = f"Title: {note['title']}\n{note['content']}" if note.get("title") else note["content"]
             vec_bytes = embed_text(text)
-            with conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)",
-                    (note["id"], vec_bytes),
-                )
+            get_store().upsert_note_vector(note["id"], vec_bytes)
         print(f"Done — {len(notes)} note(s) re-embedded.")
     finally:
         conn.close()

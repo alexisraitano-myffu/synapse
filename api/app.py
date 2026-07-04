@@ -35,6 +35,7 @@ import config_store
 from config import BASE_DIR, CLAUDE_MODEL
 from db import cursor_to_dicts, first_row, get_connection, init_db
 from embeddings import embed_text
+from core_store import get_store
 from entity_search import entity_embedding_text, search_entities_by_vector
 from facts_store import insert_fact
 
@@ -539,9 +540,6 @@ def inbox_reprocess(entry_id: int):
                 raise HTTPException(status_code=409, detail="entry is currently processing")
             note_ids = [r["id"] for r in cursor_to_dicts(conn.execute(
                 "SELECT id FROM atomic_notes WHERE provenance_capture_id=?", (entry_id,)))]
-            for nid in note_ids:
-                # atomic_notes_vec mirrors atomic_notes by rowid — drop the vector too.
-                conn.execute("DELETE FROM atomic_notes_vec WHERE rowid=?", (nid,))
             conn.execute("DELETE FROM atomic_notes WHERE provenance_capture_id=?", (entry_id,))
             conn.execute("DELETE FROM facts WHERE provenance_capture_id=? OR source_inbox_id=?",
                          (entry_id, str(entry_id)))
@@ -550,6 +548,10 @@ def inbox_reprocess(entry_id: int):
             conn.execute(
                 "UPDATE inbox SET status='queued', processed_at=NULL, error=NULL WHERE id=?",
                 (entry_id,))
+        # SYN-110: the mirrored vec0 rows are dropped through the core, after
+        # the commit (the core writes on its own connection).
+        for nid in note_ids:
+            get_store().delete_note_vector(nid)
         return {"id": entry_id, "status": "queued", "notes_removed": len(note_ids)}
     finally:
         conn.close()

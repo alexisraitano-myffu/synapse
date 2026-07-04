@@ -51,8 +51,9 @@ def test_write_episodic_note_creates_vectorized_note(isolated_db):
 
     conn = get_connection()
     try:
-        with conn:
-            write_episodic_note(classified, entry, conn)
+        # SYN-110: no transaction wrapper — the vector write goes through the
+        # core's own connection and must not run inside an open write txn.
+        write_episodic_note(classified, entry, conn)
 
         row = conn.execute(
             "SELECT id, summary, entities_mentioned, memory_strength FROM atomic_notes"
@@ -85,8 +86,7 @@ def test_episodic_note_is_searchable(isolated_db):
 
     conn = get_connection()
     try:
-        with conn:
-            write_episodic_note(classified, entry, conn)
+        write_episodic_note(classified, entry, conn)
     finally:
         conn.close()
 

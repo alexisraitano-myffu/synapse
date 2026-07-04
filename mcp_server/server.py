@@ -13,6 +13,7 @@ load_dotenv()
 from mcp.server.fastmcp import FastMCP
 
 from db import get_connection, cursor_to_dicts, first_row, init_db
+from core_store import get_store
 from embeddings import embed_text
 from entity_search import search_entities_by_vector, search_resources_by_vector
 from dream_cycle.decay import reactivate_notes
@@ -135,20 +136,24 @@ def search_memory(query: str, limit: int = 5) -> str:
     # ── Step 1: vector search over notes + entities (local, no API key required)
     try:
         query_vec = embed_text(query)
+        # SYN-110: the KNN runs in the Rust core; the note rows themselves are
+        # fetched by id afterwards (hit order preserved, orphan vectors skipped).
+        knn_hits = get_store().search_notes(query_vec, limit)
         conn = get_connection()
         try:
-            cur = conn.execute(
-                """
-                SELECT n.id, n.title, n.content, n.source_ids, n.created_at, v.distance
-                FROM   atomic_notes_vec v
-                JOIN   atomic_notes n ON n.id = v.rowid
-                WHERE  v.embedding MATCH ?
-                AND    k = ?
-                ORDER  BY v.distance
-                """,
-                (query_vec, limit),
-            )
-            note_results = [_format_result(r, "vector") for r in cursor_to_dicts(cur)]
+            note_results = []
+            if knn_hits:
+                placeholders = ",".join("?" * len(knn_hits))
+                rows = {r["id"]: r for r in cursor_to_dicts(conn.execute(
+                    f"SELECT id, title, content, source_ids, created_at "
+                    f"FROM atomic_notes WHERE id IN ({placeholders})",
+                    [note_id for note_id, _ in knn_hits],
+                ))}
+                note_results = [
+                    _format_result({**rows[note_id], "distance": distance}, "vector")
+                    for note_id, distance in knn_hits
+                    if note_id in rows
+                ]
             entity_results = _search_entities(query_vec, limit, conn)
             resource_results = _search_resources(query_vec, limit, conn)
             # SYN-19: a search hit is a light reactivation of the surfaced notes.

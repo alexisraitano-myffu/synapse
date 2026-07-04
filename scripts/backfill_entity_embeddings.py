@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from db import get_connection, cursor_to_dicts, init_db
+from core_store import get_store
 from embeddings import embed_text
 from entity_search import entity_embedding_text
 
@@ -45,11 +46,7 @@ def backfill(force_all: bool = False) -> int:
         for entity in entities:
             try:
                 vec_bytes = embed_text(entity_embedding_text(entity))
-                with conn:
-                    conn.execute(
-                        "UPDATE entities SET embedding=? WHERE id=?",
-                        (vec_bytes, entity["id"]),
-                    )
+                get_store().set_entity_embedding(entity["id"], vec_bytes)
                 done += 1
             except Exception as exc:  # one bad row shouldn't abort the backfill
                 print(f"  ! skipped '{entity['canonical_name']}': {exc}")

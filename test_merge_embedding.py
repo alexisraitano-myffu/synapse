@@ -51,9 +51,12 @@ def test_embedding_fallback_proposes_merge_without_substring(isolated_db, monkey
     summary = "Amie proche de l'utilisateur, habite à Lyon, travaille dans la finance"
     conn = get_connection()
     try:
+        # SYN-110: commit the setup first — the similarity scan runs in the
+        # core and, like production, only sees committed entities.
         with conn:
             _insert(conn, "Marie Dupont", "person", summary, with_embedding=True)
             new_id = _insert(conn, "M. Dupont", "person", summary)
+        with conn:
             _propose_merge_if_similar(new_id, "M. Dupont", "person", 1, conn)
         props = _proposals(conn)
     finally:
@@ -98,6 +101,7 @@ def test_embedding_fallback_respects_type_filter(isolated_db, monkeypatch):
         with conn:
             _insert(conn, "Bloc", "concept", summary, with_embedding=True)
             new_id = _insert(conn, "Quelqu'un", "person", summary)
+        with conn:
             _propose_merge_if_similar(new_id, "Quelqu'un", "person", 1, conn)
         props = _proposals(conn)
     finally:
@@ -119,6 +123,7 @@ def test_high_threshold_blocks_unrelated(isolated_db, monkeypatch):
                     "Politique monétaire et taux directeurs", with_embedding=True)
             new_id = _insert(conn, "Vélo de route", "concept",
                              "Sport d'endurance en plein air")
+        with conn:
             _propose_merge_if_similar(new_id, "Vélo de route", "concept", 1, conn)
         props = _proposals(conn)
     finally:
@@ -139,6 +144,7 @@ def test_embedding_proposal_is_deduped(isolated_db, monkeypatch):
         with conn:
             _insert(conn, "OpenAI", "organization", summary, with_embedding=True)
             new_id = _insert(conn, "Open AI", "organization", summary)
+        with conn:
             _propose_merge_if_similar(new_id, "Open AI", "organization", 1, conn)
             _propose_merge_if_similar(new_id, "Open AI", "organization", 1, conn)
         props = _proposals(conn)
