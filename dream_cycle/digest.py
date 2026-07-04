@@ -34,6 +34,7 @@ import anthropic
 
 from config import CLAUDE_MODEL
 from db import cursor_to_dicts, first_row, get_connection, init_db
+from core_store import get_store
 from embeddings import embed_text
 
 # Bounds so a busy week doesn't blow up the prompt — the digest is a summary,
@@ -280,6 +281,7 @@ def _digest_title(week: dict) -> str:
 def write_digest_note(conn, week: dict, markdown: str) -> int:
     """Store the digest as an atomic_note (kind='digest'), replacing any existing
     digest for the same ISO week. Vectorized so search_memory surfaces it."""
+    store = get_store()
     title = _digest_title(week)
     names = [e["canonical_name"] for e in week["new_entities"]]
     names += [t["canonical_name"] for t in week["trends"] if t["canonical_name"] not in names]
@@ -287,12 +289,12 @@ def write_digest_note(conn, week: dict, markdown: str) -> int:
               f"{week['counts']['new_entities']} entités, {week['counts']['new_facts']} faits."
 
     with conn:
-        # Idempotent: drop the previous digest for this week (note + its vector row).
+        # Idempotent: drop the previous digest for this week (note row here,
+        # vector row after commit — the core writes on its own connection).
         stale = [r["id"] for r in cursor_to_dicts(conn.execute(
             "SELECT id FROM atomic_notes WHERE kind = 'digest' AND title = ?", (title,)
         ))]
         for nid in stale:
-            conn.execute("DELETE FROM atomic_notes_vec WHERE rowid = ?", (nid,))
             conn.execute("DELETE FROM atomic_notes WHERE id = ?", (nid,))
 
         conn.execute(
@@ -302,14 +304,13 @@ def write_digest_note(conn, week: dict, markdown: str) -> int:
             (title, markdown, summary, json.dumps(names, ensure_ascii=False), 1.0),
         )
         note_id = conn.last_insert_rowid()
-        try:
-            vec = embed_text(f"{title}\n{markdown}")
-            conn.execute(
-                "INSERT OR REPLACE INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)",
-                (note_id, vec),
-            )
-        except Exception:  # noqa: BLE001 — vectorization is best-effort
-            pass
+
+    for nid in stale:
+        store.delete_note_vector(nid)
+    try:
+        store.upsert_note_vector(note_id, embed_text(f"{title}\n{markdown}"))
+    except Exception:  # noqa: BLE001 — vectorization is best-effort
+        pass
     return note_id
 
 

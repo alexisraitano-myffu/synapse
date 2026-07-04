@@ -8,12 +8,12 @@ and is monotonic with cosine similarity, which keeps the downstream
 `score = 1 - distance/2` mapping valid.
 """
 
+import struct
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import sqlite_vec
 
 from config import EMBEDDING_DIM, EMBEDDING_MODEL
 
@@ -54,4 +54,6 @@ def embed_text(text: str, client=None) -> bytes:
             f"Check EMBEDDING_MODEL ({EMBEDDING_MODEL}) matches EMBEDDING_DIM."
         )
 
-    return sqlite_vec.serialize_float32(vec)
+    # Packed little-endian float32 — byte-identical to what the old
+    # serialize_float32 helper produced; the DB format doesn't change.
+    return struct.pack(f"<{len(vec)}f", *vec)

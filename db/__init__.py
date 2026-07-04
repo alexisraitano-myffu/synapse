@@ -1,486 +1,148 @@
-import apsw
-import sqlite_vec
+"""
+Database access, backed by the Rust core (SYN-110).
+
+The core (`synapse_core`) owns BOTH the schema and the only SQLite library in
+the process. That single-library rule is not a style choice: two SQLite
+builds in one process (e.g. apsw + the core's bundled SQLite) do not see each
+other's POSIX locks — same-process advisory locks don't conflict — so their
+transactions interleave and corrupt the database file. Every SQL statement
+therefore flows through the core's gateway; apsw and the pip sqlite-vec
+extension are gone (vec0 is compiled into the core and available to raw SQL
+here too).
+
+`Connection`/`Cursor` keep the small apsw surface the codebase always used:
+`execute(sql, params)`, `fetchone/fetchall/description`, iteration,
+`last_insert_rowid`, `close`, and `with conn:` transactions (savepoints when
+nested, exactly like apsw).
+"""
+
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import DB_PATH, EMBEDDING_DIM
+import synapse_core
+
+from config import DB_PATH, EMBEDDING_DIM  # noqa: F401 — EMBEDDING_DIM re-exported
 
 
-def get_connection() -> apsw.Connection:
+class ExecutionCompleteError(Exception):
+    """Raised by `Cursor.description` when there is no result set (the apsw
+    behavior `cursor_to_dicts`/`first_row` were built around)."""
+
+
+class Cursor:
+    """apsw-shaped cursor over an eagerly-fetched result set."""
+
+    def __init__(self, columns: list[str] | None, rows: list):
+        self._columns = columns
+        self._rows = rows
+        self._next = 0
+
+    @property
+    def description(self):
+        if self._columns is None:
+            raise ExecutionCompleteError("statement produced no result set")
+        return [(name, None) for name in self._columns]
+
+    def fetchone(self):
+        if self._next < len(self._rows):
+            row = self._rows[self._next]
+            self._next += 1
+            return tuple(row)
+        return None
+
+    def fetchall(self):
+        rows = [tuple(r) for r in self._rows[self._next:]]
+        self._next = len(self._rows)
+        return rows
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        row = self.fetchone()
+        if row is None:
+            raise StopIteration
+        return row
+
+
+class Connection:
+    """apsw-shaped adapter over one core SQL connection.
+
+    `with conn:` == transaction (BEGIN/COMMIT/ROLLBACK), nesting handled with
+    savepoints like apsw. Outside a block every statement autocommits.
+    """
+
+    def __init__(self, db_path):
+        self._conn = synapse_core.connect(str(db_path))
+        self._txn_depth = 0
+
+    def execute(self, sql: str, params=()) -> Cursor:
+        columns, rows = self._conn.execute(sql, list(params))
+        return Cursor(columns, rows)
+
+    def last_insert_rowid(self) -> int:
+        return self._conn.last_insert_rowid()
+
+    def close(self):
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+    def __enter__(self):
+        if self._txn_depth == 0:
+            self.execute("BEGIN")
+        else:
+            self.execute(f"SAVEPOINT sp_{self._txn_depth}")
+        self._txn_depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._txn_depth -= 1
+        depth = self._txn_depth
+        if exc_type is None:
+            self.execute("COMMIT" if depth == 0 else f"RELEASE sp_{depth}")
+        elif depth == 0:
+            self.execute("ROLLBACK")
+        else:
+            self.execute(f"ROLLBACK TO sp_{depth}")
+            self.execute(f"RELEASE sp_{depth}")
+        return False
+
+
+def get_connection() -> Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = apsw.Connection(str(DB_PATH))
-    conn.enableloadextension(True)
-    conn.loadextension(sqlite_vec.loadable_path())
-    conn.enableloadextension(False)
-    return conn
+    return Connection(DB_PATH)
 
 
-def cursor_to_dicts(cursor: apsw.Cursor) -> list[dict]:
+def cursor_to_dicts(cursor: Cursor) -> list[dict]:
     try:
         cols = [d[0] for d in cursor.description]
-    except apsw.ExecutionCompleteError:
+    except ExecutionCompleteError:
         return []
     return [dict(zip(cols, row)) for row in cursor.fetchall()]
 
 
-def first_row(cursor: apsw.Cursor) -> dict | None:
+def first_row(cursor: Cursor) -> dict | None:
     """Return the first row as a dict, or None if the result set is empty."""
     try:
         cols = [d[0] for d in cursor.description]
-    except apsw.ExecutionCompleteError:
+    except ExecutionCompleteError:
         return None
     row = cursor.fetchone()
     return dict(zip(cols, row)) if row else None
 
 
 def init_db() -> None:
-    conn = get_connection()
-    try:
-        for stmt in [
-            """CREATE TABLE IF NOT EXISTS inbox (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                content      TEXT NOT NULL,
-                source       TEXT NOT NULL DEFAULT 'manual',
-                created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                processed_at TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS atomic_notes (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                title      TEXT,
-                content    TEXT NOT NULL,
-                source_ids TEXT,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )""",
-            # Parallel vector index — rowid mirrors atomic_notes.id
-            f"""CREATE VIRTUAL TABLE IF NOT EXISTS atomic_notes_vec
-                USING vec0(embedding float[{EMBEDDING_DIM}])""",
-            """CREATE TABLE IF NOT EXISTS knowledge_graph (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_a   TEXT NOT NULL,
-                relation   TEXT NOT NULL,
-                entity_b   TEXT NOT NULL,
-                context    TEXT,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )""",
-            # ── Phase A+ — Entity graph ────────────────────────────────────────
-            """CREATE TABLE IF NOT EXISTS entities (
-                id                TEXT PRIMARY KEY,
-                type              TEXT,
-                canonical_name    TEXT NOT NULL,
-                aliases           TEXT DEFAULT '[]',
-                attributes        TEXT DEFAULT '{}',
-                mention_count     INTEGER DEFAULT 1,
-                last_mentioned    DATE,
-                persistence_value INTEGER DEFAULT 3,
-                summary           TEXT,
-                embedding         BLOB,
-                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS facts (
-                id                TEXT PRIMARY KEY,
-                entity_id         TEXT REFERENCES entities(id),
-                predicate         TEXT NOT NULL,
-                value             TEXT NOT NULL,
-                confidence        REAL DEFAULT 0.5,
-                source_inbox_id   TEXT,
-                persistence_value INTEGER DEFAULT 3,
-                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_confirmed    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS relations (
-                id          TEXT PRIMARY KEY,
-                entity_from TEXT REFERENCES entities(id),
-                predicate   TEXT NOT NULL,
-                entity_to   TEXT REFERENCES entities(id),
-                confidence  REAL DEFAULT 0.5,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS resources (
-                id                TEXT PRIMARY KEY,
-                type              TEXT,
-                source            TEXT,
-                title             TEXT,
-                summary           TEXT,
-                tags              TEXT DEFAULT '[]',
-                entities_mentioned TEXT DEFAULT '[]',
-                embedding         BLOB,
-                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS pending_facts (
-                id                  TEXT PRIMARY KEY,
-                fact_data           TEXT NOT NULL,
-                validation_strategy TEXT DEFAULT 'passive',
-                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS review_queue (
-                id               TEXT PRIMARY KEY,
-                fact_data        TEXT NOT NULL,
-                suggested_entity TEXT,
-                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS intentions (
-                id         TEXT PRIMARY KEY,
-                content    TEXT NOT NULL,
-                ttl_hours  INTEGER DEFAULT 48,
-                resolved   BOOLEAN DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            # Append-only log of user validations (survives a rebuild, replicates).
-            """CREATE TABLE IF NOT EXISTS validation_events (
-                id               TEXT PRIMARY KEY,
-                fact_id          TEXT,
-                entity_canonical TEXT,
-                predicate        TEXT,
-                value            TEXT,
-                confirmed        INTEGER NOT NULL,
-                correction       TEXT,
-                device_id        TEXT,
-                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            # One row per Dream Cycle run (stats for the app's "last/next cycle").
-            """CREATE TABLE IF NOT EXISTS cycle_runs (
-                id                TEXT PRIMARY KEY,
-                started_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                finished_at       TIMESTAMP,
-                notes_processed   INTEGER DEFAULT 0,
-                entities_total    INTEGER DEFAULT 0,
-                pending_total     INTEGER DEFAULT 0,
-                status            TEXT DEFAULT 'running',
-                trigger           TEXT DEFAULT 'manual',
-                error             TEXT
-            )""",
-            # ── SYN-41 — Projects as aggregate entities ─────────────────────────
-            # A project is an entity (type='project') that receives a timeline of
-            # entries plus a versioned synthesis. Captures stay in inbox (the
-            # immutable source of truth); projections (entries, summaries, facts,
-            # atomic_notes, entities, relations) carry a provenance_capture_id
-            # back to the inbox row so we never lose lineage.
-            """CREATE TABLE IF NOT EXISTS project_entries (
-                id                TEXT PRIMARY KEY,
-                project_id        TEXT NOT NULL REFERENCES entities(id),
-                capture_id        INTEGER NOT NULL REFERENCES inbox(id),
-                content           TEXT NOT NULL,
-                kind              TEXT NOT NULL DEFAULT 'note',
-                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS project_state_versions (
-                id                TEXT PRIMARY KEY,
-                project_id        TEXT NOT NULL REFERENCES entities(id),
-                summary_md        TEXT NOT NULL,
-                entry_count       INTEGER NOT NULL,
-                trigger           TEXT NOT NULL,  -- 'passive' | 'mcp' | 'manual'
-                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS project_state (
-                project_id          TEXT PRIMARY KEY REFERENCES entities(id),
-                current_version_id  TEXT REFERENCES project_state_versions(id),
-                updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                entry_count_at_sync INTEGER DEFAULT 0
-            )""",
-            # ── SYN-39 — Entity merge proposals ─────────────────────────────────
-            # Detected duplicates surface as pending proposals the user accepts,
-            # rejects, or postpones. Acceptance reroutes facts/relations/notes
-            # from the absorbed entity to the canonical one; the absorbed entity
-            # stays in DB with merged_into_id pointing to the survivor (soft
-            # link, no DELETE, so a future unmerge stays possible).
-            """CREATE TABLE IF NOT EXISTS entity_merge_proposals (
-                id                    TEXT PRIMARY KEY,
-                candidate_entity_id   TEXT NOT NULL REFERENCES entities(id),
-                existing_entity_id    TEXT NOT NULL REFERENCES entities(id),
-                similarity_score      REAL NOT NULL,
-                similarity_reason     TEXT,
-                evidence_capture_id   INTEGER REFERENCES inbox(id),
-                status                TEXT NOT NULL DEFAULT 'pending',
-                created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                resolved_at           TIMESTAMP,
-                resolved_canonical_id TEXT REFERENCES entities(id)
-            )""",
-            # SYN-58: the entity-type vocabulary is no longer a closed enum baked
-            # into the classifier prompt. `active_entity_types` is the live vocab
-            # (built-in + user-validated); the prompt reads it at runtime. When the
-            # classifier finds no fitting type it raises an `entity_type_proposals`
-            # row (the candidate entity is created in status='pending') instead of
-            # forcing a wrong type — the user validates to extend the vocab.
-            """CREATE TABLE IF NOT EXISTS active_entity_types (
-                type        TEXT PRIMARY KEY,
-                source      TEXT NOT NULL,            -- 'builtin' | 'user'
-                added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS entity_type_proposals (
-                id                  TEXT PRIMARY KEY,
-                proposed_type       TEXT NOT NULL,
-                reason              TEXT,
-                evidence_capture_id INTEGER REFERENCES inbox(id),
-                candidate_entity_id TEXT REFERENCES entities(id),
-                status              TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | rejected
-                created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                resolved_at         TIMESTAMP
-            )""",
-            # Point 1 (C): soft « rattacher cette tâche/intention à un projet existant ? »
-            # proposals, surfaced in « À valider ». capture-based (note_id optional) so a
-            # task note OR a pure ephemeral intention can both be proposed.
-            """CREATE TABLE IF NOT EXISTS project_attach_proposals (
-                id               TEXT PRIMARY KEY,
-                capture_id       INTEGER NOT NULL REFERENCES inbox(id),
-                note_id          INTEGER REFERENCES atomic_notes(id),
-                project_id       TEXT NOT NULL REFERENCES entities(id),
-                content          TEXT NOT NULL,
-                similarity_score REAL NOT NULL,
-                status           TEXT NOT NULL DEFAULT 'pending',  -- pending | accepted | rejected
-                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                resolved_at      TIMESTAMP
-            )""",
-        ]:
-            conn.execute(stmt)
+    """Create/migrate the schema, now owned by the Rust core (SYN-110).
 
-        # SYN-58: seed the live vocabulary with the six built-in types. Idempotent
-        # (INSERT OR IGNORE) so re-running init_db never disturbs user-added types.
-        for builtin in ("person", "place", "project", "concept", "organization", "animal"):
-            conn.execute(
-                "INSERT OR IGNORE INTO active_entity_types (type, source) VALUES (?, 'builtin')",
-                (builtin,),
-            )
+    The DDL lives in synapse-core (`crates/synapse-core/src/schema.rs`), the
+    exact port of the idempotent CREATE/ALTER sequence that used to live here.
+    Opening the core store runs it; this wrapper keeps the historical call
+    sites (MCP startup, Dream Cycle, tests) unchanged. Do NOT add DDL here —
+    schema changes go into the core.
+    """
+    from core_store import get_store
 
-        # Migration: add processed_at if DB was created before this column existed
-        try:
-            conn.execute("ALTER TABLE inbox ADD COLUMN processed_at TIMESTAMP")
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: episodic-memory columns on atomic_notes (spec §3.1 / §7).
-        # entities_mentioned links a note to graph entities; memory_strength is
-        # the Ebbinghaus retention score (decay logic is Phase C — defaults to 1.0).
-        for col, ddl in [
-            ("summary", "ALTER TABLE atomic_notes ADD COLUMN summary TEXT"),
-            ("entities_mentioned",
-             "ALTER TABLE atomic_notes ADD COLUMN entities_mentioned TEXT DEFAULT '[]'"),
-            ("memory_strength",
-             "ALTER TABLE atomic_notes ADD COLUMN memory_strength REAL DEFAULT 1.0"),
-            # SYN-19: timestamp of the last reactivation (mention / search hit).
-            # NULL → decay falls back to created_at. memory_strength is recomputed
-            # from this, never decremented in place.
-            ("last_reactivated_at",
-             "ALTER TABLE atomic_notes ADD COLUMN last_reactivated_at TIMESTAMP"),
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-
-        # Migration: SYN-21 — real resource pipeline (fetch + summary). The table
-        # pre-existed but lacked the fetch fields.
-        for ddl in [
-            "ALTER TABLE resources ADD COLUMN url        TEXT",
-            "ALTER TABLE resources ADD COLUMN content    TEXT",
-            "ALTER TABLE resources ADD COLUMN fetched_at TIMESTAMP",
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-        # One resource per URL (idempotent re-capture of the same link).
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_url "
-            "ON resources(url) WHERE url IS NOT NULL"
-        )
-
-        # Migration: sync columns on inbox (client_id enables idempotent capture).
-        for ddl in [
-            "ALTER TABLE inbox ADD COLUMN client_id TEXT",
-            "ALTER TABLE inbox ADD COLUMN device_id TEXT",
-            "ALTER TABLE inbox ADD COLUMN captured_at TIMESTAMP",
-            "ALTER TABLE inbox ADD COLUMN status TEXT DEFAULT 'queued'",
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-
-        # Idempotency: at most one inbox row per client-generated capture id.
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_client_id "
-            "ON inbox(client_id) WHERE client_id IS NOT NULL"
-        )
-
-        # Migration: SYN-41 — provenance back-link to the immutable inbox row.
-        # Existing rows keep NULL (we only commit to the invariant going forward).
-        for ddl in [
-            "ALTER TABLE entities     ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
-            "ALTER TABLE facts        ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
-            "ALTER TABLE atomic_notes ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
-            "ALTER TABLE relations    ADD COLUMN provenance_capture_id INTEGER REFERENCES inbox(id)",
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-
-        # Timeline access: fetch a project's entries in reverse-chrono order.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_project_entries_project "
-            "ON project_entries(project_id, created_at DESC)"
-        )
-
-        # Migration: SYN-44 — distinguish append (incremental) from refinement
-        # (from-scratch rebuild) on project_state_versions. Both stay
-        # trigger='passive' or 'mcp' or 'manual' — kind is orthogonal.
-        try:
-            conn.execute(
-                "ALTER TABLE project_state_versions "
-                "ADD COLUMN kind TEXT NOT NULL DEFAULT 'append'"
-            )
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: SYN-39 — soft-link a merged entity to its absorber. Queries
-        # filter on `merged_into_id IS NULL` to hide the absorbed row, but the
-        # data stays so we can rebuild lineage and (eventually) unmerge.
-        for ddl in [
-            "ALTER TABLE entities ADD COLUMN merged_into_id TEXT REFERENCES entities(id)",
-            "ALTER TABLE entities ADD COLUMN merged_at TIMESTAMP",
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-
-        # Migration: SYN-58 — entity lifecycle status. 'active' is the default and
-        # the only value the read views surface; 'pending' = awaiting a type-vocab
-        # decision, 'archived' = rejected. Existing rows backfill to 'active'.
-        try:
-            conn.execute(
-                "ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
-            )
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: SYN-37 + SYN-59 — fact/entity lifecycle (orthogonal axes,
-        # both hidden from default views, both reversible):
-        #   archived_at  — user "filed it away, don't show me" (entities + facts)
-        #   obsoleted_at — fact "no longer true today, but historically valid";
-        #                  set by SYN-37 auto-supersede OR by a manual user gesture
-        #   obsoleted_by — FK to the replacing fact (SYN-37 only; NULL if manual)
-        for ddl in [
-            "ALTER TABLE facts    ADD COLUMN archived_at  TIMESTAMP",
-            "ALTER TABLE facts    ADD COLUMN obsoleted_at TIMESTAMP",
-            "ALTER TABLE facts    ADD COLUMN obsoleted_by TEXT REFERENCES facts(id)",
-            "ALTER TABLE entities ADD COLUMN archived_at  TIMESTAMP",
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-
-        # Migration: SYN-68 — entity memory_strength for the living map. Mirrors
-        # the atomic_notes Ebbinghaus score; recomputed in dream_cycle/decay.py
-        # (apply_entity_decay) from last_mentioned, which the cycle bumps on every
-        # re-mention. Defaults to 1.0 so a fresh entity reads as fully alive.
-        try:
-            conn.execute("ALTER TABLE entities ADD COLUMN memory_strength REAL DEFAULT 1.0")
-        except apsw.SQLError:
-            pass  # column already present
-
-        # SYN-69 — persisted map positions. node_id matches the /graph node id
-        # (an entity uuid, or 'n:<id>' for an atomic_note). Read back as-is so the
-        # map is stable; a full ForceAtlas2 recompute happens only on demand, new
-        # nodes are placed incrementally near their cluster centroid.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS node_positions ("
-            " node_id    TEXT PRIMARY KEY,"
-            " x          REAL NOT NULL,"
-            " y          REAL NOT NULL,"
-            " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-        )
-
-        # SYN-70 — cached cluster labels (Haiku). Keyed by a signature of the
-        # cluster's defining (top) entities, not the volatile community index, so
-        # a label is reused as long as those entities do and Haiku is called only
-        # when they change. A batched call fills every miss at once.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS cluster_labels ("
-            " signature  TEXT PRIMARY KEY,"
-            " label      TEXT NOT NULL,"
-            " updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-        )
-
-        # Quick lookups for the merge-proposals queue.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_merge_proposals_status "
-            "ON entity_merge_proposals(status, created_at DESC)"
-        )
-        # Quick lookups for the type-proposals queue (SYN-58).
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_type_proposals_status "
-            "ON entity_type_proposals(status, created_at DESC)"
-        )
-        # Quick lookups for the project-attach proposals queue (point 1 C).
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_project_attach_proposals_status "
-            "ON project_attach_proposals(status, created_at DESC)"
-        )
-
-        # Migration: SYN-77 — keep the failure reason on the inbox row. Before
-        # this the cycle printed it to (captured) stdout and the message was
-        # lost, leaving 'failed' entries undiagnosable from the app.
-        try:
-            conn.execute("ALTER TABLE inbox ADD COLUMN error TEXT")
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: SYN-88 — fact category (identity | dates | work | places |
-        # relations | preferences | health | other) : le classifieur thématise
-        # chaque fait pour que la fiche les groupe en sections repliables.
-        try:
-            conn.execute("ALTER TABLE facts ADD COLUMN category TEXT")
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: SYN-89 — re-résumé. Posé à 1 dès qu'un fait de l'entité
-        # change (insert/édition/archive/obsolète) ; le Dream Cycle régénère
-        # alors le résumé from scratch depuis les faits actifs (intemporel).
-        try:
-            conn.execute(
-                "ALTER TABLE entities ADD COLUMN summary_stale INTEGER NOT NULL DEFAULT 0"
-            )
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: SYN-85 — note kinds. 'note' (réflexion) | 'task' (backlog
-        # retrouvable — pas de due date / coche, le decay oublie pour nous) |
-        # 'event' (occurrence datée, event_date absolue + récurrence annuelle).
-        # archived_at = "rendre obsolète rapidement" (geste utilisateur).
-        for ddl in [
-            "ALTER TABLE atomic_notes ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'",
-            "ALTER TABLE atomic_notes ADD COLUMN event_date TIMESTAMP",
-            "ALTER TABLE atomic_notes ADD COLUMN event_recurring INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE atomic_notes ADD COLUMN archived_at TIMESTAMP",
-        ]:
-            try:
-                conn.execute(ddl)
-            except apsw.SQLError:
-                pass  # column already present
-
-        # Migration: low-confidence task/event notes land in « À valider » instead of
-        # being silently dropped or auto-confirmed. 'confirmed' (default — every legacy
-        # row + every high-confidence classification) | 'pending' (awaits user validation).
-        # Read views hide 'pending'; only the validation queue surfaces it.
-        try:
-            conn.execute(
-                "ALTER TABLE atomic_notes ADD COLUMN review_status TEXT NOT NULL DEFAULT 'confirmed'")
-        except apsw.SQLError:
-            pass  # column already present
-
-        # Migration: relations join the same confidence gate as facts/tasks. A relation
-        # the classifier wasn't confident about lands in « À valider » (review_status='pending')
-        # instead of persisting hard — previously relations bypassed every threshold. Read
-        # surfaces (entity detail, /graph, digest) hide 'pending'; only the queue surfaces it.
-        try:
-            conn.execute(
-                "ALTER TABLE relations ADD COLUMN review_status TEXT NOT NULL DEFAULT 'confirmed'")
-        except apsw.SQLError:
-            pass  # column already present
-    finally:
-        conn.close()
+    get_store()

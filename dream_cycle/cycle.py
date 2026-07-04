@@ -34,6 +34,7 @@ import anthropic
 from config import CLAUDE_MODEL
 from db import get_connection, cursor_to_dicts, first_row, init_db
 from embeddings import embed_text
+from core_store import get_store
 from entity_search import entity_embedding_text, search_entities_by_vector
 from facts_store import insert_fact
 from dream_cycle.decay import apply_decay, apply_entity_decay, reactivate_notes_for_entities
@@ -1268,7 +1269,7 @@ def step6_vectorize(
 
         try:
             vec_bytes = embed_text(text, client)
-            conn.execute("UPDATE entities SET embedding=? WHERE id=?", (vec_bytes, entity_id))
+            get_store().set_entity_embedding(entity_id, vec_bytes)
             vectorized += 1
             if verbose:
                 print(f"    [vectorize] embedded '{entity['canonical_name']}'")
@@ -1350,10 +1351,7 @@ def write_episodic_note(
 
     try:
         vec_bytes = embed_text(f"{title}\n{content}")
-        conn.execute(
-            "INSERT OR REPLACE INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)",
-            (note_id, vec_bytes),
-        )
+        get_store().upsert_note_vector(note_id, vec_bytes)
     except Exception as exc:
         if verbose:
             print(f"    [episodic] vectorize error: {exc}")
@@ -1375,6 +1373,7 @@ def _persist_atomic_note(
     event_date: str | None = None,
     event_recurring: bool = False,
     review_status: str = "confirmed",
+    pending_vecs: list | None = None,
 ) -> int | None:
     """Persist a free-form thought as an atomic_note with provenance.
 
@@ -1406,15 +1405,19 @@ def _persist_atomic_note(
          review_status),
     )
     note_id = conn.last_insert_rowid()
-    try:
-        vec_bytes = embed_text(f"{title}\n{content}")
-        conn.execute(
-            "INSERT OR REPLACE INTO atomic_notes_vec(rowid, embedding) VALUES (?, ?)",
-            (note_id, vec_bytes),
-        )
-    except Exception as exc:
-        if verbose:
-            print(f"    [atomic_note] vectorize error: {exc}")
+    # SYN-110: the vector write goes through the core's own connection, so it
+    # must not run while this caller's apsw transaction holds the write lock.
+    # Callers inside a `with conn:` block pass `pending_vecs` and flush after
+    # commit; vectorization stays best-effort either way (same as before).
+    if pending_vecs is not None:
+        pending_vecs.append((note_id, f"{title}\n{content}"))
+    else:
+        try:
+            vec_bytes = embed_text(f"{title}\n{content}")
+            get_store().upsert_note_vector(note_id, vec_bytes)
+        except Exception as exc:
+            if verbose:
+                print(f"    [atomic_note] vectorize error: {exc}")
     if verbose:
         print(f"    [atomic_note] id={note_id}: {title!r}")
     return note_id
@@ -1792,6 +1795,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
             for fact in ent.get("facts", [])
         ]
 
+    pending_note_vecs: list = []
     with conn:
         if resolved:
             entity_ids = step4_route(resolved, capture_id, conn, dry_run=False, verbose=verbose,
@@ -1845,6 +1849,7 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
                 event_date=classified.get("event_date") or None,
                 event_recurring=bool(classified.get("event_recurring")),
                 review_status=review_status,
+                pending_vecs=pending_note_vecs,
             )
 
         # 3. Project entries — N rattachements possibles (SYN-57). Une même
@@ -1888,6 +1893,15 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
         reactivate_notes_for_entities(conn, mentioned)
 
         _mark(conn, capture_id, now, "processed", dry_run=False)
+
+    # Post-commit: flush the deferred note vectors (embed + core write, both
+    # outside the transaction). Best-effort, like the old inline vec0 insert.
+    for note_id, text in pending_note_vecs:
+        try:
+            get_store().upsert_note_vector(note_id, embed_text(text))
+        except Exception as exc:  # noqa: BLE001 — vectorization is best-effort
+            if verbose:
+                print(f"    [atomic_note] vectorize error: {exc}")
 
     return entity_ids, new_facts
 
@@ -1991,8 +2005,9 @@ def run_dream_cycle(dry_run: bool = False, verbose: bool = False, use_batch: boo
         # Step 6 — Vectorize touched entities
         if all_entity_ids:
             print("▸ Step 6 — Vectorization")
-            with conn:
-                vectorized = step6_vectorize(all_entity_ids, conn, client, dry_run, verbose)
+            # SYN-110: no `with conn:` here — the writes go through the core's
+            # own connection; holding an apsw transaction would deadlock them.
+            vectorized = step6_vectorize(all_entity_ids, conn, client, dry_run, verbose)
             print(f"  → {vectorized} entit{'y' if vectorized == 1 else 'ies'} vectorized")
 
         # SYN-19 / SYN-68 — refresh Ebbinghaus memory_strength on notes AND

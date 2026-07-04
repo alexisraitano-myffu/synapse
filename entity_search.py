@@ -3,14 +3,12 @@ Shared semantic search over the entity graph (SYN-60).
 
 Entity embeddings live as raw float32 BLOBs in `entities.embedding`. Entity ids
 are UUID strings, so they can't share the int-rowid `vec0` table used for
-`atomic_notes` — instead the Dream Cycle's `step6_vectorize` writes the vector
-straight into the BLOB column. At personal scale (hundreds to a few thousand
-entities) a linear cosine scan in Python is sub-millisecond, so we skip the ANN
-index entirely; `vec0` only earns its keep past ~100k vectors.
-
-This module is the single implementation every caller shares — MCP
-`search_memory`, merge V2 (SYN-61), and semantic suggestions (SYN-62) — so the
-scoring stays consistent and we don't grow three drifting copies of the scan.
+`atomic_notes`; similarity is an exact linear scan (sub-millisecond at personal
+scale). Since SYN-110 the scan runs inside the Rust core (`synapse_core`,
+`Storage.search_entities` / `search_resources`) with the exact same candidate
+filters and scoring; this module keeps the historical signatures so every
+caller — MCP `search_memory`, merge V2 (SYN-61), semantic suggestions (SYN-62)
+— stays on one shared implementation.
 
 Vectors are L2-normalized at embed time, so the L2 distance lives in [0, 2] and
 is monotonic with cosine similarity, keeping the `score = 1 - distance/2`
@@ -20,7 +18,7 @@ mapping valid (related entities land ~0.9, unrelated ~1.4 with this model).
 import json
 import struct
 
-from db import cursor_to_dicts
+from core_store import get_store
 from embeddings import embed_text
 
 
@@ -90,45 +88,26 @@ def search_entities_by_vector(
 
     Returns dicts `{id, canonical_name, type, summary, score}`, score-descending.
     """
-    q = deserialize_vec(query_vec)
-    exclude = set(exclude_ids or ())
-
-    # status='active' (SYN-58): pending (awaiting type validation) and archived
-    # (rejected) entities must never surface as search hits or merge candidates.
-    # archived_at IS NULL (SYN-59): user-archived entities are hidden too.
-    sql = (
-        "SELECT id, canonical_name, type, summary, embedding FROM entities "
-        "WHERE embedding IS NOT NULL AND merged_into_id IS NULL "
-        "AND status = 'active' AND archived_at IS NULL"
+    # The candidate filters (vectorized, not soft-merged, status='active',
+    # not user-archived, optional type, stale-dim skip) and the scoring live
+    # in the core — one implementation for desktop and mobile. `conn` is kept
+    # in the signature for call-site compatibility; the core has its own.
+    hits = get_store().search_entities(
+        bytes(query_vec),
+        limit=limit,
+        min_score=min_score,
+        type_filter=type_filter,
+        exclude_ids=list(exclude_ids or ()),
     )
-    params: list = []
-    if type_filter:
-        sql += " AND type = ?"
-        params.append(type_filter)
-
-    scored: list[tuple[float, dict]] = []
-    for row in cursor_to_dicts(conn.execute(sql, params)):
-        if row["id"] in exclude:
-            continue
-        v = deserialize_vec(row["embedding"])
-        if len(v) != len(q):
-            continue  # stale dim (model changed before a re-embed) — skip
-        dist = sum((a - b) ** 2 for a, b in zip(q, v)) ** 0.5
-        score = _score_from_distance(dist)
-        if score < min_score:
-            continue
-        scored.append((score, row))
-
-    scored.sort(key=lambda x: -x[0])
     return [
         {
-            "id": row["id"],
-            "canonical_name": row["canonical_name"],
-            "type": row.get("type"),
-            "summary": row.get("summary") or "",
+            "id": eid,
+            "canonical_name": name,
+            "type": etype,
+            "summary": summary,
             "score": score,
         }
-        for score, row in scored[:limit]
+        for eid, name, etype, summary, score in hits
     ]
 
 
@@ -141,20 +120,8 @@ def search_resources_by_vector(conn, query_vec: bytes, *, limit: int = 10) -> li
     """SYN-21: top-K stored resources by cosine on their embedded summary
     (resources, like entities, use UUID ids → manual scan). Returns dicts
     `{id, title, url, summary, score}`, score-descending."""
-    q = deserialize_vec(query_vec)
-    scored: list[tuple[float, dict]] = []
-    for row in cursor_to_dicts(conn.execute(
-        "SELECT id, title, url, summary, embedding FROM resources "
-        "WHERE embedding IS NOT NULL"
-    )):
-        v = deserialize_vec(row["embedding"])
-        if len(v) != len(q):
-            continue
-        dist = sum((a - b) ** 2 for a, b in zip(q, v)) ** 0.5
-        scored.append((_score_from_distance(dist), row))
-    scored.sort(key=lambda x: -x[0])
+    hits = get_store().search_resources(bytes(query_vec), limit=limit)
     return [
-        {"id": r["id"], "title": r["title"] or r["url"],
-         "url": r["url"], "summary": r["summary"] or "", "score": s}
-        for s, r in scored[:limit]
+        {"id": rid, "title": title, "url": url, "summary": summary, "score": score}
+        for rid, title, url, summary, score in hits
     ]

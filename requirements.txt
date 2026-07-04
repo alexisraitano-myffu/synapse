@@ -4,11 +4,12 @@ anthropic>=0.50.0
 # MCP server
 mcp>=1.9.0
 
-# SQLite with extension loading (stdlib sqlite3 on macOS lacks this)
-apsw>=3.48.0.0
-
-# Vector store (sqlite extension — no external server)
-sqlite-vec>=0.1.6
+# Storage substrate (SYN-110): SQLite + sqlite-vec now live inside the Rust
+# core. The `synapse_core` wheel is built from the synapse-core repo
+# (crates/synapse-core-py, `maturin build --release`) and installed by hand —
+# it is not on PyPI yet. It must be the ONLY SQLite library in the process
+# (a second one, e.g. apsw, cannot see its locks and corrupts the database).
+# synapse_core (local wheel)
 
 # Local embeddings (ONNX runtime, no PyTorch — runs fully offline)
 fastembed>=0.8.0

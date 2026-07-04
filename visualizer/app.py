@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from core_store import get_store
 from db import get_connection, init_db
 
 app = FastAPI(title="Synapse Visualizer")
@@ -102,10 +103,7 @@ def _build_edges(conn) -> list[dict]:
     first_note = conn.execute("SELECT id FROM atomic_notes LIMIT 1").fetchone()
     if not first_note:
         return []
-    first_vec = conn.execute(
-        "SELECT embedding FROM atomic_notes_vec WHERE rowid = ?", (first_note[0],)
-    ).fetchone()
-    if not first_vec:
+    if get_store().get_note_vector(first_note[0]) is None:
         return []
 
     note_ids = [r[0] for r in conn.execute("SELECT id FROM atomic_notes ORDER BY id").fetchall()]
@@ -119,19 +117,11 @@ def _build_edges(conn) -> list[dict]:
     K = 4  # k-1 real neighbours + self
 
     for nid in note_ids:
-        vec_row = conn.execute(
-            "SELECT embedding FROM atomic_notes_vec WHERE rowid = ?", (nid,)
-        ).fetchone()
-        if not vec_row:
+        vec = get_store().get_note_vector(nid)
+        if vec is None:
             continue
 
-        cur = conn.execute(
-            "SELECT rowid, distance FROM atomic_notes_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-            (vec_row[0], K),
-        )
-        cols = [d[0] for d in cur.description]
-        for nb in [dict(zip(cols, r)) for r in cur.fetchall()]:
-            nb_id, dist = nb["rowid"], nb["distance"]
+        for nb_id, dist in get_store().search_notes(vec, K):
             if nb_id == nid or dist > DISTANCE_THRESHOLD:
                 continue
             pair = (min(nid, nb_id), max(nid, nb_id))
@@ -183,8 +173,7 @@ async def get_stats():
         # Count vectorized notes via point lookups (vec0 doesn't support COUNT(*))
         all_ids = [r[0] for r in conn.execute("SELECT id FROM atomic_notes").fetchall()]
         notes_vectorized = sum(
-            1 for nid in all_ids
-            if conn.execute("SELECT embedding FROM atomic_notes_vec WHERE rowid = ?", (nid,)).fetchone()
+            1 for nid in all_ids if get_store().get_note_vector(nid) is not None
         )
         inbox_pending = conn.execute(
             "SELECT COUNT(*) FROM inbox WHERE processed_at IS NULL"
