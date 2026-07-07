@@ -180,6 +180,19 @@ def pull_from_peer(base_url: str, timeout: int = 30) -> dict:
             **agg}
 
 
+def apply_pushed(changes_json: str) -> dict:
+    """SYN-113: merge one changeset PUSHED by a peer (a phone is not
+    reachable over HTTP, so unlike the Mac↔Mac pull mesh it must send its
+    pages). Same post-merge machinery as a pull: re-embed + twin dedup. The
+    payload goes to the core verbatim — the protocol check lives there."""
+    store = get_store()
+    report = json.loads(store.sync_apply(changes_json))
+    reembedded = reembed_notes(sorted(report.get("notes_changed", [])))
+    deduped = dedup_after_pull()
+    return {"reembedded": reembedded, "deduped": deduped,
+            **{k: v for k, v in report.items() if k != "notes_changed"}}
+
+
 def reembed_notes(note_ids) -> int:
     """The vec0 index is derived and never on the wire: recompute locally for
     every note the merge created or changed (same text shape as routing:

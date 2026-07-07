@@ -233,3 +233,43 @@ def test_dedup_collapses_twin_derived_rows(client):
 
     # Idempotent.
     assert dedup_after_pull() == {}
+
+
+# ── Push (SYN-113: the phone sends its pages, it can't be pulled from) ───────
+
+def test_sync_push_applies_a_peer_changeset(client, peer):
+    store, gate = peer
+    gate.execute(
+        "INSERT INTO inbox (id, content, source) VALUES ('push-1', 'depuis le tel', 'ios')", [])
+    gate.execute(
+        "INSERT INTO atomic_notes (id, content, kind) VALUES ('push-n1', 'note du tel', 'note')", [])
+    page = store.sync_changes_since(0, 10000)
+
+    r = client.post("/sync/push", content=page,
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 200
+    report = r.json()
+    assert report["rows_created"] >= 2
+    assert "reembedded" in report and "deduped" in report
+
+    conn = _conn()
+    try:
+        assert conn.execute(
+            "SELECT content FROM inbox WHERE id='push-1'").fetchone()[0] == "depuis le tel"
+        assert conn.execute(
+            "SELECT count(*) FROM atomic_notes WHERE id='push-n1'").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+    # Re-pushing the same page is an echo — nothing changes.
+    again = client.post("/sync/push", content=page,
+                        headers={"Content-Type": "application/json"}).json()
+    assert again["rows_created"] == 0
+    assert again["rows_updated"] == 0
+    assert again["rows_deleted"] == 0
+
+
+def test_sync_push_rejects_garbage(client):
+    r = client.post("/sync/push", content="pas du json",
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 400

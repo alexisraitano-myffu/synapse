@@ -27,7 +27,7 @@ load_dotenv()
 
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -508,6 +508,22 @@ def sync_pull(body: SyncPullIn | None = None):
     if not reports:
         return {"reports": [], "note": "no peer known (mDNS quiet, SYNAPSE_SYNC_PEERS unset)"}
     return {"reports": reports}
+
+
+@app.post("/sync/push", dependencies=[Depends(require_auth)])
+async def sync_push(request: Request):
+    """SYN-113 — accept one protocol-v1 changeset page pushed by a peer that
+    can't be pulled from (the phone: no HTTP server on iOS/Android). Body =
+    the changeset verbatim; merge report back. Errors from the core (bad
+    protocol, malformed JSON) surface as 400."""
+    from api import sync_peers
+    payload = (await request.body()).decode("utf-8")
+    try:
+        return sync_peers.apply_pushed(payload)
+    except (ValueError, RuntimeError) as exc:
+        # ValueError = json.loads on the report; RuntimeError = the core
+        # rejecting the changeset (malformed JSON, wrong protocol).
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/sync/owner", dependencies=[Depends(require_auth)])
