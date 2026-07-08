@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
-Synapse Dream Cycle — unified pipeline.
+Synapse Dream Cycle — the HOST ORCHESTRATOR.
 
 Per inbox entry, Claude classifies the input and routes it:
   - fact      → entity graph (entities / facts / relations), confidence-scored
   - episodic  → atomic_notes (episodic memory, vectorized for search)
   - ephemeral → intentions (short TTL)
-  - resource  → (currently routed like fact; fetch+summary is a future step)
+  - any URL   → fetched + summarised into `resources` (SYN-21)
 
-6 steps for facts: classify → resolve → score → route → behavioral-validate → vectorize.
-
-Entity creation is decoupled from fact confidence: an entity NODE is created as
-soon as it is mentioned (with an anti-pollution garde-fou — see MIN_ENTITY_PERSISTENCE),
-while its FACTS remain confidence-gated (pending until corroborated/validated).
+T5 (SYN-114): the brain lives in the Rust core. This module is a thin shell —
+what legitimately remains host-side is the orchestration: the run loop and
+per-entry error policy, the Batch API submission (anthropic SDK), the
+working-memory day context (SYN-93), and the key/fuel-proxy resolution
+(`_llm_args`). Classification, routing, resummary, project synthesis,
+vectorization, resources and decay are all core calls behind shims here or in
+sibling modules (decay.py, digest.py, resources.py, facts_store.py).
 """
 
 import argparse
@@ -20,7 +22,6 @@ import json
 import os
 import sys
 import time
-import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -32,10 +33,8 @@ load_dotenv()
 import anthropic
 
 from config import CLAUDE_MODEL
-from db import get_connection, cursor_to_dicts, first_row, init_db
-from embeddings import embed_text
-from core_store import get_brain, get_store
-from entity_search import entity_embedding_text
+from db import get_connection, cursor_to_dicts, init_db
+from core_store import get_brain
 from dream_cycle.decay import apply_decay, apply_entity_decay
 from dream_cycle.resources import process_capture_resources
 
@@ -339,7 +338,8 @@ def _process_entry(entry, client, conn, now, dry_run, verbose, day_context=None,
         classified = step1_classify(entry, client, verbose, conn=conn, day_context=day_context)
 
     # SYN-21: resource fetch is URL-driven and independent of routing — run it
-    # for ANY capture, even a pure intention. Network + LLM outside the core.
+    # for ANY capture, even a pure intention. T5: fetch + summary + store live
+    # in the core (resources.rs), on ITS OWN connection — no transaction here.
     if not dry_run:
         process_capture_resources(entry["content"], conn, client,
                                   capture_id=entry["id"], verbose=verbose)
