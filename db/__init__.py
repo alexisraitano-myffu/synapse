@@ -85,6 +85,20 @@ class Connection:
     def last_insert_rowid(self) -> int:
         return self._conn.last_insert_rowid()
 
+    def insert_fact(self, *, entity_id, predicate, value, confidence,
+                    source_inbox_id=None, persistence_value=3,
+                    provenance_capture_id=None, category=None) -> str:
+        """Fact write via the core (dedup-reinforce + SYN-37 supersede,
+        `routing::insert_fact`) executed on THIS connection: an open
+        `with conn:` transaction wraps it. T5: the Python implementation
+        (facts_store) is gone."""
+        import json
+
+        return self._conn.insert_fact(
+            entity_id, predicate, json.dumps(value), confidence,
+            json.dumps(source_inbox_id), persistence_value,
+            provenance_capture_id, json.dumps(category))
+
     def close(self):
         if self._conn is not None:
             self._conn.close()

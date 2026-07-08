@@ -47,7 +47,7 @@ _MAX_TRENDS = 8
 _MAX_TASKS = 20
 
 # SYN-97 — birthday facts surfaced under « à venir » (recurring yearly, month-day match).
-# Subset of facts_store.SINGLE_VALUED_PREDICATES that denote a person's birth date.
+# Subset of the core's SINGLE_VALUED_PREDICATES (routing.rs) that denote a birth date.
 _BIRTHDAY_PREDICATES = ("has_birthday", "birthday", "born_on", "date_of_birth")
 
 
