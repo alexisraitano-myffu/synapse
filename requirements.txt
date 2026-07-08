@@ -30,6 +30,11 @@ uvicorn[standard]>=0.34.0
 # LAN auto-discovery (mDNS) — phones find the brain Mac without typing an IP
 zeroconf>=0.131.0
 
+# Mac<->Mac sync transport (SYN-112): the pull loop in api/sync_peers.py.
+# Was missing from a fresh install (prod venv had it transitively) — a clean
+# `pip install -r requirements.txt` could not start the API.
+requests>=2.31.0
+
 # Graph clustering for the living map (SYN-66/68). Pure-Python (Louvain via
 # networkx.community) — packages cleanly into the PyInstaller .dmg, unlike the
 # C-extension stack (igraph/leidenalg). Swap to Leiden later if quality needs it.
