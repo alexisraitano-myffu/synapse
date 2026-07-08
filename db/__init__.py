@@ -114,6 +114,11 @@ class Connection:
     def reactivate_notes_for_entities(self, entity_names, now=None) -> int:
         return self._conn.reactivate_notes_for_entities(list(entity_names), now)
 
+    def gather_week(self, now=None, days=7) -> str:
+        """SYN-23 — the digest's structured week as a JSON string (pure SQL in
+        the core, `digest.rs::gather_week`, on THIS connection)."""
+        return self._conn.gather_week(now, days)
+
     def close(self):
         if self._conn is not None:
             self._conn.close()
