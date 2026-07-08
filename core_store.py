@@ -24,19 +24,57 @@ _embedder: Embedder | None = None
 _embedder_loaded = False
 
 
+_MODEL_REPO = "qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q"
+_MODEL_FILES = ("model_optimized.onnx", "tokenizer.json", "config.json",
+                "special_tokens_map.json", "tokenizer_config.json")
+
+
 def model_dir() -> Path | None:
     """Dossier des fichiers modèle d'embedding (donnée, jamais dans un repo) :
-    SYNAPSE_MODEL_DIR, sinon l'emplacement standard ~/.synapse/models/…"""
+    SYNAPSE_MODEL_DIR, sinon l'emplacement standard ~/.synapse/models/… —
+    téléchargé automatiquement au premier besoin s'il manque (le comportement
+    historique de fastembed ; sans ça une machine vierge n'embedde jamais,
+    silencieusement)."""
     candidates = []
     env = os.getenv("SYNAPSE_MODEL_DIR")
     if env:
         candidates.append(Path(env))
-    candidates.append(Path.home() / ".synapse" / "models"
-                      / "paraphrase-multilingual-MiniLM-L12-v2-onnx-Q")
+    default = (Path.home() / ".synapse" / "models"
+               / "paraphrase-multilingual-MiniLM-L12-v2-onnx-Q")
+    candidates.append(default)
     for c in candidates:
         if (c / "tokenizer.json").exists():
             return c
-    return None
+    return _download_model(default)
+
+
+def _download_model(dest: Path) -> Path | None:
+    """Récupère les fichiers modèle depuis Hugging Face (~130 Mo, une fois).
+    Écrit dans un dossier temporaire puis renomme : jamais de dossier partiel
+    (tokenizer.json présent = complet, c'est le marqueur de model_dir)."""
+    import shutil
+    import urllib.request
+
+    tmp = dest.with_name(dest.name + ".download")
+    try:
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        print(f"[model] downloading embedding model to {dest} (~130 MB, one-time)…",
+              flush=True)
+        for f in _MODEL_FILES:
+            url = f"https://huggingface.co/{_MODEL_REPO}/resolve/main/{f}"
+            with urllib.request.urlopen(url, timeout=120) as r, \
+                    open(tmp / f, "wb") as out:
+                shutil.copyfileobj(r, out)
+        shutil.rmtree(dest, ignore_errors=True)
+        tmp.rename(dest)
+        print("[model] embedding model ready", flush=True)
+        return dest
+    except Exception as exc:  # offline / HF down: degrade like a missing dir
+        print(f"[model] download failed ({exc}); embeddings disabled for this run",
+              flush=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None
 
 
 def get_embedder() -> Embedder | None:

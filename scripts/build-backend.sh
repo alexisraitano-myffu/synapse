@@ -26,25 +26,29 @@ fi
 echo "[clean] removing previous build/dist..."
 rm -rf dist build synapse-backend.spec
 
+# Post-migration coeur Rust (SYN-110/111/112) : stockage, cerveau et sync
+# vivent dans le module compilé synapse_core (wheel maturin du repo
+# synapse-core, pas sur PyPI). fastembed/apsw/sqlite_vec/dateparser ont quitté
+# requirements.txt. Les fichiers modèle ne sont PAS bundlés : le backend les
+# télécharge au premier besoin (core_store._download_model, ~130 Mo one-time).
+if ! python -c "import synapse_core" 2>/dev/null; then
+    echo "[error] synapse_core absent de la venv. Builder la wheel :" >&2
+    echo "        cd ../synapse-core && maturin build --release -m crates/synapse-core-py/Cargo.toml" >&2
+    echo "        pip install ../synapse-core/target/wheels/synapse_core-*.whl" >&2
+    exit 1
+fi
+
 echo "[build] PyInstaller onedir..."
 pyinstaller \
     --noconfirm \
     --name synapse-backend \
     --onedir \
     --console \
-    --collect-all fastembed \
-    --collect-all apsw \
-    --collect-all sqlite_vec \
-    --collect-all huggingface_hub \
-    --collect-all tokenizers \
-    --collect-all onnxruntime \
+    --collect-all synapse_core \
     --collect-all zeroconf \
     --collect-all ifaddr \
     --collect-all networkx \
-    --collect-all dateparser \
-    --copy-metadata fastembed \
     --copy-metadata anthropic \
-    --hidden-import sqlite_vec \
     --hidden-import uvicorn.logging \
     --hidden-import uvicorn.protocols \
     --hidden-import uvicorn.protocols.http \
