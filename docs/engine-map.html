@@ -137,7 +137,7 @@ aside pre {
 <body>
 <header>
   <h1>Synapse · Engine Map</h1>
-  <span class="sub">Cliquer un nœud → détail dans la sidebar. Snapshot 2026-07-02 (SYN-93 consolidation batchée · « À valider » tâches/relations · dedup fact⇄relation).</span>
+  <span class="sub">Cliquer un nœud → détail dans la sidebar. Snapshot 2026-07-09 (SYN-96 : le moteur décrit ici vit dans le cœur Rust <code>synapse-core</code> — routing.rs, decay.rs, summaries.rs, digest.rs, resources.rs ; comportement inchangé, golden-testé. Les fichiers Python cités en référence sont les shims/orchestrateur ; les prompts sont de la donnée dans <code>~/.synapse/prompts/</code>).</span>
 </header>
 <nav class="tabs">
   <button data-tab="pipeline" class="active">Pipeline Dream Cycle</button>
@@ -507,7 +507,7 @@ const DETAILS = {
           <li><b>Entités + faits</b> : graphe de connaissance <span class="var no-val" data-var="entities[] + facts[] par entité">·</span></li>
           <li><b>Relations entre entités</b> <span class="var no-val" data-var="relations[]">·</span></li>
           <li><b>Intention périssable</b> : sortie courte <span class="var no-val" data-var="is_ephemeral=true">·</span></li>
-          <li><b>Ressource web</b> (SYN-21) : toute URL est fetchée + résumée (Haiku) + stockée dans <code>resources</code>, cherchable. URL-driven, indépendant du routing. <span class="var no-val" data-var="dream_cycle/resources.py">·</span></li>
+          <li><b>Ressource web</b> (SYN-21) : toute URL est fetchée + résumée (Haiku) + stockée dans <code>resources</code>, cherchable. URL-driven, indépendant du routing. <span class="var no-val" data-var="core resources.rs (shim dream_cycle/resources.py)">·</span></li>
         </ul>` },
       { h: "Importance d'un fait (1-5)", body: `
         <table class="fn-table">
@@ -989,7 +989,7 @@ archived_at, obsoleted_at, obsoleted_by (SYN-37/59)</pre>` },
           <li>Direct via Step 4 quand <span class="var" data-var="seuil facts" data-val="conf > 0.85">confiance &gt; 0.85</span></li>
           <li>Indirect via promotion depuis <code>pending_facts</code> au moment où l'utilisateur valide (confidence forcée à 0.95)</li>
         </ul>
-        <p>Tous les écrits passent par <code>facts_store.insert_fact</code> (4 chemins unifiés).</p>` },
+        <p>Tous les écrits passent par <code>insert_fact</code> du core (routing.rs, shim <code>facts_store</code>) — 4 chemins unifiés.</p>` },
       { h: "Dedup à la re-mention (2026-06-30)", body: `<code>insert_fact</code> ne duplique pas un fait
         <b>actif identique</b> (même entity + predicate + value, insensible casse/espaces) : il <b>renforce</b>
         l'existant (<code>confidence ← max</code>, <code>last_confirmed</code> bumpé) et renvoie son id.
@@ -1106,7 +1106,7 @@ review_status (2026-06-29), provenance_capture_id, created_at, updated_at</pre>`
           <li><span class="var no-val" data-var="kind='note'">réflexion</span> : pensée libre (défaut).</li>
           <li><span class="var no-val" data-var="kind='task'">tâche</span> : chose à <b>faire</b>, retrouvable ; peut porter une <span class="var no-val" data-var="event_date sur kind=task (SYN-23)">échéance</span> sans devenir un événement.</li>
           <li><span class="var no-val" data-var="kind='event'">événement</span> : occurrence qui <b>se produit</b> à une date (<span class="var no-val" data-var="event_date absolue + event_recurring">date absolue, récurrence annuelle</span>).</li>
-          <li><span class="var no-val" data-var="kind='digest' (SYN-23)">digest</span> : synthèse hebdo générée par un job à part (<span class="var no-val" data-var="dream_cycle/digest.py · LaunchAgent lundi 08h + auto-heal _ensure_weekly_digest">cron hebdo</span> : rétro semaine + « à venir », rendu <span class="var no-val" data-var="Haiku · règle intemporelle (dates absolues)">Haiku intemporel</span>, idempotent par semaine ISO ; <span class="var no-val" data-var="POST /digest/run · GET /digest/latest">endpoints</span>). Exclu de la carte (sinon hairball).</li>
+          <li><span class="var no-val" data-var="kind='digest' (SYN-23)">digest</span> : synthèse hebdo générée par un job à part (<span class="var no-val" data-var="core digest.rs (shim dream_cycle/digest.py) · LaunchAgent lundi 08h + auto-heal _ensure_weekly_digest">cron hebdo</span> : rétro semaine + « à venir », rendu <span class="var no-val" data-var="Haiku · règle intemporelle (dates absolues)">Haiku intemporel</span>, idempotent par semaine ISO ; <span class="var no-val" data-var="POST /digest/run · GET /digest/latest">endpoints</span>). Exclu de la carte (sinon hairball).</li>
         </ul>
         <span class="var no-val" data-var="archived_at (POST /atomic-note/{id}/archive|unarchive)">« rendre obsolète »</span> masque sans détruire (réversible).
         <span class="var no-val" data-var="POST /atomic-note/{id}/reinforce (SYN-23)">👍 « garder »</span> réactive une note en cours d'oubli.` },

@@ -124,13 +124,13 @@ Operates per inbox entry, with French prompts. Classifies each entry, then route
 - **fact** → the 6-step graph pipeline below.
 - **episodic** → `write_episodic_note`: stores raw content + summary + `entities_mentioned` in `atomic_notes` with `memory_strength=1.0`, and vectorizes it into `atomic_notes_vec`.
 - **ephemeral** → `intentions` (48h TTL). Non-exclusive: durable entities in the same capture are still routed (SYN-58).
-- **resource** → any URL in the capture is fetched (`httpx`) + extracted (stdlib `html.parser`, no trafilatura dep) + summarised (Haiku) + stored in `resources`, searchable via its embedded summary (`dream_cycle/resources.py`, SYN-21).
+- **resource** → any URL in the capture is fetched + extracted (dependency-free tag stripper) + summarised (Haiku, prompt = data `resource-summary.md`) + stored in `resources`, searchable via its embedded summary. T5: the whole pipeline lives in the core (`resources.rs`, ureq); `dream_cycle/resources.py` is the shim (SYN-21).
 
 The 6 steps for facts:
 1. **Classify**: Haiku tags `input_type` and extracts entities, facts (snake_case predicates + `persistence_value` 1 to 5), relations, summary. **Entity type vocab is dynamic** (SYN-58): the prompt reads `active_entity_types` at runtime (uncached block); an entity that fits no active type carries `type_proposal{value,reason}` instead of being mis-typed. Garde-fou: `type=project` only with a matching `project_entries` item.
 2. **Resolve**: matches entities to existing rows (canonical name or alias); resolves relative dates to absolute via `dateparser` (date-like predicates only).
 3. **Score** (`compute_confidence`): evidence base (`explicit` 0.92 · `hedged` 0.65 · `implicit` 0.40) + existing/mention/persistence bonuses → [0,1]; `hedged` clamped to 0.84.
-4. **Route**: **entity nodes are created on mention** (decoupled from fact confidence) if they pass `MIN_ENTITY_PERSISTENCE` (≥2) OR appear in a relation OR already exist. A vocab-gap entity is created `status='pending'` + an `entity_type_proposals` row. **Facts** are confidence-gated: > 0.85 → `facts`; 0.5 to 0.85 → `pending_facts`; < 0.5 → `review_queue`. Newly-created entities are scanned for duplicates → `entity_merge_proposals` (substring SYN-39, then embedding fallback SYN-61). All fact writes go through **`facts_store.insert_fact`**, which applies SYN-37 last-writes-wins: a single-valued predicate (`works_at`, `lives_in`, …) obsoletes the prior active fact (`obsoleted_at`/`obsoleted_by`) when the new one is ≥ as confident.
+4. **Route**: **entity nodes are created on mention** (decoupled from fact confidence) if they pass `MIN_ENTITY_PERSISTENCE` (≥2) OR appear in a relation OR already exist. A vocab-gap entity is created `status='pending'` + an `entity_type_proposals` row. **Facts** are confidence-gated: > 0.85 → `facts`; 0.5 to 0.85 → `pending_facts`; < 0.5 → `review_queue`. Newly-created entities are scanned for duplicates → `entity_merge_proposals` (substring SYN-39, then embedding fallback SYN-61). All fact writes go through **`insert_fact`** (core `routing.rs`; host callers use `conn.insert_fact` via the `facts_store` shim), which applies SYN-37 last-writes-wins: a single-valued predicate (`works_at`, `lives_in`, …) obsoletes the prior active fact (`obsoleted_at`/`obsoleted_by`) when the new one is ≥ as confident.
 5. **Behavioral validation**: a pending fact corroborated by a new mention in the same run is promoted into `facts`.
 6. **Vectorize**: embeds touched entities into `entities.embedding` (BLOB). Then **decay** (SYN-19/68): `apply_decay` + `apply_entity_decay` recompute `memory_strength` for all `atomic_notes` and `entities`.
 
@@ -138,13 +138,13 @@ Per-entry resilience: each entry is processed in isolation. An `anthropic.APIErr
 
 **Working memory + batched consolidation (SYN-93).** Two timescales, like sleep consolidation: capture buffers during the "day", consolidation runs in a batched "sleep" pass. (1) **Working memory**: `_build_day_context` hands the classifier a read-only transcript of the batch + recently-consolidated captures (24h lookback) as a *cached* context block, so coreference ("il / elle / ce projet / hier") resolves across captures instead of each entry being classified in a vacuum. The block **commits nothing**: only the current capture (the user message) produces outputs. (2) **Batched trigger**: the scheduler (`api/app.py::_should_consolidate`) no longer runs ~every 2 min; captures wait for a scheduled local hour (`SYNAPSE_CONSOLIDATION_HOURS`, default `0,12` = midnight + noon, twice-daily; config-driven) **or** a size safety-valve (`SYNAPSE_CONSOLIDATION_MAX_QUEUED`, default 30). **Catch-up (laptop testers):** the scheduled pass is no longer a fire-on-the-exact-hour check: it runs if the most recent scheduled time has passed and we haven't consolidated since (persisted via a `last_consolidation` marker file in `SYNAPSE_HOME`), so a slot missed because the Mac was asleep/off is recovered on the next scheduler tick **including the first one at startup** (the loop acts before it sleeps). Mirrors the weekly-digest self-heal. Stale-summary-only runs (SYN-89, empty inbox) still fire promptly; manual `POST /dream-cycle/run` is the on-demand override. Consequence (accepted): a fresh query mid-day won't see the day's uncommitted captures until the batch runs. (3) **Batch API (-50%)**: the scheduled nightly pass classifies the whole batch via the Message Batches API (`_batch_classify`, classify-only; submit → poll → results, with `_classify_params`/`_parse_classify_text` shared with the sync path). `dream_cycle_run(use_batch=…)` / `run_dream_cycle(use_batch=…)` select it: `_should_consolidate` returns `'scheduled'` → batch, `'valve'`/`'stale'` → synchronous (immediacy). Best-effort: any submit/poll failure (or a per-entry error) falls back to synchronous classify, so the cycle never stalls on the batch path. `SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is now unused.
 
-**Memory strength / graceful forgetting (SYN-19/68, `dream_cycle/decay.py`)**: `memory_strength = exp(-Δdays/τ)` recomputed cadence-independently (τ via `SYNAPSE_DECAY_TAU_DAYS`, default 30) for **both** `atomic_notes` (`apply_decay`, anchor `last_reactivated_at`) **and** `entities` (`apply_entity_decay`, anchor `last_mentioned`, SYN-68). Reactivation: a mention in a new capture is a strong bump; a `search_memory` hit is a light one. Runs at the end of each cycle + standalone `python -m dream_cycle.decay` (nightly cron for empty-inbox days).
+**Memory strength / graceful forgetting (SYN-19/68, core `decay.rs`, shim `dream_cycle/decay.py`)**: `memory_strength = exp(-Δdays/τ)` recomputed cadence-independently (τ via `SYNAPSE_DECAY_TAU_DAYS`, default 30) for **both** `atomic_notes` (`apply_decay`, anchor `last_reactivated_at`) **and** `entities` (`apply_entity_decay`, anchor `last_mentioned`, SYN-68). Reactivation: a mention in a new capture is a strong bump; a `search_memory` hit is a light one. Runs at the end of each cycle + standalone `python -m dream_cycle.decay` (nightly cron for empty-inbox days).
 
 **Living-map graph (SYN-66, `graph_layout.py` + `graph_clusters.py`)**: `GET /graph` assembles a projection (no new source of truth), from entities ∪ atomic_notes as nodes, relations + mentions as edges, then Louvain clustering (networkx), ForceAtlas2 layout persisted/incremental in `node_positions`, and batched+cached Haiku cluster labels (`cluster_labels`, keyed by a signature of the cluster's defining entities) + pure-Python convex hulls. A community must hold ≥`MIN_CLUSTER_SIZE` (3) nodes to become a region: smaller ones aren't forced into a zone; the frontend (SYN-64) floats them as orphans. On a full recompute, `semantic_edges` (SYN-64) adds embedding-kNN soft springs (top-4 cosine ≥ 0.80, weight `0.45×score`, **layout-only: never returned**) so vector-similar entities drift together; `semantic_layout=false` disables. **New dep: `networkx>=3.2`** (pure-Python; packages into the PyInstaller .dmg, unlike igraph/leidenalg). Visual mapping: size = `memory_strength`×`degree`, colour = `community_id`, saturation = `memory_strength`, position = `node_positions`. See `docs/ARCHITECTURE.md` §5.
 
 **Lifecycle (SYN-37/59)**: `facts` and `entities` carry `archived_at` (user "filed away") and facts also `obsoleted_at`/`obsoleted_by` ("no longer true": auto by SYN-37 supersede or manual). Read views hide them by default; `?include=archived,obsolete` (entity facts) and `?include_archived=true` (graph) opt them back in.
 
-**Shared modules**: `entity_search.py` (entity/resource cosine search + composite-text helper, used by MCP search, merge fallback, `/similar`), `facts_store.py` (single source of fact writes + supersede), `dream_cycle/decay.py`, `dream_cycle/resources.py`, `graph_layout.py` (ForceAtlas2 + `node_positions`, SYN-69), `graph_clusters.py` (Haiku labels + hulls, SYN-70).
+**Shared modules**: `entity_search.py` (entity/resource cosine search + composite-text helper, used by MCP search, merge fallback, `/similar`), `graph_layout.py` (ForceAtlas2 + `node_positions`, SYN-69), `graph_clusters.py` (Haiku labels + hulls, SYN-70). T5: `facts_store.py`, `dream_cycle/decay.py`, `dream_cycle/digest.py` and `dream_cycle/resources.py` are **shims over the core** keeping the historical signatures.
 
 ### Update 2026-06-12: dogfood batch (SYN-77 → SYN-89)
 
@@ -170,6 +170,38 @@ Triggered by a tester: actionable captures were dropped or mis-routed.
 - **Classifier hardening (`_SYSTEM_CLASSIFIER`)**: the whole cycle runs on **Haiku** (`CLAUDE_MODEL`, hardcoded: same on prod + every tester; the fuel proxy only allows Haiku, so there's no "bigger model on prod"). Haiku is **fragile on the task-vs-ephemeral boundary** for terse/2nd-person/translated phrasing: it tagged "Répondre à l'e-mail de Vincent" / "déclarer les revenus à l'URSSAF" as **ephemeral pure intentions** → the ephemeral fast-exit **dropped them**. Hard rule added: any ACTION TO DO ⇒ `atomic_note != null` AND `atomic_note_kind="task"` (addressed-to-a-named-person/org or carrying a commitment/deadline = task, never ephemeral, even two words); "trivial ephemeral errand" narrowed to contentless/addressee-less. Reproduce/verify with an isolated classify-only harness (real key, the exact texts): the **batch path shares the same prompt** (`_classify_params`), so the fix covers it; the `day_context` transcript just nudged the old prompt.
 - **« À valider » queue for low-confidence tasks**: classifier now emits `classification_confidence` (0-1); a task/event below `SYNAPSE_REVIEW_CONFIDENCE_THRESHOLD` (0.7) is written with **`atomic_notes.review_status='pending'`** (default `'confirmed'`) instead of silently dropped. Pending notes are **hidden from every read surface** (`/atomic-notes` default, `/graph`, digest retrospective + « à venir » + open-tasks) and surface only via `GET /atomic-notes?review_status=pending`; `POST /atomic-note/{id}/confirm` promotes (reject = `/archive`). App: a "Tâches" segment in « À valider ».
 - **Reprocess (`POST /inbox/{id}/reprocess`)**: replay a capture through the cycle after a prompt fix: deletes only **that capture's** artifacts (atomic_notes + vec, facts, relations, project_entries), **keeps entities** (resolver dedupes; only `mention_count` may drift), re-queues. No global-wipe endpoint by design. To rebuild a tester's data: loop it over `/feed` ids then `POST /dream-cycle/run`.
+
+### Update 2026-07-09: le cerveau Python est retiré (SYN-114, T5 — fin de la migration SYN-96)
+
+Porté par tranches, chaque tranche = logique en Rust dans le core + shim Python à
+signature historique + suite verte + prod redémarrée. La version 100 % Python reste
+installable via le tag/release **`python-legacy`**.
+
+- **T5.1 `facts_store`** → `routing::insert_fact`, exposé sur la **passerelle SQL**
+  (`conn.insert_fact`) pour que la transaction ouverte du caller enveloppe l'écriture
+  (le registre `SINGLE_VALUED_PREDICATES` vit dans `routing.rs`).
+- **T5.2 decay** → `decay.rs` (parse tolérant, ancre réactivation, τ env), exposé sur la
+  passerelle (`conn.apply_decay/apply_entity_decay/reactivate_notes[_for_entities]`),
+  horloge injectable `now` pour les tests.
+- **T5.3 resummary + synthèse projet + vectorize** → `summaries.rs` :
+  `Brain.resummarize` (faits ACTIFS + relations non-pending, HTTP-stop conserve les
+  flags stale), `Brain.synthesize_project` (append + refinement SYN-44),
+  `Brain.add_project_entry`/`conn.add_project_entry`, `Brain.vectorize_entities`.
+  Les endpoints ne tiennent plus SQLite pendant l'appel Haiku (synthèse après commit).
+- **T5.4 digest hebdo** → `digest.rs` : `conn.gather_week` (SQL pur, offline),
+  `Brain.summarize_digest`, `Brain.write_digest_note` (idempotent par semaine ISO),
+  `synapse_core.next_occurrence` (29 fév → 1 mars).
+- **T5.5 resources** → `resources.rs` : extract_urls, extraction HTML sans dépendance,
+  fetch ureq, résumé LLM, store idempotent par URL + embed. httpx ne sert plus qu'au
+  TestClient ; les tests stubbent en http.server local (vrai chemin réseau).
+- **Prompts = data** (tous) : `classifier.md`, `resummary.md`, `project-summary.md`,
+  `project-refinement.md`, `digest.md`, `resource-summary.md` + `manifest.json` (v4),
+  byte-identiques aux constantes historiques, déployés dans `~/.synapse/prompts/`.
+  ⚠ Déployer les prompts avant/avec toute wheel qui les lit.
+- **Clé/fuel** : `cycle.py::_llm_args()` → `(api_key, base_url, fuel_token)` passés au
+  core ; le seam `SYNAPSE_FUEL_BASE_URL` + token `syn-fuel-…` permet de stubber le POST
+  du core dans les tests. `cycle.py` (846 → ~520 lignes) n'est plus que l'orchestrateur.
+- Parité re-vérifiée à la clôture : suite 139/139, **golden 224/224**.
 
 ### Update 2026-07-04 (soir): P2P sync Mac↔Mac (SYN-112 phases 2+3, T3)
 
@@ -231,9 +263,11 @@ Triggered by a tester: actionable captures were dropped or mis-routed.
 - **Embeddings**: `embed_text` uses the core's Embedder (one ~235 MB model per process,
   shared with the core's internal embeds — bit-identical vectors). fastembed and dateparser
   left the Python runtime; model files are data in `~/.synapse/models/…` (`SYNAPSE_MODEL_DIR`).
-- **Still host-side (T5 scope)**: orchestrator loop + scheduler + Batch submission, resources
-  fetch, resummary, digest, decay, `facts_store`/`entity_search` shims for user-action
-  endpoints (validation, PATCH, MCP search shapes).
+- **Still host-side (after T5, by design)**: orchestrator loop + per-entry error policy,
+  scheduler, Batch API submission (anthropic SDK), working-memory day context, key/fuel
+  resolution (`_llm_args`), API/MCP surfaces, graph projection (layout/clusters),
+  `entity_search` shapes. Everything else is core calls behind shims — see the
+  2026-07-09 update below.
 - **Golden parity harness**: `scripts/golden/` (classify-record, replay, compare) against
   `~/.synapse/golden/` (personal data, never committed). After any change to the core's
   routing, re-run `python -m scripts.golden.golden_compare`.
@@ -299,7 +333,7 @@ EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # Dream Cycle reasoning only
 ```
 
-**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CONSOLIDATION_HOURS` (`"0,12"` = midnight+noon, twice-daily + startup/wake catch-up, SYN-93), `SYNAPSE_CONSOLIDATION_MAX_QUEUED` (30, SYN-93), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19). Single-valued predicates list (SYN-37): `facts_store.SINGLE_VALUED_PREDICATES`. (`SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is legacy/unused since SYN-93.)
+**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CONSOLIDATION_HOURS` (`"0,12"` = midnight+noon, twice-daily + startup/wake catch-up, SYN-93), `SYNAPSE_CONSOLIDATION_MAX_QUEUED` (30, SYN-93), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19). Single-valued predicates list (SYN-37): `SINGLE_VALUED_PREDICATES` in the core's `routing.rs` (left `facts_store` at T5). (`SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is legacy/unused since SYN-93.)
 
 **Anthropic client (`anthropic_client.py`, SYN-105).** *Single* place that builds the Anthropic client: `cycle.py`, `digest.py`, `api/app.py` all call `get_client()`/`get_client_or_none()`. A normal key (`sk-ant-…`) → direct. A beta **fuel token** (`syn-fuel-…`, the closed-beta proxy that lends testers my credits) → client pointed at the fuel proxy with the token in an `x-synapse-token` header and a placeholder api_key; the real key lives only on the Cloudflare Worker (separate repo `synapse-fuel-proxy/`, **deployed** at `synapse-fuel-proxy.alexis-raitano.workers.dev`). The proxy URL is baked in (`_DEFAULT_FUEL_BASE_URL`), overridable via `SYNAPSE_FUEL_BASE_URL` (set it empty to disable the fuel path). Only consulted for `syn-fuel-` tokens, so a normal key (Mac mini) is unaffected. Disposable by design: stop issuing fuel tokens and the seam is inert.
 

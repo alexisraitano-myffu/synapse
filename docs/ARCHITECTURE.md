@@ -69,7 +69,7 @@ flowchart TD
     Entities --> Store
 ```
 
-Code : [dream_cycle/cycle.py](../dream_cycle/cycle.py). Déclenché par la consolidation batchée (§2bis), `python -m dream_cycle`, ou le tool MCP `run_dream_cycle`.
+Code : le moteur vit dans le **cœur Rust partagé `synapse-core`** (§2ter) ; [dream_cycle/cycle.py](../dream_cycle/cycle.py) est l'orchestrateur hôte (boucle, Batch API, day context, clé). Déclenché par la consolidation batchée (§2bis), `python -m dream_cycle`, ou le tool MCP `run_dream_cycle`.
 
 **Résilience par entrée** : chaque entrée est traitée isolément. Une `anthropic.APIError` (clé absente/invalide, réseau) **avorte le run entier** et laisse les entrées en file pour un retry ; une erreur de contenu sur une entrée la marque `status='failed'` (raison dans `inbox.error`, exposée sur `/feed`) et le run continue.
 
@@ -88,6 +88,28 @@ Comme la consolidation du sommeil : la capture **bufferise** pendant la « journ
 
 ---
 
+## 2ter. Le cœur Rust partagé : `synapse-core` (SYN-96)
+
+Depuis l'epic SYN-96 (T1→T5), **le cerveau est compilé une seule fois** (repo public `synapse-core`, Apache-2.0) et consommé partout : ce backend via une wheel PyO3 (`synapse_core`), les apps mobiles via UniFFI — zéro divergence de logique entre plateformes, l'iPhone/Android route les captures **on-device** avec exactement ce moteur.
+
+Répartition :
+
+| Dans le core (Rust) | Côté hôte (ce repo, Python) |
+|---|---|
+| Schéma SQLite + **seule** bibliothèque SQLite du process (sqlite-vec compilé) | API HTTP + MCP (surfaces) |
+| Embeddings (fastembed/ort, vecteurs bit-identiques) | Orchestrateur du cycle (`cycle.py` : boucle, erreurs par entrée) |
+| Classification (HTTP Anthropic) + **routing complet** (`routing.rs`) | Batch API (SDK anthropic) + working memory (day context) |
+| Decay Ebbinghaus (`decay.rs`) · resummary + synthèse projet (`summaries.rs`) | Résolution de clé + fuel proxy (`_llm_args`, SYN-105) |
+| Digest hebdo (`digest.rs`) · ressources fetch/extract/résumé (`resources.rs`) | Scheduler (consolidation, self-heal digest), launchd |
+| Sync P2P (`sync.rs`, §13) · migrations (`migrate.rs`) | Shims à signatures historiques (`facts_store`, `dream_cycle/decay|digest|resources`) |
+
+Invariants :
+- **Les prompts sont de la donnée** : versionnés dans le repo core (`prompts/*.md` + manifest), déployés dans `~/.synapse/prompts/` (`SYNAPSE_PROMPTS_DIR`), byte-identiques aux constantes Python historiques. Éditer + redémarrer, pas de recompilation. ⚠ Déployer les prompts AVANT (ou avec) une wheel qui les lit.
+- **Parité golden-testée** : `scripts/golden/` rejoue un corpus de classifications enregistrées et compare les écritures normalisées (224 lignes, 13 tables) entre l'implémentation figée (tag `python-legacy`) et le core. À relancer après tout changement de `routing.rs`.
+- **Transactions** : ce qui doit s'exécuter dans la transaction du caller est exposé sur la **passerelle SQL** (`conn.insert_fact`, decay, `gather_week`, `add_project_entry`) ; les passes LLM/vecteurs (`Brain`) écrivent sur **leur propre connexion** et s'appellent **hors** `with conn:` (sinon SQLITE_BUSY).
+
+---
+
 ## 3. Les leviers réglables (vision fonctionnelle)
 
 | Levier | Où | Valeur | Effet |
@@ -101,12 +123,12 @@ Comme la consolidation du sommeil : la capture **bufferise** pendant la « journ
 | Heures de consolidation | scheduler API | `SYNAPSE_CONSOLIDATION_HOURS` (`"0,12"`) | quand la passe batchée tourne (minuit + midi) : SYN-93 |
 | Soupape de taille | scheduler API | `SYNAPSE_CONSOLIDATION_MAX_QUEUED` (30) | force une passe si trop de captures en attente : SYN-93 |
 | TTL intentions | `handle_intentions` | 48h | durée des rappels éphémères |
-| **memory_strength decay** | `dream_cycle/decay.py` | τ = `SYNAPSE_DECAY_TAU_DAYS` (30j) | oubli gracieux Ebbinghaus sur **notes + entités** (SYN-19/68) |
+| **memory_strength decay** | core `decay.rs` (shim `dream_cycle/decay.py`) | τ = `SYNAPSE_DECAY_TAU_DAYS` (30j) | oubli gracieux Ebbinghaus sur **notes + entités** (SYN-19/68) |
 | Seuil attache-projet | `cycle.py` | `_PROJECT_ATTACH_THRESHOLD_DEFAULT` (0.30) | proposition (non-forçante) tâche/intention → projet existant (point 1 C, abaissé de 0.55) |
 | Attraction intra-cluster (carte) | `graph_layout.py` | `_INTRA_COMMUNITY_PULL` (3×) | cohésion spatiale des communautés au layout |
 | Plafond de nœuds renvoyés (carte) | `GET /graph` | `max_nodes` (1000) | anti-hairball : ne renvoie jamais plus que les N plus saillants |
 | **Seuil merge embedding** | `_propose_merge_by_embedding` | `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85) | fusion auto de doublons (SYN-61) |
-| **Prédicats single-valued** | `facts_store` | liste statique | last-writes-wins / obsolescence (SYN-37) |
+| **Prédicats single-valued** | core `routing.rs` (`SINGLE_VALUED_PREDICATES`) | liste statique | last-writes-wins / obsolescence (SYN-37) |
 | Confiance validation manuelle | `validate_fact` | 0.95 | certitude quand l'utilisateur confirme |
 | Modèle d'embedding | `config.py` | MiniLM multilingue 384-d | qualité/langue de la similarité |
 
@@ -144,7 +166,7 @@ La relation est la **forme canonique** : traversable, visible **des deux fiches*
 
 **Relations sous garde de confiance** (elles persistaient en dur avant) : le classifieur émet une `confidence` par relation ; `relations.review_status='pending'` si < 0.7, sinon `'confirmed'`. Cachées de toute lecture tant que non confirmées.
 
-**Dédup de fait sur re-mention (point 3b)** : `facts_store.insert_fact` détecte un fait actif identique (même entité+prédicat+valeur, insensible casse/espaces) et le **renforce** (`confidence ← max`, `last_confirmed` bumpé) au lieu de dupliquer la ligne.
+**Dédup de fait sur re-mention (point 3b)** : `insert_fact` (core `routing.rs`, shim `facts_store`) détecte un fait actif identique (même entité+prédicat+valeur, insensible casse/espaces) et le **renforce** (`confidence ← max`, `last_confirmed` bumpé) au lieu de dupliquer la ligne.
 
 > **La sérendipité est intacte** : elle tourne sur un canal séparé : cosinus sur `entity_embedding_text` (nom/type/aliases/attributs/résumé, **jamais faits ni relations**) + embeddings de notes. Le de-dup/gate n'affecte que le graphe explicite ; la proximité implicite (merge-by-embedding 0.85, attache-projet, « entités liées ») est inchangée.
 
@@ -275,7 +297,7 @@ Familles principales :
 
 ## 12. Client Anthropic + fuel proxy (SYN-105)
 
-`anthropic_client.py` est le **seul** point qui construit le client Anthropic (`get_client()`/`get_client_or_none()`), appelé par `cycle.py`, `digest.py`, `api/app.py`.
+`anthropic_client.py` est le **seul** point qui résout « comment appeler le modèle ». Deux consommateurs : le client SDK (`get_client()`, encore utilisé par le chemin Batch API) et les appels LLM du **core** — `cycle.py::_llm_args()` traduit la même résolution en `(api_key, base_url, fuel_token)` passés à `Brain.classify/resummarize/synthesize_project/summarize_digest` et aux ressources.
 
 - Une clé normale (`sk-ant-…`) → appel direct.
 - Un **fuel token** de bêta (`syn-fuel-…`) → client pointé sur le **proxy fuel** (Cloudflare Worker, repo séparé `synapse-fuel-proxy/`, déployé à `synapse-fuel-proxy.alexis-raitano.workers.dev`) avec le token en header `x-synapse-token` ; la vraie clé ne vit que sur le Worker. URL bakée (`_DEFAULT_FUEL_BASE_URL`), surchargée par `SYNAPSE_FUEL_BASE_URL` (vide = désactive). Consulté seulement pour les tokens `syn-fuel-`, donc une clé normale est inchangée. Jetable par design : arrêter d'émettre des fuel tokens rend le seam inerte.
@@ -301,17 +323,19 @@ sequenceDiagram
     M-->>P: état dérivé à jour (graphe / faits / notes)
 ```
 
-Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coûter maintenant) :
+Décisions verrouillées :
 1. Chaque capture porte `id` (UUID client) + `device_id` + `captured_at`.
 2. `POST /capture` **idempotent** sur l'`id` (reprise offline sans doublon).
 3. Les **validations sont des événements** append-only → survivent à une reconstruction, se répliquent.
 4. L'état dérivé est **reconstructible** depuis inbox + événements de validation.
 
+**Depuis SYN-112 (T3), le multi-Mac existe** : le core embarque un moteur de sync maison (`sync.rs`) — `sync_log` HLC par (table, pk, colonne) alimenté par des triggers SQL purs sur les 18 tables répliquées, changesets JSON v1, merge LWW par colonne, tombstones. Transport = **pull mesh** (`api/sync_peers.py` : `GET /sync/changes`, `POST /sync/pull`, pairs via `SYNAPSE_SYNC_PEERS` + mDNS `_synapse._tcp`, boucle `SYNAPSE_SYNC_INTERVAL`). Le **owner-lock** (`sync_owner`, répliqué) garde un seul Dream Cycle dans le mesh — un `POST /dream-cycle/run` non-owner reçoit 409 ; `dedup_after_pull()` rattrape un double-routage.
+
 ---
 
 ## 14. État d'implémentation & pistes restantes
 
-**Implémenté** : Dream Cycle unifié (routing **non-exclusif**) · **two-timescale** working memory + consolidation batchée + Batch API (SYN-93) · création d'entités sur mention + garde-fou · **file « À valider »** unifiée (tâches, relations, attache-projet, types, fusions) · **faits vs relations** de-dup + gating + fiche bidirectionnelle · **owner/« moi »** + **PROJET-vs-TÂCHE** · embeddings locaux · `search_memory` notes + entités + ressources · carte vivante (Louvain + ForceAtlas2 + zones) · API HTTP **57 endpoints** + modèle de sync · **provenance inverse** (SYN-92) · **reprocess** d'une capture · **digest hebdo** (SYN-23, lundi 08h + self-heal) · **entités liées offline** (SYN-91) · client Anthropic + fuel proxy (SYN-105) · résilience par entrée · tests hors-ligne (verts).
+**Implémenté** : **cœur Rust partagé** `synapse-core` (SYN-96 T1→T5 : schéma + embeddings + classif + routing + decay + resummary/synthèse + digest + ressources, prompts en data, parité golden 224/224 ; desktop via wheel PyO3, mobile on-device via UniFFI) · **sync P2P multi-Mac** (SYN-112 : HLC + LWW par colonne, pull mesh, owner-lock) · Dream Cycle unifié (routing **non-exclusif**) · **two-timescale** working memory + consolidation batchée + Batch API (SYN-93) · création d'entités sur mention + garde-fou · **file « À valider »** unifiée (tâches, relations, attache-projet, types, fusions) · **faits vs relations** de-dup + gating + fiche bidirectionnelle · **owner/« moi »** + **PROJET-vs-TÂCHE** · embeddings locaux · `search_memory` notes + entités + ressources · carte vivante (Louvain + ForceAtlas2 + zones) · API HTTP **57 endpoints** + modèle de sync · **provenance inverse** (SYN-92) · **reprocess** d'une capture · **digest hebdo** (SYN-23, lundi 08h + self-heal) · **entités liées offline** (SYN-91) · client Anthropic + fuel proxy (SYN-105) · résilience par entrée · tests hors-ligne (verts).
 
 **Pistes restantes** :
 
@@ -320,7 +344,7 @@ Décisions verrouillées (rendent le multi-Mac possible plus tard, sans le coût
 | Traitement | multi-format (image / vision) · app bilingue (prompt + UI, SYN-108 ; le STT suit déjà la langue clavier) |
 | Projets | refinement actif via MCP · exhumation · élagage dégressif de l'historique de synthèse |
 | Mémoire | TTL inbox · compression des `atomic_notes` éteintes · digest périodique de la `review_queue` |
-| Sync | découverte LAN mDNS/Bonjour (trouver le serveur sans URL manuelle) · delta-sync des embeddings quand la base grossit |
+| Sync | delta-sync des embeddings quand la base grossit (mDNS/Bonjour : fait, SYN-112) |
 | Carte | Leiden/igraph si besoin · concave/alpha hulls · détection de cluster émergent |
 
 Les clients (mobile/desktop) vivent dans un projet séparé et consomment cette API HTTP.
