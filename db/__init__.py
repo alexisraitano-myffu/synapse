@@ -99,6 +99,21 @@ class Connection:
             json.dumps(source_inbox_id), persistence_value,
             provenance_capture_id, json.dumps(category))
 
+    # SYN-19/68 decay (core decay.rs), executed on THIS connection — the
+    # caller's open transaction wraps the writes. `now` = 'YYYY-MM-DD HH:MM:SS'
+    # or None (system clock).
+    def apply_decay(self, tau_days=None, now=None) -> int:
+        return self._conn.apply_decay(tau_days, now)
+
+    def apply_entity_decay(self, tau_days=None, now=None) -> int:
+        return self._conn.apply_entity_decay(tau_days, now)
+
+    def reactivate_notes(self, note_ids, factor=1.0, now=None) -> int:
+        return self._conn.reactivate_notes([str(n) for n in note_ids], factor, now)
+
+    def reactivate_notes_for_entities(self, entity_names, now=None) -> int:
+        return self._conn.reactivate_notes_for_entities(list(entity_names), now)
+
     def close(self):
         if self._conn is not None:
             self._conn.close()
