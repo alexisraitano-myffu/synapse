@@ -382,23 +382,38 @@ def test_fact_writes_flag_summary_stale(isolated_db):
 
 def test_resummarize_uses_active_facts_and_clears_flag(isolated_db, monkeypatch):
     """step_resummarize derives from ACTIVE facts only (obsoleted excluded) and
-    clears the stale flag. Claude is stubbed offline."""
+    clears the stale flag. T5 : le POST part du core — stub HTTP local branché
+    via le seam fuel (token syn-fuel- + SYNAPSE_FUEL_BASE_URL)."""
+    import http.server
+    import threading
+
     from db import get_connection
     from dream_cycle import cycle as cy
 
-    class _Msg:
-        class _Block:
-            text = "Personne dont l'anniversaire est le 16 juin."
-        content = [_Block()]
+    seen = {}
 
-    class _Client:
-        class messages:  # noqa: N801 — mimic anthropic client shape
-            @staticmethod
-            def create(**kwargs):
-                # the prompt must carry the active fact, not the obsoleted one
-                user = kwargs["messages"][0]["content"]
-                assert "2026-06-16" in user and "2026-06-19" not in user
-                return _Msg()
+    class _Stub(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen["user"] = body["messages"][0]["content"]
+            resp = json.dumps({
+                "content": [{"type": "text",
+                             "text": "Personne dont l'anniversaire est le 16 juin."}],
+                "stop_reason": "end_turn",
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "syn-fuel-test-stub")
+    monkeypatch.setenv("SYNAPSE_FUEL_BASE_URL", f"http://127.0.0.1:{server.server_port}")
 
     conn = get_connection()
     try:
@@ -409,11 +424,14 @@ def test_resummarize_uses_active_facts_and_clears_flag(isolated_db, monkeypatch)
                          "VALUES ('f40','e41','has_birthday','2026-06-16',1.0)")
             conn.execute("INSERT INTO facts (id, entity_id, predicate, value, confidence, obsoleted_at) "
                          "VALUES ('f41','e41','has_birthday','2026-06-19',0.6,'2026-06-12T00:00:00')")
-        with conn:
-            regenerated = cy.step_resummarize([], conn, _Client())
+        # T5 : le core écrit sur sa propre connexion — pas de `with conn:` ici.
+        regenerated = cy.step_resummarize([], conn, None)
         row = conn.execute("SELECT summary, summary_stale FROM entities WHERE id='e41'").fetchone()
     finally:
         conn.close()
+        server.shutdown()
+    # le prompt porte le fait actif, pas l'obsolète
+    assert "2026-06-16" in seen["user"] and "2026-06-19" not in seen["user"]
     assert regenerated == ["e41"]
     assert row[0] == "Personne dont l'anniversaire est le 16 juin."
     assert row[1] == 0

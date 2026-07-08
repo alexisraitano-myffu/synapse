@@ -1217,7 +1217,7 @@ def atomic_note_promote_to_project(note_id: str, body: NotePromoteIn):
     reuse) the project entity, seed it with a project_entry built from the note,
     then archive the note (reversible). Best handled upstream by the classifier
     (SYN — projet vs tâche), but this rescues a task after the fact."""
-    from dream_cycle.cycle import _persist_project_entry
+    from dream_cycle.cycle import synthesize_project
     conn = get_connection()
     try:
         note = first_row(conn.execute(
@@ -1233,19 +1233,17 @@ def atomic_note_promote_to_project(note_id: str, body: NotePromoteIn):
         canonical = (body.canonical_name or note.get("title") or note["content"]).strip()[:80]
         if not canonical:
             raise HTTPException(status_code=400, detail="nom de projet vide")
-        client = _anthropic_client_factory()
         with conn:
-            project_id, entry_id = _persist_project_entry(
-                project_canonical=canonical,
-                content=note["content"],
-                capture_id=capture_id,
-                conn=conn,
-                is_new_project=True,
-                client=client,
-            )
+            entry = json.loads(conn.add_project_entry(
+                canonical, note["content"], capture_id, True))
             conn.execute(
                 "UPDATE atomic_notes SET archived_at=? WHERE id=?",
                 (datetime.now(timezone.utc).isoformat(), note_id))
+        # T5 : la synthèse LLM court APRÈS le commit (l'ancien code tenait la
+        # transaction SQLite pendant l'appel Haiku) ; sans clé, no-op.
+        synthesize_project(entry["project_id"], entry["project_name"],
+                           entry["entry_content"], entry["entry_count"])
+        project_id, entry_id = entry["project_id"], entry["entry_id"]
         return {"status": "promoted", "note_id": note_id, "project_id": project_id,
                 "entry_id": entry_id, "project_canonical": canonical}
     finally:
@@ -1603,7 +1601,7 @@ def project_attach_proposals_list(status: str = "pending"):
 def project_attach_proposal_accept(proposal_id: str):
     """Accept: attach the capture to the project (a project_entry), then mark
     the proposal accepted. The project is fixed by the proposal — no body."""
-    from dream_cycle.cycle import _persist_project_entry
+    from dream_cycle.cycle import synthesize_project
     conn = get_connection()
     try:
         p = first_row(conn.execute(
@@ -1618,19 +1616,16 @@ def project_attach_proposal_accept(proposal_id: str):
             raise HTTPException(status_code=400, detail=f"proposal already {p['status']}")
         if not p["project_name"]:
             raise HTTPException(status_code=410, detail="projet cible introuvable")
-        client = _anthropic_client_factory()
         with conn:
-            project_id, entry_id = _persist_project_entry(
-                project_canonical=p["project_name"],
-                content=p["content"],
-                capture_id=p["capture_id"],
-                conn=conn,
-                is_new_project=False,
-                client=client,
-            )
+            entry = json.loads(conn.add_project_entry(
+                p["project_name"], p["content"], p["capture_id"], False))
+            project_id, entry_id = entry["project_id"], entry["entry_id"]
             conn.execute(
                 "UPDATE project_attach_proposals SET status='accepted', "
                 "resolved_at=CURRENT_TIMESTAMP WHERE id=?", (proposal_id,))
+        # T5 : synthèse LLM après commit (sans clé → no-op).
+        synthesize_project(entry["project_id"], entry["project_name"],
+                           entry["entry_content"], entry["entry_count"])
         return {"status": "accepted", "proposal_id": proposal_id,
                 "project_id": project_id, "entry_id": entry_id}
     finally:
