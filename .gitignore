@@ -39,3 +39,6 @@ dist/
 
 # graphify knowledge graph (generated artifact)
 graphify-out/
+
+# SYN-121 — snapshots du harnais multilingue (sorties Haiku jetables)
+scripts/lang_snapshots/

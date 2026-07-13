@@ -226,5 +226,8 @@ def test_summarize_digest_live(isolated_db):
     finally:
         conn.close()
     md = summarize_digest(week)
-    assert "## Cette semaine" in md
-    assert "## À venir" in md
+    # SYN-119 (multilingue) : les en-têtes du digest suivent désormais la langue
+    # dominante du contenu (plus de FR hardcodé) → on assert la STRUCTURE (deux
+    # sections H2 « cette semaine » / « à venir ») et non les libellés français.
+    headers = [ln for ln in md.splitlines() if ln.startswith("## ")]
+    assert len(headers) >= 2, f"attendu ≥2 en-têtes de section, obtenu : {headers}"
