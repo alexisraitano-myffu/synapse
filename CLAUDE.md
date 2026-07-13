@@ -115,9 +115,9 @@ Capture → inbox → Dream Cycle ─┬─ fact      → entities / facts / rel
 
 Routing is **non-exclusive**: one capture can produce entities + atomic_note + project_entries + an intention + a resource at once (`_process_entry`). URL-driven resource fetch runs for any capture, even a pure intention.
 
-`import dream_cycle` resolves to the **package** `dream_cycle/`; the pipeline lives in `dream_cycle/cycle.py` and is exported as `run_dream_cycle` (also `python -m dream_cycle`). There is one cycle: the earlier two-implementation split has been merged.
+`import dream_cycle` resolves to the **package** `dream_cycle/`; `dream_cycle/cycle.py` is the **host orchestrator**, exported as `run_dream_cycle` (also `python -m dream_cycle`). Since SYN-110/111 the pipeline *logic* lives once in the **Rust core** (`synapse-core`) — see "the brain lives in synapse-core" below; `cycle.py` builds the working-memory context, drives the core and persists what it returns.
 
-### The Dream Cycle (`dream_cycle/cycle.py`)
+### The Dream Cycle (`dream_cycle/cycle.py` — host orchestrator over the `synapse-core` Rust brain)
 
 Operates per inbox entry, with French prompts. Classifies each entry, then routes by `input_type`:
 
@@ -298,7 +298,7 @@ FastAPI app for the mobile/desktop clients (run `python -m api`, port 8000), **~
 
 ### Embedding strategy
 
-**Fully local, no PyTorch, no API call.** `embeddings.py` uses **fastembed** (ONNX runtime) with `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384-dim, ~50 languages incl. French: set via `EMBEDDING_MODEL` in `config.py`). The model loads lazily as a process-level singleton (~220 MB, downloaded once, then offline). `embed_text(text, client=None)` returns an L2-normalized serialized vector; the `client` arg is ignored (kept for backward compat with the old API-based signature). Run `python reembed.py` after changing `EMBEDDING_MODEL` to regenerate existing vectors.
+**Fully local, no PyTorch, no API call.** Since SYN-111 the embedder runs **inside the Rust core** (`synapse_core.Embedder`, ONNX via fastembed-rs) with `paraphrase-multilingual-MiniLM-L12-v2` (384-dim, ~50 languages incl. French: set via `EMBEDDING_MODEL` in `config.py`). The model files are **data** in `~/.synapse/models/…` (not compiled in, not auto-downloaded), loaded once per process; vectors are bit-identical to the core's own internal embeds. `embeddings.py` is now a thin **shim**: `embed_text(text, client=None)` delegates to the core and returns an L2-normalized serialized vector; the `client` arg is ignored (kept for backward compat with the old API-based signature). Run `python reembed.py` after changing `EMBEDDING_MODEL` to regenerate existing vectors.
 
 Vectors are normalized so the sqlite-vec `vec0` **L2 distance** stays in [0, 2] and is monotonic with cosine: keeping the `score = 1 - distance/2` mapping valid. With this model, related notes land ~0.9 and unrelated ~1.4 (the visualizer edge threshold is 1.1).
 

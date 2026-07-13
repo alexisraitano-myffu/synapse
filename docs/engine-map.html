@@ -490,7 +490,7 @@ const DETAILS = {
   step1: {
     title: "Lecture & classification IA",
     tags: ["LLM"],
-    ref: "dream_cycle/cycle.py:62-200",
+    ref: "core llm.rs::classify · prompts/classifier.md (orchestré par dream_cycle/cycle.py)",
     body: `
       <p>Un appel à Claude par capture qui retourne un JSON structuré : quelles entités sont
       mentionnées, quels faits, quelles relations, est-ce une réflexion, est-ce un compte-rendu
@@ -562,7 +562,7 @@ const DETAILS = {
   step2: {
     title: "Résolution d'entités",
     tags: ["compute"],
-    ref: "dream_cycle/cycle.py:248-270",
+    ref: "core routing.rs::route_capture — résolution d’entités",
     body: `
       <p>Pour chaque entité que Haiku a extraite, cherche s'il y en a déjà une qui correspond.
       Match strict : <code>LOWER(canonical_name)</code> identique OU intersection avec l'union
@@ -580,7 +580,7 @@ const DETAILS = {
   step3: {
     title: "Score de fiabilité par fait",
     tags: ["compute"],
-    ref: "dream_cycle/cycle.py:292-309",
+    ref: "core routing.rs::route_capture — score de confiance",
     body: `
       <p>Pour chaque fait, on cumule un score entre 0 et 1 qui dira dans quel bac il atterrit.
       Le calcul combine 4 ingrédients :</p>
@@ -622,7 +622,7 @@ const DETAILS = {
   step4: {
     title: "Tri par confiance : 3 niveaux",
     tags: ["compute"],
-    ref: "dream_cycle/cycle.py:382-491",
+    ref: "core routing.rs::route_capture — tri + gate review_status",
     body: `
       <p>Selon le score de fiabilité, chaque fait atterrit dans un des 3 niveaux :</p>
       <table class="fn-table">
@@ -705,7 +705,7 @@ const DETAILS = {
   entityGate: {
     title: "Filtre anti-bruit pour les entités",
     tags: ["compute"],
-    ref: "dream_cycle/cycle.py:354 + 482-498",
+    ref: "core routing.rs::route_capture — gate anti-bruit entités",
     body: `
       <p>Avant de créer une nouvelle entité dans le graphe, on vérifie qu'elle porte un signal
       minimum (évite que chaque nom passant devienne une fiche). Une entité est créée si
@@ -727,7 +727,7 @@ const DETAILS = {
   entityUpsert: {
     title: "Mise à jour du graphe d'entités",
     tags: ["store"],
-    ref: "dream_cycle/cycle.py:320-379",
+    ref: "core routing.rs + db/__init__.py — upsert entité",
     body: `
       <p>INSERT ou UPDATE. UPDATE merge les aliases + attributes (nouvelles clés gagnent), garde
       la summary existante si la nouvelle est vide, bump mention_count, prend le max sur
@@ -751,7 +751,7 @@ const DETAILS = {
   mergeCheck: {
     title: "Détection de doublon d'entité",
     tags: ["compute"],
-    ref: "dream_cycle/cycle.py:255-380 (SYN-39 + SYN-61)",
+    ref: "core routing.rs (merge proposal) · embedder.rs (similarité) — SYN-39 + SYN-61",
     body: `
       <p>Après chaque création d'entité, on scanne les autres entités du même type pour repérer
       un éventuel doublon. Deux couches, la moins chère d'abord ; la première qui matche gagne
@@ -797,7 +797,7 @@ const DETAILS = {
   atomicNote: {
     title: "Notes atomiques : pensées à mémoriser",
     tags: ["store"],
-    ref: "dream_cycle/cycle.py:706-740 (SYN-42, durci SYN-56)",
+    ref: "core routing.rs + db/__init__.py — note atomique (SYN-42, durci SYN-56)",
     body: `
       <p>Une atomic_note est une <b>pensée de l'auteur qui doit pouvoir resurgir</b> (insight,
       citation, décision). Critères positifs (au moins un requis, SYN-56) :</p>
@@ -811,7 +811,7 @@ const DETAILS = {
       <p><b>Fail-safe SVO</b> : si ça se réduit à (sujet, prédicat, objet), c'est un fact, pas une note.</p>
     `,
     sections: [
-      { h: "Persistence", body: `INSERT avec embedding via fastembed (multilingual MiniLM, local,
+      { h: "Persistence", body: `INSERT avec embedding calculé par le core (embedder.rs, MiniLM multilingue local,
         384 dim) → table vec0 <code>atomic_notes_vec</code> pour la recherche sémantique future.` },
       { h: "Schema clé", body: `<pre>atomic_notes(id, title, content, summary,
               entities_mentioned JSON, memory_strength,
@@ -821,7 +821,7 @@ const DETAILS = {
   projectEntries: {
     title: "Timelines projet : N projets par capture",
     tags: ["store"],
-    ref: "dream_cycle/cycle.py:949-1017 (SYN-42 + SYN-57)",
+    ref: "core routing.rs + db/__init__.py — project entries (SYN-42 + SYN-57)",
     body: `
       <p>Le classifier émet <code>project_entries[]</code> : une capture peut nourrir plusieurs
       projets en parallèle. Routing : dedup par <code>canonical_name</code> (lowercase) puis
@@ -837,7 +837,7 @@ const DETAILS = {
   synthesis: {
     title: "Synthèse vivante du projet",
     tags: ["LLM"],
-    ref: "dream_cycle/cycle.py:741-946 (SYN-43, SYN-44)",
+    ref: "core summaries.rs · prompts/project-summary.md (SYN-43, SYN-44)",
     body: `
       <p>Après chaque nouvelle entrée dans la timeline d'un projet, on demande à Claude de mettre
       à jour la synthèse du projet. Deux modes :</p>
@@ -881,7 +881,7 @@ const DETAILS = {
   relations: {
     title: "Arêtes du graphe : relations entre entités",
     tags: ["store"],
-    ref: "dream_cycle/cycle.py:step4_route (SYN 2026-06-30)",
+    ref: "core routing.rs::route_capture (SYN 2026-06-30)",
     body: `
       <p>Représente une assertion directionnelle entre 2 entités (ex : Marie has_pet→Gipsy).
       Insérée au Step 4 si Haiku a émis une <code>relations[]</code>. <b>Une relation est la forme
@@ -938,7 +938,7 @@ device_id, captured_at, created_at, processed_at, status</pre>` },
   entities: {
     title: "entities : nœuds du graphe",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:_upsert_entity",
+    ref: "db/__init__.py · core schema.rs + routing.rs",
     body: `
       <p>Le graphe d'entités. Chaque entité a un <b>type</b> (vocab dynamique
       <code>active_entity_types</code>, SYN-58, built-in + validés user), un nom canonique,
@@ -973,7 +973,7 @@ status (SYN-58), archived_at (SYN-59), created_at</pre>` },
   facts: {
     title: "facts : assertions sur une entité",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:step4_route",
+    ref: "db/__init__.py · core schema.rs + routing.rs",
     body: `
       <p>Une assertion explicite sur une entité, sous forme (<code>predicate</code>,
       <code>value</code>) + score de confiance. Les facts sont la matière première des fiches
@@ -1009,7 +1009,7 @@ archived_at, obsoleted_at, obsoleted_by (SYN-37/59)</pre>` },
   relations: {
     title: "relations : arêtes du graphe",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:step4_route",
+    ref: "db/__init__.py · core schema.rs + routing.rs",
     body: `
       <p>Une assertion directionnelle entre deux entités (ex : Marie has_pet→Gipsy, Karim
       works_at→Mistral). Inscrite par le cycle quand le classifier émet une
@@ -1033,7 +1033,7 @@ confidence, review_status (2026-06-30), provenance_capture_id, created_at</pre>`
   project_entries: {
     title: "project_entries : entrée timeline d'un projet",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:_persist_project_entry",
+    ref: "db/__init__.py · core schema.rs + routing.rs",
     body: `
       <p>Le pont entre une capture (inbox) et un projet (entity type=project). Une capture peut
       en spawner <b>N</b> (SYN-57) : chaque projet mentionné reçoit son extrait spécifique du
@@ -1082,7 +1082,7 @@ summary_md, entry_count, trigger, kind, created_at</pre>` },
   atomic_notes: {
     title: "atomic_notes : réflexions libres",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:_persist_atomic_note",
+    ref: "db/__init__.py · core schema.rs + routing.rs",
     body: `
       <p>Les pensées de l'auteur qui doivent pouvoir resurgir (insight, citation, décision).
       Post-SYN-56, les règles d'éligibilité sont strictes pour ne pas inclure de simples
@@ -1122,7 +1122,7 @@ review_status (2026-06-29), provenance_capture_id, created_at, updated_at</pre>`
   atomic_notes_vec: {
     title: "atomic_notes_vec : index vectoriel (vec0)",
     tags: ["store"],
-    ref: "db/__init__.py · embeddings.py",
+    ref: "db/__init__.py · core embedder.rs + storage.rs",
     body: `
       <p>Table virtuelle <code>vec0</code> (sqlite-vec) qui contient l'embedding de chaque
       atomic_note. <code>rowid</code> miroir de <code>atomic_notes.id</code> → JOIN trivial pour
@@ -1163,7 +1163,7 @@ validation_strategy, created_at</pre>` },
   entity_merge_proposals: {
     title: "entity_merge_proposals : file de dédoublonnage",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:_propose_merge_if_similar (SYN-39 + SYN-61)",
+    ref: "db/__init__.py · core schema.rs + routing.rs (SYN-39 + SYN-61)",
     body: `
       <p>Quand le cycle crée une entité qui ressemble à une existante, une proposition est inscrite
       ici. L'utilisateur tranche : qui devient canonique, l'autre est soft-merged.</p>
@@ -1182,7 +1182,7 @@ status, created_at, resolved_at, resolved_canonical_id</pre>` },
   entity_type_proposals: {
     title: "entity_type_proposals + active_entity_types : vocab dynamique",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:_record_type_proposal · api/app.py (SYN-58)",
+    ref: "db/__init__.py · core schema.rs + routing.rs · api/app.py (SYN-58)",
     body: `
       <p><code>active_entity_types</code> est le vocabulaire vivant des types d'entité (6 built-in
       seedés au boot + types validés par l'user, <code>source='builtin'|'user'</code>). Le prompt
@@ -1205,7 +1205,7 @@ active_entity_types(type PK, source, added_at)</pre>` },
   project_attach_proposals: {
     title: "project_attach_proposals : « rattacher à un projet ? »",
     tags: ["store"],
-    ref: "db/__init__.py · cycle.py:_propose_project_attach_if_similar",
+    ref: "db/__init__.py · core schema.rs + routing.rs",
     body: `
       <p>Proposition douce (« À valider ») : une tâche ou une intention dont l'embedding ressemble à
       un projet existant est proposée au rattachement, sans jamais forcer. Basée sur la capture
