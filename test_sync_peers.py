@@ -74,7 +74,13 @@ def test_owner_implicit_claim_then_guard_blocks_foreign_device(client):
         getattr(exc.value, "status_code", None) == 409
     r = client.post("/dream-cycle/run")
     assert r.status_code == 409
-    assert "other-mac" in r.json()["detail"]
+    # SYN-129: the guard's detail is structured so clients render a human
+    # message (code + owner identity + epoch).
+    detail = r.json()["detail"]
+    assert detail["code"] == "not_cycle_owner"
+    assert detail["owner_device_id"] == "other-mac"
+    assert detail["epoch"] == 2
+    assert "other-mac" in detail["message"]
 
     # Claiming it back (epoch 3) reopens the cycle.
     client.put("/sync/owner", json={})

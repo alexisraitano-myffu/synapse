@@ -344,17 +344,8 @@ def reembed_notes(note_ids) -> int:
 
 # ── Dedup of double-routed derived rows (post-merge safety net) ──────────────
 
-# (table, guard column that must be non-null, natural-identity columns)
-_DEDUP_RULES = [
-    ("atomic_notes", "provenance_capture_id",
-     ["provenance_capture_id", "content", "kind"]),
-    ("facts", "provenance_capture_id",
-     ["entity_id", "predicate", "value", "provenance_capture_id"]),
-    ("relations", "provenance_capture_id",
-     ["entity_from", "predicate", "entity_to", "provenance_capture_id"]),
-    ("project_entries", "capture_id",
-     ["project_id", "capture_id", "content", "kind"]),
-]
+# The (table, guard, natural-identity) rules live in the core (sync.rs
+# DEDUP_RULES) since SYN-133 — one copy, every host.
 
 
 def dedup_after_pull() -> dict:
@@ -362,37 +353,14 @@ def dedup_after_pull() -> dict:
     carry different uuids but the same natural identity) onto the smallest
     uuid. Deletions journal as tombstones → the collapse replicates.
     Entities are NOT deduped here: the existing merge-proposal machinery
-    (embedding similarity) already handles same-name entities gracefully."""
-    removed: dict[str, int] = {}
-    doomed_notes: list[str] = []
-    conn = get_connection()
-    try:
-        with conn:
-            for table, guard, keys in _DEDUP_RULES:
-                key_expr = ", ".join(keys)
-                doomed = [r[0] for r in conn.execute(
-                    f"SELECT id FROM {table} WHERE {guard} IS NOT NULL "
-                    f"AND id NOT IN (SELECT min(id) FROM {table} "
-                    f"               WHERE {guard} IS NOT NULL GROUP BY {key_expr})"
-                ).fetchall()]
-                if not doomed:
-                    continue
-                ph = ",".join("?" * len(doomed))
-                conn.execute(f"DELETE FROM {table} WHERE id IN ({ph})", doomed)
-                removed[table] = len(doomed)
-                if table == "atomic_notes":
-                    doomed_notes = doomed
-    finally:
-        conn.close()
-    # Vector cleanup outside the transaction (core writes must never nest
-    # inside a host transaction — T1 rule).
-    store = get_store()
-    for nid in doomed_notes:
-        try:
-            store.delete_note_vector(nid)
-        except Exception:  # noqa: BLE001
-            pass
-    return removed
+    (embedding similarity) already handles same-name entities gracefully.
+
+    SYN-133: shim over the core (`Storage.dedup_after_pull`, sync.rs) so a
+    Mac-less mobile mesh runs the exact same pass; rules live in the core's
+    DEDUP_RULES. The core also sweeps the doomed notes' vec0 rows (chunked
+    keys included)."""
+    report = json.loads(get_store().dedup_after_pull())
+    return report.get("removed", {})
 
 
 # ── Peer assembly + periodic loop ────────────────────────────────────────────
