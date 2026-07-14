@@ -244,6 +244,11 @@ def _recover_interrupted_runs() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(_app):
     _recover_interrupted_runs()
+    # SYN-127 — self-register in the replicated device registry, and let the
+    # owner found the space if it's missing (migrates existing installs).
+    from api.sync_peers import ensure_space, register_self_device
+    register_self_device()
+    ensure_space()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     # SYN-112 T3 — periodic peer pull (no-op while no peer is known;
     # SYNAPSE_SYNC_INTERVAL=0 disables the loop entirely).
@@ -367,6 +372,16 @@ class SyncPullIn(BaseModel):
 
 class SyncOwnerClaimIn(BaseModel):
     device_id: str | None = None  # claim for this device; None = claim for self
+
+
+# SYN-127 — space + device registry
+class SpacePatchIn(BaseModel):
+    name: str
+
+
+class DevicePatchIn(BaseModel):
+    name: str | None = None      # rename
+    revoked: bool | None = None  # True = revoke, False = restore
 
 
 # SYN-45 — bodies for project-entry correction endpoints
@@ -549,6 +564,115 @@ def sync_owner_claim(body: SyncOwnerClaimIn | None = None):
     device = (body.device_id if body else None) or get_store().sync_device_id()
     owner = sync_peers.claim_owner(device)
     return {"owner": owner}
+
+
+@app.get("/space", dependencies=[Depends(require_auth)])
+def space_get():
+    """The memory space (SYN-127): replicated singleton + who we are and who
+    tisses. `space` is null until the owner founds it (first cycle)."""
+    from api import sync_peers
+    from core_store import get_store
+    me = get_store().sync_device_id()
+    conn = get_connection()
+    try:
+        space = sync_peers.get_space(conn)
+        owner = sync_peers.get_owner(conn)
+    finally:
+        conn.close()
+    return {"space": space, "device_id": me,
+            "owner_device_id": owner["device_id"] if owner else None}
+
+
+@app.patch("/space", dependencies=[Depends(require_auth)])
+def space_patch(body: SpacePatchIn):
+    """Rename the space (replicates like any column edit)."""
+    from api import sync_peers
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name must not be empty")
+    conn = get_connection()
+    try:
+        if sync_peers.get_space(conn) is None:
+            raise HTTPException(status_code=404, detail="space not founded yet")
+        with conn:
+            conn.execute("UPDATE space SET name = ? WHERE id = 'space'", (name,))
+        return {"space": sync_peers.get_space(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/devices", dependencies=[Depends(require_auth)])
+def devices_list():
+    """Every device of the mesh (SYN-127), replicated registry + local pull
+    times. `is_owner` marks the device that tisses the memory."""
+    from api import sync_peers
+    from core_store import get_store
+    me = get_store().sync_device_id()
+    conn = get_connection()
+    try:
+        owner = sync_peers.get_owner(conn)
+        owner_id = owner["device_id"] if owner else None
+        rows = cursor_to_dicts(conn.execute(
+            "SELECT device_id, name, platform, last_seen, revoked_at "
+            "FROM devices ORDER BY (device_id = ?) DESC, name", (me,)))
+        pulled = {k.split(":", 1)[1]: v for k, v in conn.execute(
+            "SELECT k, v FROM sync_meta WHERE k LIKE 'pulled_at:%'").fetchall()}
+    finally:
+        conn.close()
+    for r in rows:
+        r["is_self"] = r["device_id"] == me
+        r["is_owner"] = r["device_id"] == owner_id
+        r["last_pull_at"] = pulled.get(r["device_id"])
+        r["revoked"] = bool(r["revoked_at"])
+    return {"devices": rows}
+
+
+@app.patch("/device/{device_id}", dependencies=[Depends(require_auth)])
+def device_patch(device_id: str, body: DevicePatchIn):
+    """Rename or revoke/restore a device (SYN-127). Guards: a device cannot
+    revoke itself, and the current owner must hand the cycle over first."""
+    from api import sync_peers
+    from core_store import get_store
+    me = get_store().sync_device_id()
+    conn = get_connection()
+    try:
+        row = first_row(conn.execute(
+            "SELECT device_id FROM devices WHERE device_id = ?", (device_id,)))
+        if not row:
+            raise HTTPException(status_code=404, detail="unknown device")
+        if body.revoked:
+            if device_id == me:
+                raise HTTPException(status_code=409,
+                                    detail="a device cannot revoke itself")
+            owner = sync_peers.get_owner(conn)
+            if owner and owner["device_id"] == device_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="this device tisses the memory — transfer the "
+                           "cycle first (PUT /sync/owner)")
+        with conn:
+            if body.name is not None:
+                name = body.name.strip()
+                if not name:
+                    raise HTTPException(status_code=422,
+                                        detail="name must not be empty")
+                conn.execute("UPDATE devices SET name = ? WHERE device_id = ?",
+                             (name, device_id))
+            if body.revoked is True:
+                conn.execute(
+                    "UPDATE devices SET revoked_at = CURRENT_TIMESTAMP "
+                    "WHERE device_id = ?", (device_id,))
+            elif body.revoked is False:
+                conn.execute("UPDATE devices SET revoked_at = NULL "
+                             "WHERE device_id = ?", (device_id,))
+        row = first_row(conn.execute(
+            "SELECT device_id, name, platform, last_seen, revoked_at "
+            "FROM devices WHERE device_id = ?", (device_id,)))
+        out = dict(row)
+        out["revoked"] = bool(out["revoked_at"])
+        return out
+    finally:
+        conn.close()
 
 
 @app.post("/capture", dependencies=[Depends(require_auth)])

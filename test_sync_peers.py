@@ -273,3 +273,121 @@ def test_sync_push_rejects_garbage(client):
     r = client.post("/sync/push", content="pas du json",
                     headers={"Content-Type": "application/json"})
     assert r.status_code == 400
+
+
+# ── Espace + registre d'appareils (SYN-127) ──────────────────────────────────
+
+def test_register_self_device_seeds_then_only_refreshes(client):
+    from api.sync_peers import register_self_device
+    from core_store import get_store
+    me = get_store().sync_device_id()
+
+    register_self_device()
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT name, platform, last_seen FROM devices WHERE device_id = ?",
+            (me,)).fetchone()
+        assert row is not None and row[0] and row[1]
+        # Un rename utilisateur survit aux boots suivants.
+        with conn:
+            conn.execute("UPDATE devices SET name = 'Mon Mac' WHERE device_id = ?", (me,))
+    finally:
+        conn.close()
+
+    register_self_device()
+    conn = _conn()
+    try:
+        name = conn.execute(
+            "SELECT name FROM devices WHERE device_id = ?", (me,)).fetchone()[0]
+        assert name == "Mon Mac"
+    finally:
+        conn.close()
+
+
+def test_ensure_space_is_owner_only(client):
+    from api.sync_peers import claim_owner, ensure_space, get_space
+    from core_store import get_store
+
+    # Pas d'owner → pas de création (une réplique fraîche ne fonde jamais).
+    ensure_space()
+    conn = _conn()
+    try:
+        assert get_space(conn) is None
+    finally:
+        conn.close()
+
+    # Owner = moi → fondation, puis idempotent.
+    claim_owner(get_store().sync_device_id())
+    ensure_space()
+    ensure_space()
+    conn = _conn()
+    try:
+        space = get_space(conn)
+        assert space and space["name"] == "Ma mémoire" and space["space_id"]
+    finally:
+        conn.close()
+
+    # Owner = un autre device → un non-owner ne fonde rien.
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute("DELETE FROM space")
+            conn.execute("UPDATE sync_owner SET device_id = 'other-device'")
+    finally:
+        conn.close()
+    ensure_space()
+    conn = _conn()
+    try:
+        assert get_space(conn) is None
+    finally:
+        conn.close()
+
+
+def test_space_and_devices_endpoints(client):
+    from api.sync_peers import claim_owner, ensure_space, register_self_device
+    from core_store import get_store
+    me = get_store().sync_device_id()
+
+    register_self_device()
+    claim_owner(me)
+    ensure_space()
+
+    body = client.get("/space").json()
+    assert body["space"]["name"] == "Ma mémoire"
+    assert body["device_id"] == me and body["owner_device_id"] == me
+
+    renamed = client.patch("/space", json={"name": "Mémoire d'Alexis"}).json()
+    assert renamed["space"]["name"] == "Mémoire d'Alexis"
+    assert client.patch("/space", json={"name": "  "}).status_code == 422
+
+    devices = client.get("/devices").json()["devices"]
+    assert len(devices) == 1
+    assert devices[0]["is_self"] and devices[0]["is_owner"] and not devices[0]["revoked"]
+
+    # Garde-fous de révocation : soi-même et l'owner sont intouchables.
+    assert client.patch(f"/device/{me}", json={"revoked": True}).status_code == 409
+    conn = _conn()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO devices (device_id, name, platform) "
+                "VALUES ('peer-1', 'Pixel', 'android')")
+    finally:
+        conn.close()
+
+    out = client.patch("/device/peer-1", json={"name": "Pixel d'Alexis",
+                                               "revoked": True}).json()
+    assert out["name"] == "Pixel d'Alexis" and out["revoked"]
+
+    # Un pair révoqué est sauté par la boucle de pull.
+    from api.sync_peers import device_revoked
+    conn = _conn()
+    try:
+        assert device_revoked(conn, "peer-1") is True
+    finally:
+        conn.close()
+
+    restored = client.patch("/device/peer-1", json={"revoked": False}).json()
+    assert not restored["revoked"]
+    assert client.patch("/device/inconnu", json={"name": "x"}).status_code == 404

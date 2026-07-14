@@ -112,6 +112,7 @@ def ensure_cycle_owner() -> None:
         conn.close()
     if owner is None:
         claim_owner(me)
+        ensure_space()  # SYN-127: the first owner also founds the space
         return
     if owner["device_id"] != me:
         raise HTTPException(
@@ -119,6 +120,86 @@ def ensure_cycle_owner() -> None:
             detail=f"dream cycle owned by device {owner['device_id']} "
                    f"(epoch {owner['epoch']}) — transfer it with PUT /sync/owner",
         )
+
+
+# ── Space + device registry (SYN-127) ────────────────────────────────────────
+
+def register_self_device() -> None:
+    """Upsert OUR row in the replicated device registry (pk = our sync
+    device_id, so peers never write the same row concurrently). The first
+    boot seeds a default name (hostname); later boots only refresh
+    last_seen + platform — the name belongs to the user (PATCH /device)."""
+    import platform as _platform
+    import socket
+
+    me = get_store().sync_device_id()
+    plat = (_platform.system() or "unknown").lower()
+    default_name = socket.gethostname().split(".", 1)[0] or "Cet appareil"
+    conn = get_connection()
+    try:
+        with conn:
+            row = first_row(conn.execute(
+                "SELECT device_id FROM devices WHERE device_id = ?", (me,)))
+            if row:
+                conn.execute(
+                    "UPDATE devices SET last_seen = CURRENT_TIMESTAMP, platform = ? "
+                    "WHERE device_id = ?", (plat, me))
+            else:
+                conn.execute(
+                    "INSERT INTO devices (device_id, name, platform, last_seen) "
+                    "VALUES (?, ?, ?, CURRENT_TIMESTAMP)", (me, default_name, plat))
+    finally:
+        conn.close()
+
+
+def touch_self_device() -> None:
+    """Refresh our replicated last_seen (after each successful pull)."""
+    me = get_store().sync_device_id()
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE devices SET last_seen = CURRENT_TIMESTAMP WHERE device_id = ?",
+                (me,))
+    finally:
+        conn.close()
+
+
+def get_space(conn) -> dict | None:
+    row = first_row(conn.execute(
+        "SELECT space_id, name, created_at FROM space WHERE id = 'space'"))
+    return dict(row) if row else None
+
+
+def ensure_space() -> None:
+    """Create the missing space singleton — OWNER ONLY. A fresh replica must
+    never self-create one: its newer HLC would win the LWW merge and
+    overwrite the mesh's space on bootstrap. Every live install has an owner
+    (self-claim at first cycle), so existing prods migrate on their next
+    boot; a genuinely fresh standalone install founds its space at its first
+    cycle (implicit claim → ensure_space)."""
+    import uuid as _uuid
+
+    me = get_store().sync_device_id()
+    conn = get_connection()
+    try:
+        if get_space(conn) is not None:
+            return
+        owner = get_owner(conn)
+        if owner is None or owner["device_id"] != me:
+            return
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO space (id, space_id, name) "
+                "VALUES ('space', ?, 'Ma mémoire')", (str(_uuid.uuid4()),))
+    finally:
+        conn.close()
+
+
+def device_revoked(conn, device_id: str) -> bool:
+    row = first_row(conn.execute(
+        "SELECT revoked_at FROM devices WHERE device_id = ?", (device_id,)))
+    return bool(row and row["revoked_at"])
 
 
 # ── Pulling from a peer ──────────────────────────────────────────────────────
@@ -136,6 +217,15 @@ def pull_from_peer(base_url: str, timeout: int = 30) -> dict:
     peer_device = status.get("device_id")
     if not peer_device:
         return {"url": base, "error": "peer exposes no sync device_id"}
+    # SYN-127 — a revoked device is out of the mesh: don't pull its rows.
+    # (Symmetric enforcement — refusing to SERVE a revoked puller — needs the
+    # per-device tokens of the pairing ticket; single shared token until then.)
+    conn = get_connection()
+    try:
+        if device_revoked(conn, peer_device):
+            return {"url": base, "peer_device": peer_device, "skipped": "revoked"}
+    finally:
+        conn.close()
     if peer_device == me:
         return {"url": base, "peer_device": peer_device, "skipped": "self"}
 
@@ -175,6 +265,17 @@ def pull_from_peer(base_url: str, timeout: int = 30) -> dict:
 
     reembedded = reembed_notes(sorted(notes))
     deduped = dedup_after_pull()
+    # SYN-127 — remember WHEN we last pulled this peer (local sync_meta, for
+    # the Appareils screen) and refresh our replicated last_seen.
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_meta (k, v) VALUES (?, datetime('now'))",
+                (f"pulled_at:{peer_device}",))
+    finally:
+        conn.close()
+    touch_self_device()
     return {"url": base, "peer_device": peer_device, "pages": pages,
             "cursor": cursor, "reembedded": reembedded, "deduped": deduped,
             **agg}
