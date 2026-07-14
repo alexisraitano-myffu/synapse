@@ -303,6 +303,8 @@ FastAPI app for the mobile/desktop clients (run `python -m api`, port 8000), **~
 
 Vectors are normalized so the sqlite-vec `vec0` **L2 distance** stays in [0, 2] and is monotonic with cosine: keeping the `score = 1 - distance/2` mapping valid. With this model, related notes land ~0.9 and unrelated ~1.4 (the visualizer edge threshold is 1.1).
 
+**Long texts are chunked (SYN-118).** The model truncates at 128 tokens, and that is the right granule (a single 512-token vector measurably dilutes: head AND tail queries drop). Texts beyond ~128 tokens (weekly digests ~460, long captures, resource summaries) embed as **one vector per ~128-token window**: notes get one vec0 row per chunk (key `uuid`, then `uuid#k`; the core's `search_notes` dedupes to each note's best chunk, so callers still see one hit per note), resources concatenate frames in their BLOB (scorer takes the best frame). Host writers use `embeddings.embed_text_chunks` + `Storage.upsert_note_vectors` (the sync receiver re-embed does). Entities stay single-vector by design: the composite text is identity-first and 43/44 fit in one window. After changing chunking or the model, run `python reembed.py` (notes + entities + resources).
+
 Search is hybrid: vector k-NN via sqlite-vec first (no API key needed: embeddings are local), falling back to `LIKE %query%` across `atomic_notes` and `inbox` only if the vector path errors or returns nothing.
 
 ### Database

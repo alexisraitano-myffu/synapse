@@ -199,7 +199,7 @@ def reembed_notes(note_ids) -> int:
     title + content). A tombstoned note was already dropped by the merge."""
     if not note_ids:
         return 0
-    from embeddings import embed_text
+    from embeddings import embed_text, embed_text_chunks
 
     store = get_store()
     done = 0
@@ -214,7 +214,7 @@ def reembed_notes(note_ids) -> int:
             content = (row["content"] or "").strip()
             title = row["title"] or content[:60]
             try:
-                store.upsert_note_vector(nid, embed_text(f"{title}\n{content}"))
+                store.upsert_note_vectors(nid, embed_text_chunks(f"{title}\n{content}"))
                 done += 1
             except Exception as exc:  # noqa: BLE001 — model may be absent
                 log.warning("sync: re-embed failed for note %s: %s", nid, exc)

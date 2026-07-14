@@ -41,3 +41,22 @@ def embed_text(text: str, client=None) -> bytes:
     # Packed little-endian float32 — byte-identical to what the old
     # serialize_float32 helper produced; the DB format doesn't change.
     return struct.pack(f"<{len(vec)}f", *vec)
+
+
+def embed_text_chunks(text: str) -> list[bytes]:
+    """SYN-118: one serialized vector per ~128-token window of `text`.
+
+    A short text returns exactly one element, byte-identical to
+    `embed_text(text)`. Long texts (weekly digests, long captures) get one
+    vector per window so search can match their tail: store them with
+    `Storage.upsert_note_vectors` (notes) or concatenated (resources)."""
+    from core_store import get_embedder
+
+    embedder = get_embedder()
+    if embedder is None:
+        raise EnvironmentError(
+            "Fichiers du modèle d'embedding introuvables — attendus dans "
+            "~/.synapse/models/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q "
+            "(ou SYNAPSE_MODEL_DIR)."
+        )
+    return [struct.pack(f"<{len(v)}f", *v) for v in embedder.embed_chunks(text)]

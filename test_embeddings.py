@@ -138,3 +138,46 @@ def test_search_memory_text_fallback_when_no_vectors(isolated_db, monkeypatch):
     assert results, "expected a text-fallback hit"
     assert results[0]["search_type"] == "text"
     assert "ZQXWV" in results[0]["content"]
+
+
+
+# ── SYN-118 : chunking des textes longs ──────────────────────────────────────
+
+def test_long_note_searchable_by_its_tail(isolated_db, monkeypatch):
+    """A ~450-token note (a weekly digest) used to be vectorized on its first
+    128 tokens only: a query about its tail found nothing. Chunked embedding
+    (one vector per window, best window wins) must surface it."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    import uuid
+    from db import get_connection
+    from core_store import get_store
+    from embeddings import embed_text_chunks
+
+    filler = " ".join(
+        f"Le point numéro {i} concerne l'organisation du travail de la semaine." for i in range(40)
+    )
+    tail = "Souhaiter un bon anniversaire à Cassiopée pour le vernissage du 22 juin."
+    content = f"{filler} {tail}"
+
+    chunks = embed_text_chunks(content)
+    assert len(chunks) > 1, "digest-length text must produce several windows"
+
+    conn = get_connection()
+    try:
+        note_id = str(uuid.uuid4())
+        with conn:
+            conn.execute("INSERT INTO atomic_notes (id, title, content) VALUES (?, ?, ?)",
+                         (note_id, "Digest hebdo", content))
+        get_store().upsert_note_vectors(note_id, chunks)
+        with conn:
+            _insert_note(conn, "Course à pied", "Sortie longue dimanche matin au parc")
+    finally:
+        conn.close()
+
+    results = json.loads(_search_fn()("anniversaire de Cassiopée vernissage", limit=3))
+    assert results, "expected a vector hit"
+    assert results[0]["search_type"] == "vector"
+    assert "Cassiopée" in results[0]["content"]
+    # One hit per note: the chunked note must not appear several times.
+    ids = [r.get("id") for r in results if r.get("kind") != "resource"]
+    assert len(ids) == len(set(ids))
