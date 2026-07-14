@@ -115,10 +115,28 @@ def ensure_cycle_owner() -> None:
         ensure_space()  # SYN-127: the first owner also founds the space
         return
     if owner["device_id"] != me:
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT name FROM devices WHERE device_id = ?",
+                (owner["device_id"],),
+            ).fetchone()
+            owner_name = row[0] if row and row[0] else None
+        finally:
+            conn.close()
+        # SYN-129: structured detail so clients can render a human message
+        # (« C'est {name} qui tisse votre mémoire ») and offer the transfer.
         raise HTTPException(
             status_code=409,
-            detail=f"dream cycle owned by device {owner['device_id']} "
-                   f"(epoch {owner['epoch']}) — transfer it with PUT /sync/owner",
+            detail={
+                "code": "not_cycle_owner",
+                "owner_device_id": owner["device_id"],
+                "owner_name": owner_name,
+                "epoch": owner["epoch"],
+                "message": f"the memory is woven by "
+                           f"{owner_name or owner['device_id']} — "
+                           f"transfer the cycle first (PUT /sync/owner)",
+            },
         )
 
 
