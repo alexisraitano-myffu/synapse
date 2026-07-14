@@ -391,3 +391,96 @@ def test_space_and_devices_endpoints(client):
     restored = client.patch("/device/peer-1", json={"revoked": False}).json()
     assert not restored["revoked"]
     assert client.patch("/device/inconnu", json={"name": "x"}).status_code == 404
+
+
+# ── Appairage (SYN-128) ──────────────────────────────────────────────────────
+
+def test_pairing_end_to_end_transfers_secrets(client, monkeypatch):
+    """Member offers a QR → joiner scans (real core crypto) → member approves
+    with key opt-in → joiner opens the sealed payload and gets space_id, token
+    and the key. No token needed on the joiner endpoints."""
+    import base64
+    import json
+    from synapse_core import pairing_accept, pairing_offer_addrs, pairing_open
+
+    from api.sync_peers import claim_owner, ensure_space
+    from core_store import get_store
+
+    # Member founds a space + has a key; the request carries a bearer token.
+    monkeypatch.setenv("SYNAPSE_API_TOKEN", "member-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    claim_owner(get_store().sync_device_id())
+    ensure_space()
+    auth = {"Authorization": "Bearer member-token"}
+
+    # 1. Member starts the offer (auth required).
+    assert client.post("/pair/offer").status_code == 401
+    qr = client.post("/pair/offer", headers=auth).json()["qr"]
+    assert pairing_offer_addrs(qr) is not None
+
+    # 2. Joiner scans locally (core), submits accept_pub — NO auth.
+    accept_pub, joiner_key = pairing_accept(qr)
+    req = client.post("/pair/request", json={
+        "accept_pub_b64": base64.b64encode(accept_pub).decode(),
+        "name": "Pixel d'Alexis", "platform": "android"}).json()
+    request_id = req["request_id"]
+
+    # 3. Member sees the pending request and approves with the key.
+    pend = client.get("/pair/pending", headers=auth).json()["requests"]
+    assert any(p["request_id"] == request_id and p["name"] == "Pixel d'Alexis" for p in pend)
+    assert client.post("/pair/approve", headers=auth,
+                       json={"request_id": request_id, "include_key": True}).status_code == 200
+
+    # 4. Joiner polls, opens the sealed payload with its channel key.
+    res = client.get(f"/pair/result/{request_id}").json()
+    assert res["status"] == "approved"
+    offer_pub = base64.b64decode(_offer_pub_from_qr(qr))
+    opened = pairing_open(joiner_key, offer_pub, accept_pub, res["sealed"])
+    payload = json.loads(opened)
+    assert payload["token"] == "member-token"
+    assert payload["space_id"]
+    assert payload["anthropic_key"] == "sk-ant-secret"
+
+    # 5. One-shot: a second poll no longer returns the secret.
+    assert client.get(f"/pair/result/{request_id}").json()["status"] == "expired"
+
+
+def test_pairing_denied_and_key_optout(client, monkeypatch):
+    import base64
+    import json
+    from synapse_core import pairing_accept, pairing_open
+
+    from api.sync_peers import claim_owner, ensure_space
+    from core_store import get_store
+
+    monkeypatch.setenv("SYNAPSE_API_TOKEN", "member-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    claim_owner(get_store().sync_device_id())
+    ensure_space()
+    auth = {"Authorization": "Bearer member-token"}
+
+    qr = client.post("/pair/offer", headers=auth).json()["qr"]
+    accept_pub, joiner_key = pairing_accept(qr)
+
+    # Opt-OUT of the key.
+    rid = client.post("/pair/request", json={
+        "accept_pub_b64": base64.b64encode(accept_pub).decode(),
+        "name": "Mac", "platform": "darwin"}).json()["request_id"]
+    client.post("/pair/approve", headers=auth,
+                json={"request_id": rid, "include_key": False})
+    res = client.get(f"/pair/result/{rid}").json()
+    offer_pub = base64.b64decode(_offer_pub_from_qr(qr))
+    payload = json.loads(pairing_open(joiner_key, offer_pub, accept_pub, res["sealed"]))
+    assert "anthropic_key" not in payload
+
+    # A denied request tells the joiner nothing sealed.
+    rid2 = client.post("/pair/request", json={
+        "accept_pub_b64": base64.b64encode(accept_pub).decode(),
+        "name": "X", "platform": "y"}).json()["request_id"]
+    client.post("/pair/deny", headers=auth, json={"request_id": rid2})
+    assert client.get(f"/pair/result/{rid2}").json()["status"] == "denied"
+
+
+def _offer_pub_from_qr(qr: str) -> str:
+    # QR wire form: "v|offer_pub_b64|secret_b64|addrs"
+    return qr.split("|")[1]

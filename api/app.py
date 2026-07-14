@@ -374,6 +374,22 @@ class SyncOwnerClaimIn(BaseModel):
     device_id: str | None = None  # claim for this device; None = claim for self
 
 
+# SYN-128 — device pairing (member side)
+class PairRequestIn(BaseModel):
+    accept_pub_b64: str          # the scanner's ephemeral public key (base64)
+    name: str | None = None
+    platform: str | None = None
+
+
+class PairApproveIn(BaseModel):
+    request_id: str
+    include_key: bool = False    # also transfer the Anthropic key (opt-in)
+
+
+class PairDenyIn(BaseModel):
+    request_id: str
+
+
 # SYN-127 — space + device registry
 class SpacePatchIn(BaseModel):
     name: str
@@ -564,6 +580,63 @@ def sync_owner_claim(body: SyncOwnerClaimIn | None = None):
     device = (body.device_id if body else None) or get_store().sync_device_id()
     owner = sync_peers.claim_owner(device)
     return {"owner": owner}
+
+
+# ── Device pairing (SYN-128) ─────────────────────────────────────────────────
+# Member endpoints require the token; joiner endpoints (/pair/request,
+# /pair/result) do NOT — a fresh device has no token yet, and everything they
+# return is AEAD-sealed under a key only a QR-scanner can derive.
+
+import base64 as _base64
+
+from api import pairing as _pairing
+
+
+def _pair_guard(fn):
+    try:
+        return fn()
+    except _pairing._PairingError as exc:  # noqa: SLF001
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+@app.post("/pair/offer", dependencies=[Depends(require_auth)])
+def pair_offer():
+    """Member: start showing a QR. Returns {qr} to render as a QR code."""
+    return _pairing.start_offer()
+
+
+@app.post("/pair/request")
+def pair_request(body: PairRequestIn):
+    """Joiner (no auth): submit the scanned key + who we are → {request_id}."""
+    try:
+        accept_pub = _base64.b64decode(body.accept_pub_b64)
+    except Exception:
+        raise HTTPException(status_code=422, detail="accept_pub_b64 not base64")
+    return _pair_guard(lambda: _pairing.submit_request(accept_pub, body.name or "", body.platform or ""))
+
+
+@app.get("/pair/pending", dependencies=[Depends(require_auth)])
+def pair_pending():
+    """Member: requests awaiting approval (name + platform of each joiner)."""
+    return {"requests": _pairing.list_pending()}
+
+
+@app.post("/pair/approve", dependencies=[Depends(require_auth)])
+def pair_approve(body: PairApproveIn):
+    """Member: approve a request → seals the payload for the joiner to fetch."""
+    return _pair_guard(lambda: _pairing.approve(body.request_id, body.include_key))
+
+
+@app.post("/pair/deny", dependencies=[Depends(require_auth)])
+def pair_deny(body: PairDenyIn):
+    return _pair_guard(lambda: _pairing.deny(body.request_id))
+
+
+@app.get("/pair/result/{request_id}")
+def pair_result(request_id: str):
+    """Joiner (no auth): poll the outcome. On approval returns the sealed
+    payload ONCE (then it's consumed)."""
+    return _pairing.poll_result(request_id)
 
 
 @app.get("/space", dependencies=[Depends(require_auth)])
