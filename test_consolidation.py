@@ -81,10 +81,13 @@ def test_should_consolidate_stale_only():
     assert appmod._should_consolidate(queued=0, stale=0) == ""
 
 
-def test_should_consolidate_size_valve(monkeypatch):
+def test_should_consolidate_size_valve(monkeypatch, tmp_path):
     other_hour = str((datetime.now().hour + 1) % 24)               # ensure NOT the scheduled hour
     monkeypatch.setenv("SYNAPSE_CONSOLIDATION_HOURS", other_hour)
     monkeypatch.setenv("SYNAPSE_CONSOLIDATION_MAX_QUEUED", "5")
+    # Isolate the catch-up marker (mtime-based) from any real run on this machine.
+    monkeypatch.setattr(appmod, "_CONSOLIDATION_MARKER", tmp_path / "last_consolidation")
+    appmod._mark_consolidated()                                    # consolidated now → no catch-up due
     appmod._last_consolidation_slot = None
     assert appmod._should_consolidate(queued=5, stale=0) == "valve"  # valve hit (stays sync)
     assert appmod._should_consolidate(queued=4, stale=0) == ""       # below valve, not the hour
