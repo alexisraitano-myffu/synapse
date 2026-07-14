@@ -21,6 +21,27 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+def _sync_bundled_prompts() -> None:
+    """The core reads its prompts (classifier, digest, …) as DATA from
+    SYNAPSE_HOME/prompts at runtime. On tester machines nothing else deploys
+    them, so the bundle ships a prompts/ dir (copied by build-backend.sh next
+    to the executable) and we mirror it on every start: the deployed prompts
+    always match the shipped brain. SYNAPSE_PROMPTS_DIR opts out entirely."""
+    if not getattr(sys, "frozen", False) or os.environ.get("SYNAPSE_PROMPTS_DIR"):
+        return
+    source = Path(sys.executable).resolve().parent / "prompts"
+    if not source.is_dir():
+        return
+    target = Path(os.environ.get("SYNAPSE_HOME", Path.home() / ".synapse")) / "prompts"
+    target.mkdir(parents=True, exist_ok=True)
+    for f in source.iterdir():
+        if f.is_file():
+            (target / f.name).write_bytes(f.read_bytes())
+
+
+_sync_bundled_prompts()
+
+
 def main() -> None:
     import uvicorn
 

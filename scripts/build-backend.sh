@@ -59,6 +59,18 @@ pyinstaller \
     --hidden-import uvicorn.lifespan.on \
     backend_entry.py
 
+# Ship the core's prompts as data next to the binary: backend_entry.py mirrors
+# them into SYNAPSE_HOME/prompts at startup (nothing else deploys them on a
+# tester machine, and the shipped brain requires the matching prompt set).
+PROMPTS_SRC="../synapse-core/prompts"
+if [ ! -f "$PROMPTS_SRC/manifest.json" ]; then
+    echo "[error] $PROMPTS_SRC introuvable — le bundle a besoin des prompts du repo synapse-core." >&2
+    exit 1
+fi
+mkdir -p dist/synapse-backend/prompts
+cp "$PROMPTS_SRC"/*.md "$PROMPTS_SRC"/manifest.json dist/synapse-backend/prompts/
+echo "[prompts] $(ls dist/synapse-backend/prompts | wc -l | tr -d ' ') fichiers embarqués"
+
 # Stamp the bundle with a version marker. The desktop app compares this against the
 # installed backend at launch and auto-reinstalls when they differ, so a new .dmg's
 # backend reaches testers even if their old one is still running under KeepAlive
