@@ -2144,12 +2144,22 @@ def project_state(project_id: str):
         total_entries = conn.execute(
             "SELECT COUNT(*) FROM project_entries WHERE project_id = ?", (project_id,)
         ).fetchone()[0]
+        # SYN-134 — projects carry facts now (durable literal data); the fiche
+        # shows the ACTIVE ones. Mirror: snapshot.rs::project_state.
+        facts = cursor_to_dicts(conn.execute(
+            "SELECT id, predicate, value, confidence, category, "
+            "       persistence_value, created_at, provenance_capture_id "
+            "FROM facts WHERE entity_id = ? "
+            "AND obsoleted_at IS NULL AND archived_at IS NULL "
+            "ORDER BY created_at ASC", (project_id,)
+        ))
         return {
             "project_id": ent["id"],
             "canonical_name": ent["canonical_name"],
             "current_state": state,            # may be None if no entry yet
             "entries_recent": entries,
             "entries_total": total_entries,
+            "facts": facts,
         }
     finally:
         conn.close()
