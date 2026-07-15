@@ -2016,6 +2016,7 @@ def attach_entry_to_project(entry_id: str, body: ProjectEntryMoveIn):
     immutable inbox row is never touched.
     """
     import uuid as _uuid
+    from dream_cycle.cycle import synthesize_project
     conn = get_connection()
     try:
         src = first_row(conn.execute(
@@ -2027,7 +2028,7 @@ def attach_entry_to_project(entry_id: str, body: ProjectEntryMoveIn):
         if src["project_id"] == body.project_id:
             raise HTTPException(status_code=400, detail="already attached to this project")
         target = first_row(conn.execute(
-            "SELECT id FROM entities WHERE id = ? AND type = 'project'",
+            "SELECT id, canonical_name FROM entities WHERE id = ? AND type = 'project'",
             (body.project_id,),
         ))
         if not target:
@@ -2046,6 +2047,15 @@ def attach_entry_to_project(entry_id: str, body: ProjectEntryMoveIn):
                 "VALUES (?, ?, ?, ?, ?)",
                 (new_id, body.project_id, src["capture_id"], src["content"], src["kind"]),
             )
+        entry_count = first_row(conn.execute(
+            "SELECT COUNT(*) AS n FROM project_entries WHERE project_id = ?",
+            (body.project_id,),
+        ))["n"]
+        # SYN-144 — the attached entry reaches the target's living prose, same
+        # behaviour as the mobile core rail. Post-commit (never hold SQLite
+        # during the Haiku call); without a key it's a no-op.
+        synthesize_project(body.project_id, target["canonical_name"],
+                           src["content"], entry_count)
         return {"status": "attached", "new_entry_id": new_id,
                 "project_id": body.project_id, "capture_id": src["capture_id"]}
     finally:
