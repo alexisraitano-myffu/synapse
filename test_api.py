@@ -943,3 +943,123 @@ def test_digest_gather_includes_dated_task_in_upcoming(isolated_db):
     titles = [e["title"] for e in week["upcoming_events"]]
     assert "rappeler le dentiste" in titles
     assert all(t["title"] != "rappeler le dentiste" for t in week["open_tasks"])  # not double-counted
+
+
+# ── Code pairing, Mac↔Mac (SYN-137) ──────────────────────────────────────────
+
+def _fresh_pairing_state():
+    from api import join, pairing
+    pairing._offer = None
+    pairing._code_offer = None
+    pairing._requests.clear()
+    join._state.clear()
+    join._state.update({"status": "idle"})
+
+
+def _b64(b: bytes) -> str:
+    import base64
+    return base64.b64encode(b).decode("ascii")
+
+
+def test_code_pairing_full_flow(client):
+    import base64
+    from synapse_core import CodePairing, pairing_code_confirm_mac, pairing_open
+
+    _fresh_pairing_state()
+    code = client.post("/pair/offer-code").json()["code"]
+    assert len(code) == 6 and code.isdigit()
+
+    session = CodePairing(code)
+    msg_j = bytes(session.msg())
+    r = client.post("/pair/request-code", json={
+        "msg": _b64(msg_j), "name": "MacBook Test", "platform": "desktop"})
+    assert r.status_code == 200
+    request_id = r.json()["request_id"]
+    msg_m = base64.b64decode(r.json()["msg"])
+    key = bytes(session.finish(msg_m))
+
+    # Not in the approval queue until the code knowledge is proven.
+    assert client.get("/pair/pending").json()["requests"] == []
+
+    mac = bytes(pairing_code_confirm_mac(key, msg_m, msg_j))
+    assert client.post("/pair/confirm-code", json={
+        "request_id": request_id, "mac": _b64(mac)}).status_code == 200
+    pend = client.get("/pair/pending").json()["requests"]
+    assert [p["request_id"] for p in pend] == [request_id]
+    assert pend[0]["name"] == "MacBook Test"
+
+    assert client.post("/pair/approve",
+                       json={"request_id": request_id}).status_code == 200
+    res = client.get(f"/pair/result/{request_id}").json()
+    assert res["status"] == "approved"
+    payload = json.loads(bytes(pairing_open(key, msg_m, msg_j, res["sealed"])))
+    assert "token" in payload and "peers" in payload
+    # One-shot delivery: a second poll finds nothing.
+    assert client.get(f"/pair/result/{request_id}").json()["status"] == "expired"
+
+
+def test_code_pairing_three_misses_kill_the_code(client):
+    import base64
+    from synapse_core import CodePairing, pairing_code_confirm_mac
+
+    _fresh_pairing_state()
+    code = client.post("/pair/offer-code").json()["code"]
+    for i in range(3):
+        wrong = f"{(int(code) + 1 + i) % 1_000_000:06d}"
+        guess = CodePairing(wrong)
+        msg_j = bytes(guess.msg())
+        r = client.post("/pair/request-code", json={"msg": _b64(msg_j)})
+        assert r.status_code == 200
+        msg_m = base64.b64decode(r.json()["msg"])
+        key = bytes(guess.finish(msg_m))
+        mac = bytes(pairing_code_confirm_mac(key, msg_m, msg_j))
+        r = client.post("/pair/confirm-code", json={
+            "request_id": r.json()["request_id"], "mac": _b64(mac)})
+        assert r.status_code == 403
+
+    # The code is dead: a fourth handshake is refused outright.
+    fourth = CodePairing(code)
+    r = client.post("/pair/request-code", json={"msg": _b64(bytes(fourth.msg()))})
+    assert r.status_code == 409
+
+
+def test_join_guards(client):
+    _fresh_pairing_state()
+    # Malformed code → 422, before any thread starts.
+    assert client.post("/pair/join", json={"code": "12ab"}).status_code == 422
+    # A device with data must not join (v1: virgin only).
+    client.post("/capture", json={"id": "uuid-join-guard", "content": "note"})
+    r = client.post("/pair/join", json={"code": "123456"})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "device_not_virgin"
+
+
+def test_adopt_reset_leaves_no_founding_traces(client):
+    from api import join, sync_peers
+    from core_store import get_store
+
+    me = get_store().sync_device_id()
+    sync_peers.claim_owner(me)
+    sync_peers.ensure_space()
+    conn = _conn()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM space").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sync_log WHERE tbl IN ('space','sync_owner')"
+        ).fetchone()[0] > 0
+    finally:
+        conn.close()
+
+    join._adopt_reset()
+    conn = _conn()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM space").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM sync_owner").fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sync_log WHERE tbl IN ('space','sync_owner')"
+        ).fetchone()[0] == 0
+        applying = conn.execute(
+            "SELECT v FROM sync_meta WHERE k = 'applying'").fetchone()[0]
+        assert int(applying) == 0
+    finally:
+        conn.close()

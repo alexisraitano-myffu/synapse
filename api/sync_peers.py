@@ -39,8 +39,43 @@ SYNC_PAGE_LIMIT = 5000
 
 
 def _headers() -> dict:
-    token = os.environ.get("SYNAPSE_API_TOKEN")
+    token = get_mesh_token() or os.environ.get("SYNAPSE_API_TOKEN")
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+# ── Mesh token (SYN-137) ─────────────────────────────────────────────────────
+# The mesh's shared bearer, adopted at join time. Lives in LOCAL sync_meta
+# (the engine's own table, never replicated) so a joined desktop keeps its
+# original per-install token for its own app while accepting + presenting the
+# mesh's one — no plist/env surgery on the installed LaunchAgent.
+
+_mesh_token_cache: str | None = None  # "" = looked up, absent
+
+
+def get_mesh_token() -> str | None:
+    global _mesh_token_cache
+    if _mesh_token_cache is None:
+        conn = get_connection()
+        try:
+            row = conn.execute(
+                "SELECT v FROM sync_meta WHERE k = 'mesh_token'").fetchone()
+            _mesh_token_cache = str(row[0]) if row and row[0] else ""
+        finally:
+            conn.close()
+    return _mesh_token_cache or None
+
+
+def set_mesh_token(token: str) -> None:
+    global _mesh_token_cache
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_meta (k, v) VALUES ('mesh_token', ?)",
+                (token,))
+    finally:
+        conn.close()
+    _mesh_token_cache = token
 
 
 def sync_interval() -> int:

@@ -26,7 +26,12 @@ import threading
 import time
 import uuid
 
-from synapse_core import PairingSession, pairing_seal
+from synapse_core import (
+    CodePairing,
+    PairingSession,
+    pairing_code_confirm_verify,
+    pairing_seal,
+)
 
 from config_store import get_anthropic_key
 from db import first_row, get_connection
@@ -35,10 +40,15 @@ from db import first_row, get_connection
 # in under a minute; anything older is stale and dropped.
 _OFFER_TTL = 120.0
 _REQUEST_TTL = 120.0
+# SYN-137: online guesses allowed on one displayed code. SPAKE2 makes offline
+# guessing impossible; this cap is what bounds the online kind.
+_CODE_MAX_ATTEMPTS = 3
 
 _lock = threading.Lock()
 # One active offer per process (the member shows one QR at a time).
 _offer: dict | None = None
+# SYN-137: one active 6-digit code offer (Mac↔Mac, no camera).
+_code_offer: dict | None = None
 # request_id -> pending/approved/denied request dict.
 _requests: dict[str, dict] = {}
 
@@ -50,9 +60,11 @@ def _now() -> float:
 def _prune(now: float) -> None:
     """Drop the offer + requests that have outlived their TTL. Caller holds
     the lock."""
-    global _offer
+    global _offer, _code_offer
     if _offer is not None and now - _offer["created"] > _OFFER_TTL:
         _offer = None
+    if _code_offer is not None and now - _code_offer["created"] > _OFFER_TTL:
+        _code_offer = None
     stale = [rid for rid, r in _requests.items() if now - r["created"] > _REQUEST_TTL]
     for rid in stale:
         _requests.pop(rid, None)
@@ -90,6 +102,76 @@ def start_offer() -> dict:
         # A fresh offer invalidates requests aimed at the previous one.
         _requests.clear()
     return {"qr": qr}
+
+
+def start_code_offer() -> dict:
+    """SYN-137, member side: begin a code pairing for a camera-less joiner
+    (Mac↔Mac). Returns `{code}` — display it to the user, NEVER log it. A
+    fresh code replaces the previous one and resets the attempt counter."""
+    global _code_offer
+    import secrets
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    with _lock:
+        _prune(_now())
+        _code_offer = {"code": code, "attempts": 0, "created": _now()}
+    return {"code": code}
+
+
+def submit_code_request(msg_joiner: bytes, name: str, platform: str) -> dict:
+    """SYN-137, joiner side (unauthenticated): the joiner's SPAKE2 message.
+    We run our half on the displayed code and answer with our message; the
+    channel key exists on both sides but the request stays OUT of the
+    approval queue until the joiner proves code knowledge (`confirm`)."""
+    with _lock:
+        _prune(_now())
+        if _code_offer is None:
+            raise _PairingError(409, "no active code offer")
+        if _code_offer["attempts"] >= _CODE_MAX_ATTEMPTS:
+            raise _PairingError(429, "too many attempts — show a new code")
+        session = CodePairing(_code_offer["code"])
+        msg_member = bytes(session.msg())
+        channel_key = session.finish(msg_joiner)
+        request_id = str(uuid.uuid4())
+        _requests[request_id] = {
+            "name": (name or "").strip()[:80] or "Nouvel appareil",
+            "platform": (platform or "").strip()[:32] or "unknown",
+            # AAD pair for seal/open: member message first, joiner second.
+            "aad_a": msg_member,
+            "aad_b": bytes(msg_joiner),
+            "channel_key": channel_key,
+            "status": "awaiting_confirm",
+            "sealed": None,
+            "created": _now(),
+        }
+        import base64
+
+        return {"request_id": request_id,
+                "msg": base64.b64encode(msg_member).decode("ascii")}
+
+
+def confirm_code_request(request_id: str, mac: bytes) -> dict:
+    """SYN-137: verify the joiner's key-confirmation MAC. Success promotes
+    the request into the human-approval queue; a mismatch burns one attempt
+    and three misses kill the code (the user must display a new one)."""
+    global _code_offer
+    with _lock:
+        _prune(_now())
+        req = _requests.get(request_id)
+        if req is None or req["status"] != "awaiting_confirm":
+            raise _PairingError(404, "unknown or expired request")
+        ok = pairing_code_confirm_verify(
+            req["channel_key"], req["aad_a"], req["aad_b"], mac
+        )
+        if not ok:
+            _requests.pop(request_id, None)
+            if _code_offer is not None:
+                _code_offer["attempts"] += 1
+                if _code_offer["attempts"] >= _CODE_MAX_ATTEMPTS:
+                    _code_offer = None
+            raise _PairingError(403, "confirmation failed")
+        req["status"] = "pending"
+        return {"status": "pending"}
 
 
 def submit_request(accept_pub: bytes, name: str, platform: str) -> dict:
@@ -135,12 +217,16 @@ def approve(request_id: str, include_key: bool) -> dict:
             raise _PairingError(404, "unknown or expired request")
         if req["status"] != "pending":
             raise _PairingError(409, f"request already {req['status']}")
-        if _offer is None:
-            raise _PairingError(409, "offer expired — restart pairing")
+        if req.get("aad_a") is not None:
+            # SYN-137 code channel: the AAD pair travelled with the request.
+            aad_a, aad_b = req["aad_a"], req["aad_b"]
+        else:
+            # QR channel: bound to the currently displayed offer.
+            if _offer is None:
+                raise _PairingError(409, "offer expired — restart pairing")
+            aad_a, aad_b = _offer["offer_pub"], req["accept_pub"]
         payload = _build_payload(include_key)
-        sealed = pairing_seal(
-            req["channel_key"], _offer["offer_pub"], req["accept_pub"], payload
-        )
+        sealed = pairing_seal(req["channel_key"], aad_a, aad_b, payload)
         req["status"] = "approved"
         req["sealed"] = sealed
     return {"status": "approved"}

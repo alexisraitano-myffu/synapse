@@ -281,10 +281,14 @@ app.add_middleware(
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 def require_auth(authorization: str | None = Header(default=None)) -> None:
-    token = os.environ.get("SYNAPSE_API_TOKEN")
-    if not token:
+    from api.sync_peers import get_mesh_token
+
+    # SYN-137: a joined desktop accepts BOTH its per-install token (its own
+    # app) and the mesh token adopted at join time (the peers).
+    accepted = {t for t in (os.environ.get("SYNAPSE_API_TOKEN"), get_mesh_token()) if t}
+    if not accepted:
         return  # dev mode — auth disabled
-    if authorization != f"Bearer {token}":
+    if authorization not in {f"Bearer {t}" for t in accepted}:
         raise HTTPException(status_code=401, detail="invalid or missing bearer token")
 
 
@@ -388,6 +392,23 @@ class PairApproveIn(BaseModel):
 
 class PairDenyIn(BaseModel):
     request_id: str
+
+
+# SYN-137 — code pairing (Mac↔Mac)
+class PairCodeRequestIn(BaseModel):
+    msg: str                     # the joiner's SPAKE2 message (base64)
+    name: str | None = None
+    platform: str | None = None
+
+
+class PairCodeConfirmIn(BaseModel):
+    request_id: str
+    mac: str                     # key-confirmation HMAC (base64)
+
+
+class PairJoinIn(BaseModel):
+    code: str
+    url: str | None = None       # explicit member URL (mDNS otherwise)
 
 
 # SYN-127 — space + device registry
@@ -637,6 +658,60 @@ def pair_result(request_id: str):
     """Joiner (no auth): poll the outcome. On approval returns the sealed
     payload ONCE (then it's consumed)."""
     return _pairing.poll_result(request_id)
+
+
+# ── Code pairing, Mac↔Mac (SYN-137) ──────────────────────────────────────────
+# Same trust model as the QR: the joiner endpoints are unauthenticated, but a
+# request only reaches the approval queue after the SPAKE2 key-confirmation
+# proves the joiner knew the displayed code (3 online attempts max), and the
+# payload is AEAD-sealed under the PAKE-derived key.
+
+from api import join as _join
+
+
+@app.post("/pair/offer-code", dependencies=[Depends(require_auth)])
+def pair_offer_code():
+    """Member: display a 6-digit code for a camera-less joiner (another Mac)."""
+    return _pairing.start_code_offer()
+
+
+@app.post("/pair/request-code")
+def pair_request_code(body: PairCodeRequestIn):
+    """Joiner (no auth): SPAKE2 handshake half → {request_id, msg}."""
+    try:
+        msg = _base64.b64decode(body.msg)
+    except Exception:
+        raise HTTPException(status_code=422, detail="msg not base64")
+    return _pair_guard(lambda: _pairing.submit_code_request(
+        msg, body.name or "", body.platform or ""))
+
+
+@app.post("/pair/confirm-code")
+def pair_confirm_code(body: PairCodeConfirmIn):
+    """Joiner (no auth): prove code knowledge; promotes into the approval
+    queue. A mismatch burns one attempt, three kill the code."""
+    try:
+        mac = _base64.b64decode(body.mac)
+    except Exception:
+        raise HTTPException(status_code=422, detail="mac not base64")
+    return _pair_guard(lambda: _pairing.confirm_code_request(body.request_id, mac))
+
+
+@app.post("/pair/join", dependencies=[Depends(require_auth)])
+def pair_join(body: PairJoinIn):
+    """THIS device joins another space with a displayed code (SYN-137).
+    v1: virgin installs only (no captures, no entities)."""
+    try:
+        return _join.start_join(body.code, body.url)
+    except _join._JoinError as exc:  # noqa: SLF001
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+
+
+@app.get("/pair/join-status", dependencies=[Depends(require_auth)])
+def pair_join_status():
+    """Progress of the running join (searching → waiting_approval → applying
+    → done, or denied/expired/not_found/failed)."""
+    return _join.status()
 
 
 @app.get("/space", dependencies=[Depends(require_auth)])
