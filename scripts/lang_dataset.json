@@ -1,121 +1,176 @@
 {
-  "_meta": {
-    "purpose": "SYN-121 — garde-fou anti-régression multilingue. Paires FR/EN équivalentes, pondérées vers les captures TERSES (le point fragile de Haiku : « terse/adressé/traduit → ephemeral » qui les faisait tomber). Sert à (1) figer la baseline FR sous le prompt actuel, (2) prouver après la bascule EN-base que le FR ne régresse PAS et que l'EN atteint une qualité comparable.",
-    "today": "2026-07-13",
-    "owner": "Alexis"
+ "_meta": {
+  "purpose": "SYN-121 — garde-fou anti-régression multilingue. Paires FR/EN équivalentes, pondérées vers les captures TERSES (le point fragile de Haiku : « terse/adressé/traduit → ephemeral » qui les faisait tomber). Sert à (1) figer la baseline FR sous le prompt actuel, (2) prouver après la bascule EN-base que le FR ne régresse PAS et que l'EN atteint une qualité comparable.",
+  "today": "2026-07-13",
+  "owner": "Alexis"
+ },
+ "cases": [
+  {
+   "id": "action-addressed",
+   "note": "Action adressée à une personne nommée — DOIT être task, jamais ephemeral (régression historique Haiku).",
+   "expect": {
+    "atomic_note_kind": "task",
+    "is_ephemeral_ok": true,
+    "must_have_note": true
+   },
+   "fr": "Répondre à l'e-mail de Vincent",
+   "en": "Reply to Vincent's email"
   },
-  "cases": [
-    {
-      "id": "action-addressed",
-      "note": "Action adressée à une personne nommée — DOIT être task, jamais ephemeral (régression historique Haiku).",
-      "expect": {"atomic_note_kind": "task", "is_ephemeral_ok": true, "must_have_note": true},
-      "fr": "Répondre à l'e-mail de Vincent",
-      "en": "Reply to Vincent's email"
-    },
-    {
-      "id": "commitment-demarche",
-      "note": "Démarche/engagement administratif adressé à une organisation — task.",
-      "expect": {"atomic_note_kind": "task", "must_have_note": true},
-      "fr": "Déclarer mes revenus à l'URSSAF",
-      "en": "Declare my income to the tax office"
-    },
-    {
-      "id": "call-someone",
-      "note": "Action isolée bornée mais destinataire nommé — task.",
-      "expect": {"atomic_note_kind": "task", "must_have_note": true},
-      "fr": "Rappeler le dentiste",
-      "en": "Call the dentist"
-    },
-    {
-      "id": "dated-task",
-      "note": "Tâche avec échéance — task + event_date, PAS event.",
-      "expect": {"atomic_note_kind": "task", "must_have_event_date": true},
-      "fr": "Finir le deck pour vendredi",
-      "en": "Finish the deck by Friday"
-    },
-    {
-      "id": "dated-event",
-      "note": "Occurrence qui se produit à une date — event + event_date.",
-      "expect": {"atomic_note_kind": "event", "must_have_event_date": true},
-      "fr": "Salon Vivatech le 24",
-      "en": "Vivatech trade show on the 24th"
-    },
-    {
-      "id": "recurring-birthday",
-      "note": "Anniversaire — event_recurring=true + fact has_birthday sur la personne.",
-      "expect": {"event_recurring": true, "predicate_present": "has_birthday"},
-      "fr": "Anniversaire de Marie le 16 juin",
-      "en": "Marie's birthday is on June 16"
-    },
-    {
-      "id": "trivial-errand",
-      "note": "Micro-course triviale sans destinataire/date/contenu durable — ephemeral, PAS de note.",
-      "expect": {"is_ephemeral": true, "must_have_note": false},
-      "fr": "Acheter du pain",
-      "en": "Buy some bread"
-    },
-    {
-      "id": "third-party-fact",
-      "note": "« X a Y » sur un tiers — fact, atomic_note=null.",
-      "expect": {"input_type": "fact", "must_have_note": false},
-      "fr": "Karim a un projet appelé Atlas",
-      "en": "Karim has a project called Atlas"
-    },
-    {
-      "id": "relation-named",
-      "note": "Lien entre deux entités nommées — relation SEULE, pas de fact redondant.",
-      "expect": {"relation_present": true, "must_have_note": false},
-      "fr": "Audric est le cousin d'Alexis",
-      "en": "Audric is Alexis's cousin"
-    },
-    {
-      "id": "reflective-note",
-      "note": "Réflexion première personne — atomic_note kind=note.",
-      "expect": {"atomic_note_kind": "note", "must_have_note": true},
-      "fr": "Je me demande si je devrais arrêter le café",
-      "en": "I wonder if I should quit coffee"
-    },
-    {
-      "id": "new-project",
-      "note": "Projet multi-étapes déclaré — project_entry is_new + entité project.",
-      "expect": {"project_new": true},
-      "fr": "Nouveau projet : apprendre le japonais",
-      "en": "New project: learn Japanese"
-    },
-    {
-      "id": "hedged-fact",
-      "note": "Marqueur d'incertitude — evidence_strength=hedged.",
-      "expect": {"evidence_strength": "hedged"},
-      "fr": "Léa a probablement adopté un chien",
-      "en": "Léa probably adopted a dog"
-    },
-    {
-      "id": "literal-place-fact",
-      "note": "Fait à valeur littérale (lieu) — fact lives_in, pas relation.",
-      "expect": {"predicate_present": "lives_in", "must_have_note": false},
-      "fr": "Alexis habite à Lyon",
-      "en": "Alexis lives in Lyon"
-    },
-    {
-      "id": "cryptic-single-word",
-      "note": "Capture cryptique 1 mot — confidence basse, pas de sur-extraction.",
-      "expect": {"low_confidence": true},
-      "fr": "baudrier",
-      "en": "harness"
-    },
-    {
-      "id": "multi-project-dense",
-      "note": "Deux projets dans une capture — 2 project_entries distincts.",
-      "expect": {"project_entries_count": 2},
-      "fr": "J'ai avancé sur Synapse et Atlas aujourd'hui",
-      "en": "Made progress on Synapse and Atlas today"
-    },
-    {
-      "id": "implicit-goal-project",
-      "note": "Objectif long/multi-étapes sans le mot « projet » — traité comme projet.",
-      "expect": {"project_new": true},
-      "fr": "Je veux faire une 7a en escalade",
-      "en": "I want to climb a 7a route"
-    }
-  ]
+  {
+   "id": "commitment-demarche",
+   "note": "Démarche/engagement administratif adressé à une organisation — task.",
+   "expect": {
+    "atomic_note_kind": "task",
+    "must_have_note": true
+   },
+   "fr": "Déclarer mes revenus à l'URSSAF",
+   "en": "Declare my income to the tax office"
+  },
+  {
+   "id": "call-someone",
+   "note": "Action isolée bornée mais destinataire nommé — task.",
+   "expect": {
+    "atomic_note_kind": "task",
+    "must_have_note": true
+   },
+   "fr": "Rappeler le dentiste",
+   "en": "Call the dentist"
+  },
+  {
+   "id": "dated-task",
+   "note": "Tâche avec échéance — task + event_date, PAS event.",
+   "expect": {
+    "atomic_note_kind": "task",
+    "must_have_event_date": true
+   },
+   "fr": "Finir le deck pour vendredi",
+   "en": "Finish the deck by Friday"
+  },
+  {
+   "id": "dated-event",
+   "note": "Occurrence qui se produit à une date — event + event_date.",
+   "expect": {
+    "atomic_note_kind": "event",
+    "must_have_event_date": true
+   },
+   "fr": "Salon Vivatech le 24",
+   "en": "Vivatech trade show on the 24th"
+  },
+  {
+   "id": "recurring-birthday",
+   "note": "Anniversaire — event_recurring=true + fact has_birthday sur la personne.",
+   "expect": {
+    "event_recurring": true,
+    "predicate_present": "has_birthday"
+   },
+   "fr": "Anniversaire de Marie le 16 juin",
+   "en": "Marie's birthday is on June 16"
+  },
+  {
+   "id": "trivial-errand",
+   "note": "Micro-course triviale sans destinataire/date/contenu durable — ephemeral, PAS de note.",
+   "expect": {
+    "is_ephemeral": true,
+    "must_have_note": false
+   },
+   "fr": "Acheter du pain",
+   "en": "Buy some bread"
+  },
+  {
+   "id": "third-party-fact",
+   "note": "« X a Y » sur un tiers — fact, atomic_note=null.",
+   "expect": {
+    "input_type": "fact",
+    "must_have_note": false
+   },
+   "fr": "Karim a un projet appelé Atlas",
+   "en": "Karim has a project called Atlas"
+  },
+  {
+   "id": "relation-named",
+   "note": "Lien entre deux entités nommées — relation SEULE, pas de fact redondant.",
+   "expect": {
+    "relation_present": true,
+    "must_have_note": false
+   },
+   "fr": "Audric est le cousin d'Alexis",
+   "en": "Audric is Alexis's cousin"
+  },
+  {
+   "id": "reflective-note",
+   "note": "Réflexion première personne — atomic_note kind=note.",
+   "expect": {
+    "atomic_note_kind": "note",
+    "must_have_note": true
+   },
+   "fr": "Je me demande si je devrais arrêter le café",
+   "en": "I wonder if I should quit coffee"
+  },
+  {
+   "id": "new-project",
+   "note": "Projet multi-étapes déclaré — project_entry is_new + entité project.",
+   "expect": {
+    "project_new": true
+   },
+   "fr": "Nouveau projet : apprendre le japonais",
+   "en": "New project: learn Japanese"
+  },
+  {
+   "id": "hedged-fact",
+   "note": "Marqueur d'incertitude — evidence_strength=hedged.",
+   "expect": {
+    "evidence_strength": "hedged"
+   },
+   "fr": "Léa a probablement adopté un chien",
+   "en": "Léa probably adopted a dog"
+  },
+  {
+   "id": "literal-place-fact",
+   "note": "Fait à valeur littérale (lieu) — fact lives_in, pas relation.",
+   "expect": {
+    "predicate_present": "lives_in",
+    "must_have_note": false
+   },
+   "fr": "Alexis habite à Lyon",
+   "en": "Alexis lives in Lyon"
+  },
+  {
+   "id": "cryptic-single-word",
+   "note": "Capture cryptique 1 mot — confidence basse, pas de sur-extraction.",
+   "expect": {
+    "low_confidence": true
+   },
+   "fr": "baudrier",
+   "en": "harness"
+  },
+  {
+   "id": "multi-project-dense",
+   "note": "Deux projets dans une capture — 2 project_entries distincts.",
+   "expect": {
+    "project_entries_count": 2
+   },
+   "fr": "J'ai avancé sur Synapse et Atlas aujourd'hui",
+   "en": "Made progress on Synapse and Atlas today"
+  },
+  {
+   "id": "implicit-goal-project",
+   "note": "Objectif long/multi-étapes sans le mot « projet » — traité comme projet.",
+   "expect": {
+    "project_new": true
+   },
+   "fr": "Je veux faire une 7a en escalade",
+   "en": "I want to climb a 7a route"
+  },
+  {
+   "id": "mixed-birthday-facts",
+   "note": "Capture mixte (SYN-98, régression réelle du 2026-07-16, anonymisée) : une date + des faits/relations autour d'elle. La note event DOIT survivre à l'extraction des faits — Haiku (prompt v6) routait tout en faits/relations et perdait l'événement, donc l'anniversaire ne remontait jamais dans le digest. Attendu : note kind=event récurrente + fait has_birthday + relations familiales, dans le même JSON.",
+   "expect": {
+    "atomic_note_kind": "event",
+    "must_have_note": true,
+    "event_recurring": true
+   },
+   "fr": "C'est l'anniversaire de Yanis le 23 juillet, Yanis est le fils de Marc et Julie donc mon neveu et le frère de Léna",
+   "en": "It's Yanis's birthday on July 23; Yanis is Marc and Julie's son, so my nephew, and Léna's brother"
+  }
+ ]
 }
