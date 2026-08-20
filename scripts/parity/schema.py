@@ -1,16 +1,21 @@
 """SYN-171 — le schéma de sortie du classifieur, pour le décodage contraint.
 
-Pourquoi ce fichier existe. Mesuré le 2026-08-19 : Gemma E2B passe 10 des 12 cas
-du gate et échoue les DEUX cas « action à faire », toujours de la même façon —
-il écrit `input_type="task"`, une valeur qui appartient à `atomic_note_kind`.
-Le contenu, lui, est juste : la note est là, son `kind` est correct, l'entité est
-extraite. Seul le nom du champ dérape.
+Pourquoi ce fichier existe. Mesuré le 2026-08-19 : Gemma E2B passait 10 des 12
+cas du gate et échouait les DEUX cas « action à faire », toujours de la même
+façon — il écrivait `input_type="task"`, une valeur qui appartenait à
+`atomic_note_kind`. Le contenu, lui, était juste : la note était là, son `kind`
+correct, l'entité extraite. Seul le nom du champ dérapait.
 
-Or `classifier.md:90` avertit DÉJÀ de ce piège, nommément et en majuscules. Un
-avertissement plus long n'a aucune raison de faire mieux : on ne persuade pas un
-modèle de 2 milliards de paramètres, on contraint son décodage. Ollama accepte un
-JSON Schema dans `format` et n'échantillonne alors que des continuations valides,
-ce qui rend cette classe d'erreur **impossible par construction**.
+Le prompt avertissait DÉJÀ de ce piège, nommément et en majuscules. Un
+avertissement plus long n'avait aucune raison de faire mieux : on ne persuade pas
+un modèle de 2 milliards de paramètres, on contraint son décodage. Ollama accepte
+un JSON Schema dans `format` et n'échantillonne alors que des continuations
+valides, ce qui rend cette classe d'erreur **impossible par construction**.
+
+`input_type` a été retiré le 2026-08-20 — il ne pilotait rien. Ce mode de
+défaillance précis a donc disparu avec le champ qui le rendait possible : on ne
+confond plus deux champs quand il n'en reste qu'un. Le schéma contraint garde tout
+son intérêt pour les autres dérapages de forme.
 
 ⚠️ Une mesure sous contrainte ne dit pas la même chose qu'une mesure libre : elle
 mesure la justesse du modèle, plus sa capacité à respecter un format. Les deux
@@ -75,8 +80,6 @@ CLASSIFY_SCHEMA = {
     "type": "object",
     "properties": {
         "language": {"type": "string"},
-        "input_type": {"type": "string",
-                       "enum": ["fact", "episodic", "ephemeral", "resource"]},
         "atomic_note": {"type": ["string", "null"]},
         # Toujours une des trois valeurs, jamais null. Le core l'ignore de toute
         # façon quand `atomic_note` est vide (`routing.rs:196` ne l'utilise que
@@ -100,7 +103,7 @@ CLASSIFY_SCHEMA = {
     # absences se lisaient ensuite comme des erreurs de jugement. Un schéma qui
     # n'exige pas la forme complète mesure autre chose que ce qu'on croit.
     "required": [
-        "language", "input_type", "atomic_note", "atomic_note_kind", "event_date",
+        "language", "atomic_note", "atomic_note_kind", "event_date",
         "event_recurring", "is_ephemeral", "classification_confidence",
         "project_entries", "entities", "relations", "summary",
     ],

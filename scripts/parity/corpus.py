@@ -5,9 +5,8 @@ du prompt, pas des préférences. Un cas dont le prompt ne tranche pas n'a rien 
 faire ici (voir `AMBIGUOUS` plus bas).
 
 Champs, tous optionnels — un champ absent = axe non vérifié pour ce cas :
-    input_type  valeur attendue de l'énumération fermée
     note        True/False : la capture doit-elle produire une atomic_note
-    kind        note | task | event, vérifié seulement si une note est produite
+    kind        note | task | event | episode, vérifié seulement si une note est produite
     ephemeral   valeur attendue de is_ephemeral
     drop_guard  True : cette capture NE DOIT PAS disparaître (note, intention
                 ou entrée projet — au moins une trace). C'est le garde-fou du
@@ -44,22 +43,27 @@ GATE_CASES = [
     dict(id="g-ephemeral-trivial", text="Acheter du pain",
          note=False, ephemeral=True),
 
-    # — Les quatre valeurs de l'énumération input_type, une chacune —
+    # — Les natures de capture qui n'aboutissent PAS à une note —
     dict(id="g-type-fact", text="Marie a un chat qui s'appelle Gipsy",
-         input_type="fact", note=False),
+         note=False),
     # Lot 2 — un épisode vécu garde désormais sa note (kind="episode"), au lieu
     # de disparaître dans l'inbox. Ce cas attendait note=False jusqu'au 20/08.
     dict(id="g-type-episodic", text="Went for a run this morning, felt good",
-         input_type="episodic", note=True, kind="episode"),
+         note=True, kind="episode"),
+    # Le prompt ne parle plus d'URL depuis le retrait d'`input_type` (20/08) :
+    # les ressources sont pilotées par le scan de liens en aval, jamais par le
+    # classifieur. Reste vérifiable, et ça suffit : deux mots d'appréciation ne
+    # font pas une prise de position (critère b), donc pas de note — et surtout
+    # pas d'entité inventée pour le domaine.
     dict(id="g-type-resource",
          text="https://example.com/article super intéressant sur la mémoire",
-         input_type="resource"),
+         note=False),
     dict(id="g-type-ephemeral", text="Acheter un harnais",
-         input_type="ephemeral", note=False, ephemeral=True),
+         note=False, ephemeral=True),
 
     # — Fait contre relation : l'anti-redite de juin 2026 —
     dict(id="g-relation", text="Audric est le cousin d'Alexis",
-         input_type="fact", note=False, rel="cousin"),
+         note=False, rel="cousin"),
 
     # — Projet : la frontière avec une simple tâche —
     dict(id="g-project-new", text="Nouveau projet : rénovation de l'appartement",
@@ -122,25 +126,30 @@ HARD_CASES = [
     dict(id="j3", text="Je veux apprendre le japonais", proj="new"),
 
     # FAIT contre RELATION : objet = entité nommée → la relation seule
-    dict(id="r1", text="Audric est le cousin d'Alexis", input_type="fact", note=False, rel="cousin"),
-    dict(id="r2", text="Pierre travaille chez Acme", input_type="fact", note=False, rel="work"),
+    dict(id="r1", text="Audric est le cousin d'Alexis", note=False, rel="cousin"),
+    dict(id="r2", text="Pierre travaille chez Acme", note=False, rel="work"),
 
     # FAIT sur autrui : pas de note
-    dict(id="f1", text="Marie a un chat qui s'appelle Gipsy", input_type="fact", note=False),
-    dict(id="f2", text="Ma mère a un nouveau chat", input_type="fact", note=False),
+    dict(id="f1", text="Marie a un chat qui s'appelle Gipsy", note=False),
+    dict(id="f2", text="Ma mère a un nouveau chat", note=False),
 
     # HEDGED : formulation prudente
-    dict(id="h1", text="Pierre déménage probablement à Lyon", input_type="fact", note=False),
-    dict(id="h2", text="Léa a sans doute adopté un chien", input_type="fact", note=False),
+    dict(id="h1", text="Pierre déménage probablement à Lyon", note=False),
+    dict(id="h2", text="Léa a sans doute adopté un chien", note=False),
 
     # RESOURCE
+    # ⚠ INSTABLE depuis le retrait d'`input_type` (20/08) : `is_ephemeral`
+    # oscille (~2 fois sur 3 à true) sur une capture de lien. Conséquence réelle
+    # mais mineure — une intention à 48 h de trop, jamais une perte. Asserté ici
+    # pour que la dérive reste comptée au lieu d'être oubliée ; volontairement PAS
+    # dans le gate, où un cas instable rendrait l'étage 1 capricieux.
     dict(id="u1", text="https://example.com/article super intéressant sur la mémoire",
-         input_type="resource"),
+         note=False, ephemeral=False),
 
     # EPISODIC : action déjà vécue, routinière → pas de note (+ progrès projet)
     dict(id="ep1", text="J'ai été escalader avec Alexis aujourd'hui et j'ai réussi mon 6b+",
-         input_type="episodic", note=False, proj="existing"),
-    dict(id="ep2", text="Went for a run this morning, felt good", input_type="episodic", note=False),
+         note=False, proj="existing"),
+    dict(id="ep2", text="Went for a run this morning, felt good", note=False),
 ]
 
 # Ajouts SYN-171 : l'atomicité n'était couverte par aucun cas de SYN-124.
@@ -201,13 +210,12 @@ ADVERSARIAL_CASES = [
     # — Épisode pur (cas 3 de l'arbitrage) : ne vaut que comme moment.
     #   Aujourd'hui : aucune note, seule la capture brute reste dans l'inbox.
     dict(id="x-pure-episode", text="J'ai mangé chez Léa hier",
-         input_type="episodic", drop_guard=True,
+         drop_guard=True,
          why="La timeline mérite une trace durable."),
 
     # — LA frontière episodic ⇄ ephemeral, jamais stressée jusqu'ici : passé
     #   vécu ET course triviale. C'est ce cas qui décide s'il faut renommer.
     dict(id="x-past-errand", text="J'ai acheté du pain ce matin",
-         input_type="episodic",
          why="Déjà vécu ⇒ episodic. Une course FAITE n'est plus une intention."),
 
     # — Anniversaire, les trois formulations (arbitrage 7).
@@ -237,7 +245,7 @@ ADVERSARIAL_CASES = [
          why="Animal du foyer : persistant, mérite son nœud."),
     dict(id="x-pet-incidental",
          text="J'ai vu un ours au zoo qui s'appelait Balthazar",
-         input_type="episodic", no_entity="Balthazar",
+         no_entity="Balthazar",
          why="Croisé une fois : sous le seuil de persistance. Pas dramatique s'il est créé."),
 
     # — Invention (arbitrage 13). Qwen a produit `has_breed = \"Domestic cat

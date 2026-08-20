@@ -5,7 +5,7 @@ inutilisable quelle que soit son intelligence, et s'arrête au premier trouvé.
 
     1. avale-t-il le prompt          (une fenêtre trop courte le tronque en silence)
     2. rend-il du JSON exploitable   (valide, non tronqué)
-    3. respecte-t-il l'énumération   (input_type ∈ fact|episodic|ephemeral|resource)
+    3. respecte-t-il l'énumération   (atomic_note_kind ∈ note|task|event|episode)
     4. ne perd-il rien               (drop_guard : une action garde une trace)
 
 Usage :
@@ -30,7 +30,7 @@ from scripts.parity import context, providers  # noqa: E402
 from scripts.parity.corpus import AMBIGUOUS, GATE_CASES  # noqa: E402
 from scripts.parity.schema import CLASSIFY_SCHEMA  # noqa: E402
 
-VALID_INPUT_TYPES = {"fact", "episodic", "ephemeral", "resource"}
+VALID_NOTE_KINDS = {"note", "task", "event", "episode"}
 
 
 def _check_blocking(case: dict, reply: providers.Reply, parsed: dict | None,
@@ -60,9 +60,16 @@ def _check_blocking(case: dict, reply: providers.Reply, parsed: dict | None,
         return f"sortie non-JSON : {head!r}"
 
     # 3. Énumération fermée.
-    it = parsed.get("input_type")
-    if it not in VALID_INPUT_TYPES:
-        return f"input_type hors énumération : {it!r}"
+    #
+    # C'est `atomic_note_kind` qui porte l'enjeu : il décide du stockage, de la
+    # décroissance et de l'affichage. Un modèle qui invente une valeur hors
+    # énumération fait dégrader la note en "note" par le core (routing.rs:196) —
+    # une tâche silencieusement perdue. La valeur n'a de sens qu'avec une note.
+    raw_kind = parsed.get("atomic_note_kind")
+    note = parsed.get("atomic_note")
+    if bool(note) and str(note).strip().lower() not in ("", "null", "none"):
+        if raw_kind not in VALID_NOTE_KINDS:
+            return f"atomic_note_kind hors énumération : {raw_kind!r}"
 
     # 4. Rien ne se perd — au sens DURABLE du terme.
     #
@@ -102,8 +109,6 @@ def _quality_notes(case: dict, parsed: dict) -> list[str]:
             out.append(f"kind attendu={case['kind']} obtenu={got}")
     if "ephemeral" in case and bool(parsed.get("is_ephemeral")) != case["ephemeral"]:
         out.append(f"ephemeral attendu={case['ephemeral']}")
-    if case.get("input_type") and parsed.get("input_type") != case["input_type"]:
-        out.append(f"input_type attendu={case['input_type']} obtenu={parsed.get('input_type')}")
     if case.get("rel"):
         rels = parsed.get("relations") or []
         if not any(case["rel"] in str(r.get("predicate", "")).lower() for r in rels):

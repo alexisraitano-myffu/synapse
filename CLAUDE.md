@@ -106,11 +106,13 @@ python -m scripts.seed_demo_map            # (re)seed · --clean removes all syn
 ### Data flow
 
 ```
-Capture → inbox → Dream Cycle ─┬─ fact      → entities / facts / relations
-                               ├─ episodic  → atomic_notes (+ atomic_notes_vec)
-                               ├─ ephemeral → intentions (48h TTL)   ← NON-exclusive: durable
-                               │                                       entities are still extracted
-                               └─ any URL   → fetch + Haiku summary → resources (searchable, SYN-21)
+Capture → inbox → Dream Cycle ─┬─ entities/facts/relations  → the entity graph
+                               ├─ atomic_note              → atomic_notes (+ atomic_notes_vec),
+                               │                             kind = note | task | event | episode
+                               ├─ project_entries          → project aggregate (SYN-40)
+                               ├─ is_ephemeral             → intentions (48h TTL)   ← NON-exclusive:
+                               │                             durable entities are still extracted
+                               └─ any URL in the text      → fetch + Haiku summary → resources (SYN-21)
 ```
 
 Routing is **non-exclusive**: one capture can produce entities + atomic_note + project_entries + an intention + a resource at once (`_process_entry`). URL-driven resource fetch runs for any capture, even a pure intention.
@@ -119,15 +121,25 @@ Routing is **non-exclusive**: one capture can produce entities + atomic_note + p
 
 ### The Dream Cycle (`dream_cycle/cycle.py` — host orchestrator over the `synapse-core` Rust brain)
 
-Operates per inbox entry, with French prompts. Classifies each entry, then routes by `input_type`:
+Operates per inbox entry. **There is no capture-level "type" that selects a lane** — each output is
+decided on its own, from the field that carries it (SYN-171, 2026-08-20: the `input_type` field was
+removed; it steered nothing and only gave the model a fifth way to be wrong). What the classifier
+emits, and what each field triggers:
 
-- **fact** → the 6-step graph pipeline below.
-- **episodic** → `write_episodic_note`: stores raw content + summary + `entities_mentioned` in `atomic_notes` with `memory_strength=1.0`, and vectorizes it into `atomic_notes_vec`.
-- **ephemeral** → `intentions` (48h TTL). Non-exclusive: durable entities in the same capture are still routed (SYN-58).
-- **resource** → any URL in the capture is fetched + extracted (dependency-free tag stripper) + summarised (Haiku, prompt = data `resource-summary.md`) + stored in `resources`, searchable via its embedded summary. T5: the whole pipeline lives in the core (`resources.rs`, ureq); `dream_cycle/resources.py` is the shim (SYN-21).
+- **`entities[]` + their `facts[]` + `relations[]`** → the 6-step graph pipeline below.
+- **`atomic_note` + `atomic_note_kind`** → one `atomic_notes` row, `memory_strength=1.0`, vectorized.
+  `note` = a durable thought · `task` = something to do · `event` = a dated occurrence ·
+  `episode` = something lived (SYN-171 lot 2: kept, but decays on τ/3 — `decay.rs::tau_for_kind`).
+- **`project_entries[]`** → the project aggregate (SYN-40).
+- **`is_ephemeral`** → `intentions` (48h TTL). Non-exclusive: durable entities in the same capture
+  are still routed (SYN-58).
+- **any URL found in the capture TEXT** → fetched + extracted (dependency-free tag stripper) +
+  summarised (Haiku, prompt = data `resource-summary.md`) + stored in `resources`, searchable via its
+  embedded summary. Driven by `extract_urls`, never by anything the classifier says. T5: the whole
+  pipeline lives in the core (`resources.rs`, ureq); `dream_cycle/resources.py` is the shim (SYN-21).
 
 The 6 steps for facts:
-1. **Classify**: Haiku tags `input_type` and extracts entities, facts (snake_case predicates + `persistence_value` 1 to 5), relations, summary. **Entity type vocab is dynamic** (SYN-58): the prompt reads `active_entity_types` at runtime (uncached block); an entity that fits no active type carries `type_proposal{value,reason}` instead of being mis-typed. Garde-fou: `type=project` only with a matching `project_entries` item.
+1. **Classify**: Haiku extracts entities, facts (snake_case predicates + `persistence_value` 1 to 5), relations, summary. **Entity type vocab is dynamic** (SYN-58): the prompt reads `active_entity_types` at runtime (uncached block); an entity that fits no active type carries `type_proposal{value,reason}` instead of being mis-typed. Garde-fou: `type=project` only with a matching `project_entries` item.
 2. **Resolve**: matches entities to existing rows (canonical name or alias); resolves relative dates to absolute via `dateparser` (date-like predicates only).
 3. **Score** (`compute_confidence`): evidence base (`explicit` 0.92 · `hedged` 0.65 · `implicit` 0.40) + existing/mention/persistence bonuses → [0,1]; `hedged` clamped to 0.84.
 4. **Route**: **entity nodes are created on mention** (decoupled from fact confidence) if they pass `MIN_ENTITY_PERSISTENCE` (≥2) OR appear in a relation OR already exist. A vocab-gap entity is created `status='pending'` + an `entity_type_proposals` row. **Facts** are confidence-gated: > 0.85 → `facts`; 0.5 to 0.85 → `pending_facts`; < 0.5 → `review_queue`. Newly-created entities are scanned for duplicates → `entity_merge_proposals` (substring SYN-39, then embedding fallback SYN-61). All fact writes go through **`insert_fact`** (core `routing.rs`; host callers use `conn.insert_fact` via the `facts_store` shim), which applies SYN-37 last-writes-wins: a single-valued predicate (`works_at`, `lives_in`, …) obsoletes the prior active fact (`obsoleted_at`/`obsoleted_by`) when the new one is ≥ as confident.
@@ -179,7 +191,7 @@ installable via le tag/release **`python-legacy`**.
 
 - **T5.1 `facts_store`** → `routing::insert_fact`, exposé sur la **passerelle SQL**
   (`conn.insert_fact`) pour que la transaction ouverte du caller enveloppe l'écriture
-  (le registre `SINGLE_VALUED_PREDICATES` vit dans `routing.rs`).
+  (le registre `SINGLE_VALUED_FAMILIES` vit dans `routing.rs` — groupé par affirmation depuis SYN-171, pour que `birthday` périme `has_birthday` au lieu de coexister avec).
 - **T5.2 decay** → `decay.rs` (parse tolérant, ancre réactivation, τ env), exposé sur la
   passerelle (`conn.apply_decay/apply_entity_decay/reactivate_notes[_for_entities]`),
   horloge injectable `now` pour les tests.
@@ -336,7 +348,7 @@ EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" 
 CLAUDE_MODEL = "claude-haiku-4-5-20251001"  # Dream Cycle reasoning only
 ```
 
-**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CONSOLIDATION_HOURS` (`"0,12"` = midnight+noon, twice-daily + startup/wake catch-up, SYN-93), `SYNAPSE_CONSOLIDATION_MAX_QUEUED` (30, SYN-93), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19). Single-valued predicates list (SYN-37): `SINGLE_VALUED_PREDICATES` in the core's `routing.rs` (left `facts_store` at T5). (`SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is legacy/unused since SYN-93.)
+**Tunable env vars** (consumed by the cycle): `SYNAPSE_AUTO_CYCLE`, `SYNAPSE_CONSOLIDATION_HOURS` (`"0,12"` = midnight+noon, twice-daily + startup/wake catch-up, SYN-93), `SYNAPSE_CONSOLIDATION_MAX_QUEUED` (30, SYN-93), `SYNAPSE_REFINEMENT_THRESHOLD`, `SYNAPSE_MERGE_EMBEDDING_THRESHOLD` (0.85, SYN-61), `SYNAPSE_DECAY_TAU_DAYS` (30, SYN-19), `SYNAPSE_DECAY_TAU_EPISODE_DAYS` (τ/3 = 10, SYN-171: a lived episode fades faster than a note). Single-valued predicate families (SYN-37/171): `SINGLE_VALUED_FAMILIES` in the core's `routing.rs` (left `facts_store` at T5). (`SYNAPSE_CYCLE_DEBOUNCE_SECONDS` is legacy/unused since SYN-93.)
 
 **Anthropic client (`anthropic_client.py`, SYN-105).** *Single* place that builds the Anthropic client: `cycle.py`, `digest.py`, `api/app.py` all call `get_client()`/`get_client_or_none()`. A normal key (`sk-ant-…`) → direct. A beta **fuel token** (`syn-fuel-…`, the closed-beta proxy that lends testers my credits) → client pointed at the fuel proxy with the token in an `x-synapse-token` header and a placeholder api_key; the real key lives only on the Cloudflare Worker (separate repo `synapse-fuel-proxy/`, **deployed** at `synapse-fuel-proxy.alexis-raitano.workers.dev`). The proxy URL is baked in (`_DEFAULT_FUEL_BASE_URL`), overridable via `SYNAPSE_FUEL_BASE_URL` (set it empty to disable the fuel path). Only consulted for `syn-fuel-` tokens, so a normal key (Mac mini) is unaffected. Disposable by design: stop issuing fuel tokens and the seam is inert.
 

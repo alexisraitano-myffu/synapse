@@ -1,7 +1,7 @@
 """SYN-171 — extraire le CHEMIN DE DÉCISION pris par chaque modèle, cas par cas.
 
 Le score dit « 10 sur 12 ». Il ne dit pas *où* le modèle a bifurqué. Or les trois
-axes que `classifier.md` déclare ORTHOGONAUX — `input_type`, `atomic_note`,
+axes que `classifier.md` déclare ORTHOGONAUX — `atomic_note`,
 `is_ephemeral` — sont exactement là où les petits modèles se trompent : ils les
 traitent comme un choix unique et recopient l'un dans l'autre.
 
@@ -17,7 +17,7 @@ import json
 import sys
 from pathlib import Path
 
-VALID_INPUT_TYPES = {"fact", "episodic", "ephemeral", "resource"}
+VALID_NOTE_KINDS = {"note", "task", "event", "episode"}
 
 
 def path_of(parsed: dict | None) -> dict:
@@ -29,12 +29,10 @@ def path_of(parsed: dict | None) -> dict:
     raw_kind = parsed.get("atomic_note_kind")
     # Miroir de `routing.rs:196` — le core comble un kind manquant par "note".
     kind = raw_kind if isinstance(raw_kind, str) and raw_kind else "note"
-    it = parsed.get("input_type")
     facts = sum(len(e.get("facts") or []) for e in (parsed.get("entities") or []))
     return {
         "parsed": True,
-        "input_type": it,
-        "input_type_valid": it in VALID_INPUT_TYPES,
+        "kind_valid": (not has_note) or raw_kind in VALID_NOTE_KINDS,
         "has_note": has_note,
         "kind": kind if has_note else None,
         "kind_defaulted": has_note and not (isinstance(raw_kind, str) and raw_kind),

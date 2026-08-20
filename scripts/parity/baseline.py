@@ -41,7 +41,7 @@ SETS = {
 # texte d'une note varie d'une exécution à l'autre sans que ce soit une
 # régression, alors qu'une branche qui bascule en est toujours une (ou une
 # correction, et c'est justement ce qu'on veut voir).
-DIFFED = ("input_type", "has_note", "kind", "ephemeral", "facts", "relations", "projects")
+DIFFED = ("has_note", "kind", "ephemeral", "facts", "relations", "projects")
 
 
 def cmd_run(args) -> int:
@@ -68,7 +68,7 @@ def cmd_run(args) -> int:
                        confidence=(parsed or {}).get("classification_confidence"))
             out["cases"][case["id"]] = rec
             mark = "·" if rec.get("parsed") else "✗"
-            print(f"  {mark} {case['id']:22} it={str(rec.get('input_type')):10} "
+            print(f"  {mark} {case['id']:22} "
                   f"note={str(rec.get('has_note')):5} kind={str(rec.get('kind')):6} "
                   f"f={rec.get('facts')} r={rec.get('relations')}", flush=True)
 
