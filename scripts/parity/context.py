@@ -72,8 +72,8 @@ def working_memory_block(prior: list[str], current: str) -> str:
     lines = [_WM_HEADER]
     for i, text in enumerate(prior):
         ts = _WM_STAMPS[min(i, len(_WM_STAMPS) - 2)]
-        lines.append(f"[{TODAY} {ts} · consolidé] {' '.join(text.split())}")
-    lines.append(f"[{TODAY} {_WM_STAMPS[-1]} · à consolider] {' '.join(current.split())}")
+        lines.append(f"[{TODAY} {ts} · consolidated] {' '.join(text.split())}")
+    lines.append(f"[{TODAY} {_WM_STAMPS[-1]} · pending] {' '.join(current.split())}")
     return "\n".join(lines)
 
 
@@ -83,7 +83,7 @@ def working_memory_block(prior: list[str], current: str) -> str:
 # contexte vivant peut déplacer.
 def static_projects_block() -> str:
     return (
-        "[PROJETS EXISTANTS — utilise leur canonical_name exact pour le rattachement]\n"
+        "[EXISTING PROJECTS — use their exact canonical_name to attach]\n"
         "- Climbing\n"
         "- Synapse"
     )

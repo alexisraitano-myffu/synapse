@@ -85,11 +85,11 @@ _WM_LOOKBACK_HOURS = 24
 # importe cet en-tête : c'est ce qui rend le défaut mesurable au lieu de
 # n'apparaître qu'en prod.
 _WM_HEADER = (
-    "[CONTEXTE — captures récentes, pour RÉSOUDRE LES RÉFÉRENCES "
-    "(il, elle, ça, ce projet, « hier »…).\n"
-    "⚠ N'EXTRAIS RIEN de ce bloc : seule la capture COURANTE (le message "
-    "utilisateur) doit produire entités/faits/notes. Ce bloc n'est qu'un rappel "
-    "du fil pour lever les ambiguïtés.]"
+    "[CONTEXT — recent captures, to RESOLVE REFERENCES (he, she, it, that project, "
+    "\"yesterday\"…; FR: il, elle, ça, ce projet, « hier »…).\n"
+    "⚠ EXTRACT NOTHING from this block: only the CURRENT capture (the user message) "
+    "may produce entities/facts/notes. This block is only a reminder of the thread, "
+    "to lift ambiguities.]"
 )
 
 
@@ -106,8 +106,8 @@ def _build_day_context(conn, batch_entries, now) -> str | None:
         (cutoff, _WM_MAX_CAPTURES),
     ))
     prior.reverse()  # back to chronological
-    timeline = [(p["content"], p.get("created_at"), "consolidé") for p in prior]
-    timeline += [(e["content"], e.get("created_at"), "à consolider") for e in batch_entries]
+    timeline = [(p["content"], p.get("created_at"), "consolidated") for p in prior]
+    timeline += [(e["content"], e.get("created_at"), "pending") for e in batch_entries]
     if len(timeline) <= 1:
         return None
 
@@ -118,7 +118,7 @@ def _build_day_context(conn, batch_entries, now) -> str | None:
         text = " ".join((content or "").split())
         line = f"[{ts} · {phase}] {text}"
         if used + len(line) > _WM_MAX_CHARS:
-            lines.append("… (contexte tronqué)")
+            lines.append("… (context truncated)")
             break
         lines.append(line)
         used += len(line)

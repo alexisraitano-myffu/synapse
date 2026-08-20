@@ -70,20 +70,20 @@ _BUILTIN_TYPES = ["person", "place", "project", "concept", "organization", "anim
 
 def _static_types_block() -> str:
     return (
-        "[TYPES D'ENTITÉ ACTIFS — choisis EXACTEMENT l'un d'eux pour `type`]\n"
+        "[ACTIVE ENTITY TYPES — pick EXACTLY one of these for `type`]\n"
         + ", ".join(_BUILTIN_TYPES)
-        + "\nAucun ne convient ? → type=\"concept\" + type_proposal "
+        + "\nNone fits? → type=\"concept\" + type_proposal "
         "{\"value\": \"<type_snake>\", \"reason\": \"...\"}."
     )
 
 
 def _static_owner_block() -> str:
     return (
-        f"[AUTEUR — l'utilisateur de ce second cerveau]\n"
-        f"L'auteur des captures est « {_OWNER} ». Toute référence à la PREMIÈRE "
-        f"PERSONNE (je, j', me, moi, mon, ma, mes / I, me, my) le désigne. Utilise "
-        f"EXACTEMENT le canonical_name « {_OWNER} » pour les faits et relations le "
-        f"concernant. Ne crée JAMAIS d'entité générique « auteur »/« User »/« moi »."
+        f"[AUTHOR — the user of this second brain]\n"
+        f"The author of the captures is \"{_OWNER}\". Any FIRST-PERSON reference "
+        f"designates them — EN: I, me, my, mine; FR: je, j', me, m', moi, mon, ma, mes. "
+        f"Use EXACTLY the canonical_name \"{_OWNER}\" for facts and relations about them. "
+        f"NEVER create a generic entity \"author\", \"User\" or \"me\"."
     )
 
 

@@ -41,7 +41,7 @@ def test_build_day_context_includes_prior_and_batch(isolated_db):
         conn.close()
     assert ctx is not None
     assert "Romain" in ctx and "Atlas" in ctx          # prior + current batch both present
-    assert "N'EXTRAIS RIEN" in ctx                      # the no-extraction guard
+    assert "EXTRACT NOTHING" in ctx                      # the no-extraction guard
 
 
 def test_build_day_context_drops_old_prior(isolated_db):
@@ -119,7 +119,7 @@ def test_classify_params_shape_with_working_memory(isolated_db):
     assert sysblocks[0]["cache_control"] == {"type": "ephemeral"}
     assert any(b.get("text") == "CTX" and b.get("cache_control") for b in sysblocks)
     # uncached live blocks (vocab + projects) follow the cached prefix.
-    assert any("TYPES D'ENTITÉ ACTIFS" in b.get("text", "") for b in sysblocks)
+    assert any("ACTIVE ENTITY TYPES" in b.get("text", "") for b in sysblocks)
 
 
 def test_parse_classify_text_strips_fence_and_guards_truncation():
