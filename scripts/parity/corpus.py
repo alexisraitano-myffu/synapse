@@ -46,10 +46,11 @@ GATE_CASES = [
     # — Les natures de capture qui n'aboutissent PAS à une note —
     dict(id="g-type-fact", text="Marie a un chat qui s'appelle Gipsy",
          note=False),
-    # Lot 2 — un épisode vécu garde désormais sa note (kind="episode"), au lieu
-    # de disparaître dans l'inbox. Ce cas attendait note=False jusqu'au 20/08.
+    # Lot 2 puis arbitrage du 20/08 : un épisode vécu garde sa note, MAIS un
+    # footing solitaire commenté d'une humeur n'a rien où revenir. Même texte que
+    # `ep2` — les deux doivent rester d'accord, ils ont divergé une journée.
     dict(id="g-type-episodic", text="Went for a run this morning, felt good",
-         note=True, kind="episode"),
+         note=False),
     # Le prompt ne parle plus d'URL depuis le retrait d'`input_type` (20/08) :
     # les ressources sont pilotées par le scan de liens en aval, jamais par le
     # classifieur. Reste vérifiable, et ça suffit : deux mots d'appréciation ne
@@ -147,8 +148,11 @@ HARD_CASES = [
          note=False, ephemeral=False),
 
     # EPISODIC : action déjà vécue, routinière → pas de note (+ progrès projet)
+    # Les deux côtés de la frontière épisode, arbitrée le 20/08 : ce n'est pas
+    # « vécu ou pas », c'est « y a-t-il quelque chose à y revenir ». Une personne,
+    # un lieu, un accomplissement, une première fois — sinon rien.
     dict(id="ep1", text="J'ai été escalader avec Alexis aujourd'hui et j'ai réussi mon 6b+",
-         note=False, proj="existing"),
+         note=True, kind="episode", proj="existing"),
     dict(id="ep2", text="Went for a run this morning, felt good", note=False),
 ]
 
@@ -213,10 +217,13 @@ ADVERSARIAL_CASES = [
          drop_guard=True,
          why="La timeline mérite une trace durable."),
 
-    # — LA frontière episodic ⇄ ephemeral, jamais stressée jusqu'ici : passé
-    #   vécu ET course triviale. C'est ce cas qui décide s'il faut renommer.
+    # — LA frontière : passé vécu ET course triviale. Arbitré le 20/08 — une
+    #   corvée solitaire ne mérite PAS de note permanente (la règle (f) du lot 2
+    #   était trop large). Ce qui reste garanti, et c'est l'essentiel : elle ne
+    #   redevient jamais une intention à 48 h. Une course FAITE n'est pas à faire.
     dict(id="x-past-errand", text="J'ai acheté du pain ce matin",
-         why="Déjà vécu ⇒ episodic. Une course FAITE n'est plus une intention."),
+         note=False, ephemeral=False,
+         why="Rien à y revenir : pas de note. Mais faite, donc jamais un rappel."),
 
     # — Anniversaire, les trois formulations (arbitrage 7).
     dict(id="x-birthday-party", text="La fête d'anniversaire de Yanis est le 12 juin",
@@ -247,6 +254,15 @@ ADVERSARIAL_CASES = [
          text="J'ai vu un ours au zoo qui s'appelait Balthazar",
          no_entity="Balthazar",
          why="Croisé une fois : sous le seuil de persistance. Pas dramatique s'il est créé."),
+
+    # — Le discriminant de la frontière épisode : solitaire ET routinier ne
+    #   suffit PAS à exclure. Une PREMIÈRE FOIS mérite sa note, sans personne ni
+    #   lieu. Sans ce cas, « solitaire ⇒ pas de note » passerait pour la règle,
+    #   et on perdrait exactement les épisodes qui comptent.
+    dict(id="x-episode-first-time",
+         text="J'ai couru mon premier semi-marathon dimanche",
+         note=True, kind="episode",
+         why="Une première fois est un accomplissement : il y a de quoi y revenir."),
 
     # — Invention (arbitrage 13). Qwen a produit `has_breed = \"Domestic cat
     #   (domestic shorthair or domestic longhair)\"` sur cette phrase, qui ne dit
@@ -297,9 +313,12 @@ SCENARIO_CASES = [
          wm=["La fête d'anniversaire de Yanis est le 12 juin",
              "Marie m'a dit qu'elle devait appeler le dentiste",
              "J'ai mangé chez Léa hier"],
-         expect=dict(note=True, kind="episode"),
+         expect=dict(note=False),
          repeat=5,
-         why="DÉFAUT OUVERT. Saillance relative, pas redondance : à côté d'un épisode\n              plus riche au fil, l'ordinaire cesse de valoir une note. Retirer cette\n              seule ligne du fil ramène l'épisode 3/3. Une consigne anti-suppression\n              dans l'en-tête du bloc a été mesurée sans effet (0/5 avant ET après)."),
+         why="Le contexte avait raison avant le prompt : à côté d'un épisode plus riche "
+              "au fil, l'ordinaire cesse de valoir une note — et c'est le bon appel "
+              "(arbitré le 20/08). La règle (f) a été assouplie pour dire la même chose "
+              "SANS dépendre du fil ; ce cas garde l'invariant : même réponse seule ou au fil."),
 
     # Témoin — même capture, fil SANS RAPPORT. Sert à distinguer « la mémoire de
     # travail déstabilise » de « ces captures contiennent des quasi-jumelles ».
@@ -315,9 +334,9 @@ SCENARIO_CASES = [
     dict(id="s-done-errand-alone",
          text="J'ai acheté du pain ce matin",
          wm=[],
-         expect=dict(note=True, kind="episode"),
+         expect=dict(note=False),
          repeat=5,
-         why="Témoin : seule, la même capture donne son épisode."),
+         why="Témoin : la MÊME réponse que dans le fil — c'est ça, l'invariant."),
 
     # Témoin — capture seule, aucun bloc mémoire. C'est la mesure de référence
     # des étages 1 et 2 : elle DOIT être stable, sinon le reste ne veut rien dire.
