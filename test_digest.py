@@ -142,7 +142,11 @@ def test_birthday_fact_surfaces_as_upcoming(isolated_db):
     finally:
         conn.close()
     bdays = [e for e in week["upcoming_events"] if e["kind"] == "birthday"]
-    assert any(e["title"] == "Anniversaire de Benjamin" for e in bdays)
+    # SYN-119/171 — libellé EN-base comme tout le squelette : il voyage DANS la
+    # charge utile du digest, et une étiquette française sur une matière anglaise
+    # entraîne le rendu vers le français (mesuré sur Gemma E2B). Le prompt le rend
+    # dans la langue dominante du contenu.
+    assert any(e["title"] == "Birthday: Benjamin" for e in bdays)
     assert all(e["recurring"] for e in bdays)
     assert not any("Lointain" in e["title"] for e in bdays)   # >7 days out excluded
 

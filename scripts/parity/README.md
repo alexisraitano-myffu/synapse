@@ -11,6 +11,7 @@ décision s'est prise sur un harnais jeté après usage. Celui-ci est versionné
 | **Étage 1 — `gate`** | Le modèle est-il *utilisable* ? | ~12 appels |
 | **Étage 2 — `baseline`** | Le modèle est-il *bon* ? | 58 cas |
 | **Étage 3 — `scenario`** | La règle tient-elle *en contexte* ? | 5 scénarios × 5 passes |
+| **Étage 4 — `prose`** | Les CINQ AUTRES prompts tiennent-ils ? | 8 cas |
 
 Les deux premiers mesurent une capture seule. Le troisième mesure ce que le
 CONTEXTE fait à la décision — et c'est là qu'on a trouvé des règles vertes aux
@@ -132,3 +133,58 @@ qu'une **seule ligne** du fil suffisait, et laquelle.
 L'en-tête du bloc est **importé de `dream_cycle/cycle.py`**, jamais recopié : un
 harnais qui n'envoie pas exactement ce que la prod envoie ne mesure pas la prod —
 et c'est précisément ce trou qui a laissé passer ce défaut pendant des semaines.
+
+
+## Étage 4 — les cinq prompts qui écrivent
+
+`python -m scripts.parity.prose <modèle>`
+
+Le classifieur LIT et rend du JSON : on compare des branches. Les cinq autres
+ÉCRIVENT, et ce sont eux qui produisent ce que l'utilisateur voit — la fiche
+d'une entité, la synthèse d'un projet, le digest du lundi, le résumé d'un lien.
+Aucun garde-fou ne les couvrait jusqu'au 20/08/2026.
+
+On ne compare pas deux proses. Mais chacun de ces prompts ÉNONCE des contraintes,
+et une contrainte énoncée se vérifie : nombre de phrases, langue de sortie,
+absence de relatif flottant, reprise verbatim des faits durables, déduplication,
+absence de préambule, absence d'invention. **Règle stricte : tout contrôle cite la
+ligne du prompt dont il dérive.** Un contrôle qui exprimerait un goût ferait
+échouer un modèle sur une exigence que personne ne lui a formulée — c'est arrivé
+trois fois à la première exécution, et les trois fois c'était le contrôle qui
+avait tort, pas le modèle :
+
+* le contrôle TIMELESS sanctionnait « ## Cette semaine », un titre que
+  `digest.md` **prescrit** ;
+* le contrôle de longueur du digest (~250-400 mots) tournait sur une matière de
+  trois lignes, où le prompt interdit justement de meubler ;
+* un contrôle exigeait l'élagage d'un budget périmé, alors que le même prompt
+  demande aussi de « préserver l'historique des décisions importantes ».
+
+Le dernier n'a pas été corrigé mais **retiré** : le prompt dit les deux, c'est une
+ambiguïté du prompt, et la trancher est une décision produit — pas quelque chose
+qu'un harnais peut décider à sa place.
+
+### Ce que cet étage a trouvé
+
+**Les prompts qui écrivent discriminent bien plus durement que le classifieur.**
+Sur le gate, les trois petits modèles passent 12/12 en décodage contraint. Sur la
+prose, où aucun schéma ne peut aider :
+
+| modèle | prose | remarque |
+| -- | -- | -- |
+| Haiku 4.5 | **8/8** | la référence |
+| Gemma 4 E2B (4,6 Md) | 6/8 | échoue la déduplication et TIMELESS |
+| Qwen 2.5 3B | 5/8 | ignore la directive de langue |
+| Llama 3.2 3B | 3/8 | **invente une profession** sur une fiche |
+
+Llama écrit « Nadia Belkacem est **avocate** au Cabinet Orsay » : rien dans la
+matière ne dit sa profession, il l'a déduite du mot « Cabinet ». Sur une fiche,
+c'est-à-dire sur ce que l'utilisateur relit comme étant sa mémoire.
+
+**Et un défaut de la prod, trouvé en construisant l'étage** : deux prompts sur six
+(`project-summary`, `project-refinement`) ne disaient RIEN de la langue, et tout
+l'échafaudage des messages (« Projet : », « Synthèse actuelle : », « Entité : »,
+« Titre : ») était en français. Haiku s'en sortait par bon sens ; E2B traduisait
+une matière anglaise en français. La cause n'était d'ailleurs pas le prompt mais
+l'ÉCHAFAUDAGE — vérifié en changeant l'un puis l'autre. Squelette repassé EN-base
+(SYN-119 était resté à moitié fait), et le cas est vert sur E2B.
