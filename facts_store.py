@@ -6,7 +6,8 @@ also used by the routing path — one implementation, zero drift). This module i
 the host-side shim kept for its call sites (validation, reclassify endpoint) and
 the historical signature; the write runs on the CALLER's connection so an open
 `with conn:` transaction wraps it. The single-valued predicate registry lives in
-the core too (`routing.rs::SINGLE_VALUED_PREDICATES`).
+the core too (`routing.rs::SINGLE_VALUED_FAMILIES` — grouped by claim, so that
+`birthday` supersedes `has_birthday` rather than sitting next to it).
 """
 
 

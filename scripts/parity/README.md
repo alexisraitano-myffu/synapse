@@ -66,6 +66,17 @@ Le code de sortie vaut 1 en cas de NO-GO : utilisable en CI.
   réserve.
 * **Un modèle à raisonnement** consomme son budget de sortie en `thinking` avant
   de répondre : on regarde `stop_reason`, pas la seule présence de texte.
+* **Un `diff` non nul ne prouve rien tant qu'on n'a pas mesuré le plancher.**
+  Deux passes du MÊME prompt à température 0 divergent encore : 2 cas sur 58 au
+  20/08/2026 sur Haiku, uniquement sur les compteurs `facts`/`relations`, jamais
+  sur une branche de routage. Avant de lire un écart de comptage comme un effet
+  du prompt, rejouer la baseline contre elle-même. Un basculement de branche,
+  lui, n'est jamais du bruit.
+* **Une règle en prose a des effets de second ordre.** Le 20/08, trois écritures
+  successives de la même règle ont chacune cassé une règle voisine — la note
+  d'atomicité, puis la déduction, puis la tâche encore due absorbée par
+  l'épisode. Aucune n'était fausse ; toutes déplaçaient un a priori. D'où la
+  boucle : écrire, mesurer les 58 cas, lire le diff cas par cas.
 
 ## Corpus
 

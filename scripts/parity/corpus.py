@@ -47,8 +47,10 @@ GATE_CASES = [
     # — Les quatre valeurs de l'énumération input_type, une chacune —
     dict(id="g-type-fact", text="Marie a un chat qui s'appelle Gipsy",
          input_type="fact", note=False),
+    # Lot 2 — un épisode vécu garde désormais sa note (kind="episode"), au lieu
+    # de disparaître dans l'inbox. Ce cas attendait note=False jusqu'au 20/08.
     dict(id="g-type-episodic", text="Went for a run this morning, felt good",
-         input_type="episodic", note=False),
+         input_type="episodic", note=True, kind="episode"),
     dict(id="g-type-resource",
          text="https://example.com/article super intéressant sur la mémoire",
          input_type="resource"),

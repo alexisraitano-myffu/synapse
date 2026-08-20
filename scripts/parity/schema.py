@@ -82,7 +82,7 @@ CLASSIFY_SCHEMA = {
         # façon quand `atomic_note` est vide (`routing.rs:196` ne l'utilise que
         # pour une note non vide), donc l'exiger ne coûte rien et ferme la porte
         # au null qui, autorisé, dégradait une tâche en note.
-        "atomic_note_kind": {"type": "string", "enum": ["note", "task", "event"]},
+        "atomic_note_kind": {"type": "string", "enum": ["note", "task", "event", "episode"]},
         "event_date": {"type": ["string", "null"]},
         "event_recurring": {"type": "boolean"},
         "is_ephemeral": {"type": "boolean"},
