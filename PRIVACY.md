@@ -1,21 +1,28 @@
-# Politique de confidentialité de Synapse
+# Politique de confidentialité de sinam
 
-**Dernière mise à jour : 10 août 2026**
+**Dernière mise à jour : 20 août 2026**
 
-Synapse est une mémoire personnelle. Le principe qui gouverne toute l'application
+> **sinam s'appelait Synapse.** Le produit a été renommé le 20 août 2026 pour des
+> raisons juridiques. Il s'agit de la même application, éditée par la même
+> personne : rien de ce que dit ce document n'a changé avec le nom. Certains
+> identifiants techniques gardent l'ancien nom — l'identifiant d'installation
+> Android reste `fr.myffu.synapse`, et le dossier de données de l'ordinateur
+> reste `~/.synapse/`. Ce sont des identifiants figés, pas des marques.
+
+Sinam est une mémoire personnelle. Le principe qui gouverne toute l'application
 est simple : **tes captures t'appartiennent et restent sur tes appareils**. Ce
 document dit exactement ce qui est traité, ce qui sort, et vers qui.
 
 ## Qui est responsable
 
-Synapse est édité par **Alexis Raitano**, responsable du traitement au sens du
+Sinam est édité par **Alexis Raitano**, responsable du traitement au sens du
 règlement européen sur la protection des données.
 
 Contact : **alexis.raitano@myffu.fr**
 
 ## Aucun compte, aucune inscription
 
-Synapse ne demande ni nom, ni adresse e-mail, ni numéro de téléphone. Il n'existe
+Sinam ne demande ni nom, ni adresse e-mail, ni numéro de téléphone. Il n'existe
 aucun compte utilisateur, donc aucun profil te concernant n'est constitué.
 
 ## Ce que l'application traite
@@ -64,12 +71,12 @@ Ton téléphone et ton ordinateur échangent directement, sur ton réseau Wi-Fi,
 sans passer par aucun serveur. Cet échange est protégé par un jeton d'accès
 propre à ton installation, mais **il n'est pas chiffré** : sur un réseau que tu
 ne contrôles pas, quelqu'un qui écoute ce réseau pourrait en lire le contenu.
-Utilise Synapse sur un réseau de confiance, pas sur un Wi-Fi public.
+Utilise sinam sur un réseau de confiance, pas sur un Wi-Fi public.
 
 ### La sauvegarde Android
 
 Si la sauvegarde automatique d'Android est activée sur ton téléphone (réglage du
-système, pas de l'application), les données de Synapse en font partie et sont
+système, pas de l'application), les données de sinam en font partie et sont
 copiées vers ton propre espace Google Drive. Depuis Android 9, ces sauvegardes
 sont chiffrées avec le code de verrouillage de ton téléphone, et Google ne peut
 pas les lire. Tu peux désactiver cette sauvegarde dans les réglages Android.
@@ -130,7 +137,7 @@ restituer ni les supprimer à ta place.
 ## Tes droits
 
 Le règlement européen te donne un droit d'accès, de rectification, d'effacement,
-de limitation, d'opposition et de portabilité. Dans le cas de Synapse, ces droits
+de limitation, d'opposition et de portabilité. Dans le cas de sinam, ces droits
 s'exercent directement dans l'application, puisque tu détiens tes données. Pour
 toute question, écris à **alexis.raitano@myffu.fr**.
 
@@ -138,10 +145,14 @@ Tu peux aussi introduire une réclamation auprès de la CNIL (cnil.fr).
 
 ## Enfants
 
-Synapse ne s'adresse pas aux mineurs et n'est pas conçu pour eux.
+Sinam ne s'adresse pas aux mineurs et n'est pas conçu pour eux.
 
 ## Modifications
 
 Toute évolution de cette politique sera publiée à cette adresse, avec une date de
 mise à jour. Un changement qui élargirait ce qui sort de tes appareils sera
 annoncé dans l'application.
+
+**20 août 2026** — le produit est renommé de Synapse en sinam. Aucun changement
+dans ce qui est traité, ce qui sort des appareils, ni vers qui : seul le nom
+change.
