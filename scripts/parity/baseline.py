@@ -65,12 +65,28 @@ def cmd_run(args) -> int:
             parsed = context.parse_classify(reply.text, reply.stop_reason)
             rec = path_of(parsed)
             rec.update(set=set_name, text=case["text"], latency_s=reply.latency_s,
-                       confidence=(parsed or {}).get("classification_confidence"))
+                       confidence=(parsed or {}).get("classification_confidence"),
+                       prompt_tokens=reply.prompt_tokens)
             out["cases"][case["id"]] = rec
             mark = "·" if rec.get("parsed") else "✗"
             print(f"  {mark} {case['id']:22} "
                   f"note={str(rec.get('has_note')):5} kind={str(rec.get('kind')):6} "
                   f"f={rec.get('facts')} r={rec.get('relations')}", flush=True)
+
+    # Combien de la fenêtre le prompt a mangé. Le gate vérifie déjà qu'il ENTRE
+    # (`prompt_tokens < num_ctx`) — mais entrer ne suffit pas : il faut aussi
+    # qu'il reste de la place pour ÉCRIRE. Avec `--context-shift`, un prompt qui
+    # occupe presque toute la fenêtre fait évincer ses propres premières lignes
+    # pendant la génération : le modèle répond sans les règles qu'on lui a
+    # données, et la mesure impute au modèle un défaut de fenêtre.
+    seen = [r["prompt_tokens"] for r in out["cases"].values() if r.get("prompt_tokens")]
+    if seen:
+        worst = max(seen)
+        libre = args.num_ctx - worst
+        alerte = "  ⚠ SOUS le budget de sortie" if libre < context.CLASSIFY_MAX_TOKENS else ""
+        print(f"\nfenêtre  : prompt ≤ {worst} tokens sur num_ctx={args.num_ctx} "
+              f"→ {libre} libres pour écrire (budget {context.CLASSIFY_MAX_TOKENS}){alerte}")
+        out["prompt_tokens_max"] = worst
 
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     path = SNAP_DIR / f"{args.label}.json"

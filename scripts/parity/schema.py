@@ -35,7 +35,13 @@ _FACT = {
         "evidence_strength": {"type": "string", "enum": ["explicit", "hedged", "implicit"]},
         "category": {"type": "string"},
     },
-    "required": ["predicate", "value"],
+    "required": ["predicate", "value", "persistence_value", "evidence_strength", "category"],
+}
+
+_TYPE_PROPOSAL = {
+    "type": ["object", "null"],
+    "properties": {"value": {"type": "string"}, "reason": {"type": "string"}},
+    "required": ["value", "reason"],
 }
 
 _ENTITY = {
@@ -43,13 +49,22 @@ _ENTITY = {
     "properties": {
         "canonical_name": {"type": "string"},
         "type": {"type": "string"},
-        "type_proposal": {},
+        "type_proposal": _TYPE_PROPOSAL,
         "aliases": {"type": "array", "items": {"type": "string"}},
-        "summary": {},
+        "summary": {"type": ["string", "null"]},
         "attributes": {"type": "object"},
         "facts": {"type": "array", "items": _FACT},
     },
-    "required": ["canonical_name", "type"],
+    # ⚠️ Même leçon qu'au niveau racine ci-dessous, et elle n'y avait PAS été
+    # appliquée : mesuré le 2026-08-20, E2B contraint a produit ZÉRO fait sur les
+    # 59 cas (Haiku en produit sur 18) — non pas parce qu'il ne sait pas en
+    # extraire, mais parce que `facts` était facultatif dans l'entité et que le
+    # décodage contraint prend toujours la sortie la moins chère. Un `summary`
+    # laissé sans type est ressorti en objet `{"value": …}`, et `type_proposal`
+    # rempli là où le type était déjà actif. Une exigence partielle ne mesure pas
+    # le modèle : elle mesure ce qu'on l'a autorisé à ne pas faire.
+    "required": ["canonical_name", "type", "type_proposal", "aliases",
+                 "summary", "attributes", "facts"],
 }
 
 _RELATION = {
@@ -60,7 +75,9 @@ _RELATION = {
         "to": {"type": "string"},
         "confidence": {"type": "number"},
     },
-    "required": ["from", "predicate", "to"],
+    # `confidence` requis : c'est lui qui porte l'arbitrage « déduction à 0,6 vs
+    # énoncé à 1,0 ». Facultatif, le modèle l'omet et la règle devient invisible.
+    "required": ["from", "predicate", "to", "confidence"],
 }
 
 _PROJECT_ENTRY = {
@@ -70,7 +87,7 @@ _PROJECT_ENTRY = {
         "content": {"type": "string"},
         "is_new": {"type": "boolean"},
     },
-    "required": ["project_canonical", "content"],
+    "required": ["project_canonical", "content", "is_new"],
 }
 
 # Les deux énumérations que le prompt déclare fermées. Ce sont elles qui portent
