@@ -4,12 +4,17 @@ Valider un modèle candidat **avant** de l'intégrer, et pouvoir rejouer la mesu
 d'une commande. Trois fois de suite — Gemma E4B, le `.litertlm` mobile, E2B — la
 décision s'est prise sur un harnais jeté après usage. Celui-ci est versionné.
 
-## Deux étages
+## Trois étages
 
 | | Ce que ça répond | Coût |
 | -- | -- | -- |
 | **Étage 1 — `gate`** | Le modèle est-il *utilisable* ? | ~12 appels |
-| **Étage 2 — `full`** | Le modèle est-il *bon* ? | tout le corpus × 6 prompts |
+| **Étage 2 — `baseline`** | Le modèle est-il *bon* ? | 58 cas |
+| **Étage 3 — `scenario`** | La règle tient-elle *en contexte* ? | 5 scénarios × 5 passes |
+
+Les deux premiers mesurent une capture seule. Le troisième mesure ce que le
+CONTEXTE fait à la décision — et c'est là qu'on a trouvé des règles vertes aux
+deux premiers étages et fausses en production. Voir « Étage 3 » plus bas.
 
 L'étage 1 ne mesure pas la qualité. Il cherche quatre vices rédhibitoires et
 s'arrête au premier trouvé, parce qu'aucun n'est rattrapable par l'intelligence
@@ -21,7 +26,11 @@ du modèle :
    tokens de fenêtre totale).
 2. **Rend-il du JSON exploitable ?** Valide, non tronqué. Un modèle qui casse le
    parsing casse le pipeline, quelle que soit sa justesse.
-3. **Respecte-t-il l'énumération fermée** d'`input_type` ?
+3. **Respecte-t-il l'énumération fermée** d'`atomic_note_kind`
+   (`note|task|event|episode`) ? C'est ce champ qui décide du stockage, de la
+   décroissance et de l'affichage : une valeur inventée fait dégrader la note en
+   « note » par le core, donc perd une tâche en silence. (Portait sur `input_type`
+   jusqu'au 20/08 — ce champ ne pilotait rien et a été retiré.)
 4. **Ne perd-il rien ?** Une capture marquée `drop_guard` doit laisser une trace
    **durable** : note, entrée projet, fait ou relation. Une intention éphémère ne
    compte pas — elle expire en 48 h, et c'est précisément le mode d'échec
@@ -94,3 +103,32 @@ restent accessibles en local, jamais versionnées.
 
 Les labels dérivent strictement de `classifier.md`. Un cas que le prompt ne
 tranche pas n'est pas un échec du modèle : c'est un défaut du prompt.
+
+## Étage 3 — le mode scénario
+
+`python -m scripts.parity.scenario <modèle>`
+
+Les étages 1 et 2 classent une capture **dans le vide**. La production, elle,
+ajoute la mémoire de travail (SYN-93) : le fil des captures récentes, précédé de
+« ⚠ n'extrais rien de ce bloc ». Cette consigne est respectée — rien n'est extrait
+du bloc — et pourtant **le bloc déplace la décision prise sur la capture
+courante**.
+
+Découvert le 2026-08-20 en installant Synapse sur le Mac de dev : deux règles
+mesurées 100 % stables en appel isolé se comportaient autrement dans le vrai
+cycle, et à chaque fois la note disparaissait — avec une confiance qui montait à
+1,0, donc sans même atteindre « À valider ». Les deux défaillances se cumulent au
+pire endroit : la note est perdue ET la perte est marquée certaine.
+
+Ce que ce mode mesure n'est pas la justesse mais la **stabilité** : chaque
+scénario est rejoué `repeat` fois et on compte les branches obtenues. Une règle
+qui sort 3 fois sur 5 n'est pas une règle, quel que soit son score sur 58 cas.
+
+**Chaque scénario embarque ses témoins** — le même texte sans fil, et le même
+texte avec un fil sans rapport. Sans eux on attribuerait au contexte ce qui
+pourrait n'être qu'une capture difficile. C'est le témoin qui a permis d'établir
+qu'une **seule ligne** du fil suffisait, et laquelle.
+
+L'en-tête du bloc est **importé de `dream_cycle/cycle.py`**, jamais recopié : un
+harnais qui n'envoie pas exactement ce que la prod envoie ne mesure pas la prod —
+et c'est précisément ce trou qui a laissé passer ce défaut pendant des semaines.

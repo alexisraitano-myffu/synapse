@@ -41,6 +41,68 @@ def classifier_system(prompt_path: Path | None = None) -> list[str]:
     return [prompt, static_types_block(), static_owner_block()]
 
 
+# ── Mode scénario (SYN-171) ─────────────────────────────────────────────────
+#
+# Les deux fonctions ci-dessous n'existent QUE pour le mode scénario. Les étages
+# 1 et 2 continuent d'appeler `classifier_system` : leurs baselines restent donc
+# comparables à celles d'avant, et l'ajout ne les déplace pas d'un iota.
+#
+# Pourquoi elles existent. Mesuré le 2026-08-20 : deux règles vérifiées 100 %
+# stables en appel isolé se comportent AUTREMENT dans le vrai cycle — la note
+# d'anniversaire disparaît (et sa confiance passe de 0,55 à 1,0, donc plus
+# d'arbitrage) et l'épisode d'une course faite disparaît aussi. La cause n'est
+# pas le prompt : c'est la MÉMOIRE DE TRAVAIL (SYN-93), un bloc que la prod
+# ajoute et que le harnais n'envoyait jamais. Un harnais qui ne peut pas
+# reproduire la prod ne peut pas la valider.
+
+# Importé de la prod, JAMAIS recopié : une deuxième définition dériverait, et un
+# harnais qui n'envoie pas exactement ce que la prod envoie ne mesure pas la prod.
+# C'est précisément ce trou qui a laissé passer le défaut de la mémoire de travail.
+from dream_cycle.cycle import _WM_HEADER  # noqa: E402
+
+# Horodatages FIGÉS : la prod les tire de l'horloge, mais une mesure qui change
+# de contexte à chaque exécution ne se compare à rien.
+_WM_STAMPS = ["09:05", "09:17", "09:24", "09:38", "09:41", "09:46", "09:50"]
+
+
+def working_memory_block(prior: list[str], current: str) -> str:
+    """Le bloc mémoire de travail, au format EXACT de `cycle.py::_build_day_context`
+    (en-tête, `[horodatage · phase] texte`), horodatages figés. `prior` = les
+    captures déjà consolidées du fil ; `current` = celle qu'on classe."""
+    lines = [_WM_HEADER]
+    for i, text in enumerate(prior):
+        ts = _WM_STAMPS[min(i, len(_WM_STAMPS) - 2)]
+        lines.append(f"[{TODAY} {ts} · consolidé] {' '.join(text.split())}")
+    lines.append(f"[{TODAY} {_WM_STAMPS[-1]} · à consolider] {' '.join(current.split())}")
+    return "\n".join(lines)
+
+
+# Le harnais n'envoyait pas non plus le bloc projets, que la prod ajoute
+# toujours. Statique ici, et volontairement NON VIDE : un contexte sans projet
+# ne teste pas le rattachement, qui est justement une des décisions que le
+# contexte vivant peut déplacer.
+def static_projects_block() -> str:
+    return (
+        "[PROJETS EXISTANTS — utilise leur canonical_name exact pour le rattachement]\n"
+        "- Climbing\n"
+        "- Synapse"
+    )
+
+
+def scenario_system(current: str, prior: list[str],
+                    prompt_path: Path | None = None) -> list[str]:
+    """Les blocs système tels que la PRODUCTION les assemble : prompt, mémoire de
+    travail, types actifs, projets, auteur (`Brain::build_classify_params`).
+    Sans capture antérieure, la prod n'émet pas de bloc mémoire (`_build_day_context`
+    rend None dès que le fil tient en une ligne) — on fait pareil."""
+    prompt = load_prompt(prompt_path or CORE_CLASSIFIER)
+    blocks = [prompt]
+    if prior:
+        blocks.append(working_memory_block(prior, current))
+    blocks += [static_types_block(), static_projects_block(), static_owner_block()]
+    return blocks
+
+
 def fingerprint(blocks: list[str]) -> str:
     """Empreinte courte du contexte complet. Deux mesures ne se comparent que si
     leurs empreintes coïncident — c'est ce qui rend un verdict opposable."""

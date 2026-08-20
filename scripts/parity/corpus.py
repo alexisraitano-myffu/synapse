@@ -256,3 +256,75 @@ ADVERSARIAL_CASES = [
          forbidden_value="shorthair",
          why="Aucun fait ne doit énoncer ce que la capture ne dit pas."),
 ]
+
+
+# ---------------------------------------------------------------------------
+# MODE SCÉNARIO — la capture N'EST PAS SEULE.
+#
+# Les étages 1 et 2 classent une capture dans le vide. La production, elle,
+# ajoute la MÉMOIRE DE TRAVAIL (SYN-93) : le fil des captures récentes, avec la
+# consigne explicite « n'extrais rien de ce bloc ». Cette consigne est respectée
+# à la lettre — rien n'est extrait du bloc — et pourtant le bloc DÉPLACE la
+# décision prise sur la capture courante.
+#
+# Mesuré le 2026-08-20 sur l'installation réelle, deux fois, sur deux règles
+# différentes. C'est ce qui rend ce mode nécessaire : ces deux cas passent les
+# étages 1 et 2 sans broncher, et échouent en prod.
+#
+# `wm` = les captures antérieures du fil, dans l'ordre. `repeat` = le nombre de
+# passes : la défaillance est une INSTABILITÉ (3 fois sur 5, pas 5 sur 5), donc
+# une seule passe ne la voit pas. `expect` = la branche attendue, celle que le
+# même prompt produit de façon 100 % stable quand la capture est seule.
+# ---------------------------------------------------------------------------
+SCENARIO_CASES = [
+    # Arbitrage 7 — la date nue doit atteindre « À valider ». Seule : note event
+    # + confiance 0,55, 11 fois sur 11. Dans le fil : la note disparaît ET la
+    # confiance monte à 1,0, donc plus rien ne demande d'arbitrer. Les deux
+    # défaillances se cumulent au pire endroit.
+    dict(id="s-birthday-in-thread",
+         text="L'anniversaire de Yuki est le 4 mars",
+         wm=["L'anniversaire de Manon est le 4 mars",
+             "Hier j'ai déjeuné avec Manon au Petit Bar, il faut que je la rappelle vendredi",
+             "L'anniversaire de Sofia est le 4 mars"],
+         expect=dict(note=True, kind="event", confidence_below=0.6),
+         repeat=5,
+         why="Trois quasi-jumelles au fil. Tombait en prod sous v10 ; tient depuis\n              le retrait d'input_type — un a priori de moins vers « simple fait »."),
+
+    # Lot 2 — une course DÉJÀ FAITE est un épisode. Seule : épisode, 3 fois sur
+    # 3. Dans le fil : aucune note.
+    dict(id="s-done-errand-in-thread",
+         text="J'ai acheté du pain ce matin",
+         wm=["La fête d'anniversaire de Yanis est le 12 juin",
+             "Marie m'a dit qu'elle devait appeler le dentiste",
+             "J'ai mangé chez Léa hier"],
+         expect=dict(note=True, kind="episode"),
+         repeat=5,
+         why="DÉFAUT OUVERT. Saillance relative, pas redondance : à côté d'un épisode\n              plus riche au fil, l'ordinaire cesse de valoir une note. Retirer cette\n              seule ligne du fil ramène l'épisode 3/3. Une consigne anti-suppression\n              dans l'en-tête du bloc a été mesurée sans effet (0/5 avant ET après)."),
+
+    # Témoin — même capture, fil SANS RAPPORT. Sert à distinguer « la mémoire de
+    # travail déstabilise » de « ces captures contiennent des quasi-jumelles ».
+    # Sans ce témoin, on attribuerait au mauvais coupable.
+    dict(id="s-birthday-neutral-thread",
+         text="L'anniversaire de Yuki est le 4 mars",
+         wm=["Réunion budget repoussée à lundi",
+             "Le train de 7h12 était supprimé"],
+         expect=dict(note=True, kind="event", confidence_below=0.6),
+         repeat=5,
+         why="Témoin : mémoire de travail présente, mais rien qui ressemble."),
+
+    dict(id="s-done-errand-alone",
+         text="J'ai acheté du pain ce matin",
+         wm=[],
+         expect=dict(note=True, kind="episode"),
+         repeat=5,
+         why="Témoin : seule, la même capture donne son épisode."),
+
+    # Témoin — capture seule, aucun bloc mémoire. C'est la mesure de référence
+    # des étages 1 et 2 : elle DOIT être stable, sinon le reste ne veut rien dire.
+    dict(id="s-birthday-alone",
+         text="L'anniversaire de Yuki est le 4 mars",
+         wm=[],
+         expect=dict(note=True, kind="event", confidence_below=0.6),
+         repeat=5,
+         why="Témoin : la branche de référence, mesurée 11/11 stable."),
+]

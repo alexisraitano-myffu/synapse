@@ -65,6 +65,33 @@ _WM_MAX_CAPTURES = 80
 _WM_MAX_CHARS = 8000
 _WM_LOOKBACK_HOURS = 24
 
+# L'en-tête du bloc, isolé en constante pour une raison précise : le harnais de
+# parité (`scripts/parity/context.py`, mode scénario) l'importe d'ici. Deux copies
+# de cette consigne dériveraient, et un harnais qui n'envoie pas exactement ce que
+# la prod envoie ne mesure pas la prod — c'est justement le trou qui a laissé
+# passer le défaut ci-dessous.
+#
+# SYN-171 (2026-08-20) — ce bloc n'est PAS neutre sur la décision, et le texte
+# ci-dessous ne suffit pas à le rendre neutre. Mesuré : une capture antérieure
+# d'un épisode plus marquant (« j'ai mangé chez Léa hier ») suffit à faire
+# disparaître la note de la capture COURANTE (« j'ai acheté du pain ce matin »),
+# 5 fois sur 5, avec une confiance de 1,0 — donc sans atteindre « À valider ».
+# Retirer cette seule ligne du fil ramène la note, 3 fois sur 3.
+# Le mécanisme n'est pas la redondance mais la SAILLANCE RELATIVE : à côté d'un
+# épisode plus riche, l'ordinaire cesse de valoir la peine. Une consigne
+# anti-suppression ajoutée ici a été mesurée STRICTEMENT sans effet (0/5 avant,
+# 0/5 après) et retirée — on ne garde pas du prompt qui ne démontre rien.
+# Reproduit par `scripts/parity/scenario.py` (`s-done-errand-in-thread`), qui
+# importe cet en-tête : c'est ce qui rend le défaut mesurable au lieu de
+# n'apparaître qu'en prod.
+_WM_HEADER = (
+    "[CONTEXTE — captures récentes, pour RÉSOUDRE LES RÉFÉRENCES "
+    "(il, elle, ça, ce projet, « hier »…).\n"
+    "⚠ N'EXTRAIS RIEN de ce bloc : seule la capture COURANTE (le message "
+    "utilisateur) doit produire entités/faits/notes. Ce bloc n'est qu'un rappel "
+    "du fil pour lever les ambiguïtés.]"
+)
+
 
 def _build_day_context(conn, batch_entries, now) -> str | None:
     """Build the working-memory context (SYN-93): captures of the current
@@ -84,13 +111,7 @@ def _build_day_context(conn, batch_entries, now) -> str | None:
     if len(timeline) <= 1:
         return None
 
-    lines = [
-        "[CONTEXTE — captures récentes, pour RÉSOUDRE LES RÉFÉRENCES "
-        "(il, elle, ça, ce projet, « hier »…).",
-        "⚠ N'EXTRAIS RIEN de ce bloc : seule la capture COURANTE (le message "
-        "utilisateur) doit produire entités/faits/notes. Ce bloc n'est qu'un rappel "
-        "du fil pour lever les ambiguïtés.]",
-    ]
+    lines = [_WM_HEADER]
     used = 0
     for content, created_at, phase in timeline:
         ts = (created_at or "")[:16].replace("T", " ")
