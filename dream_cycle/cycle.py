@@ -124,13 +124,20 @@ def _build_day_context(conn, batch_entries, now) -> str | None:
         used += len(line)
     return "\n".join(lines)
 
-def _classify_params(entry: dict, conn=None, day_context: str | None = None) -> dict:
-    """`messages.create` kwargs pour classifier une capture — construits par le
-    core (prompt-as-data + blocs vocab/projets/auteur lus dans SA base). Partagé
-    par le chemin synchrone et le chemin Batch API. `conn` est conservé pour la
-    signature historique ; le core lit toujours ses blocs lui-même."""
+def _classify_params(entry: dict, conn=None, day_context: str | None = None,
+                     half: str = "note") -> dict:
+    """`messages.create` kwargs pour UNE MOITIÉ du classifieur — construits par
+    le core (prompt-as-data + blocs vocab/projets/auteur lus dans SA base).
+    `conn` est conservé pour la signature historique ; le core lit toujours ses
+    blocs lui-même.
+
+    SYN-171 — `half` vaut "note" ou "graph". Une capture demande les DEUX : la
+    moitié note décide ce qu'elle laisse derrière elle, la moitié graphe ce
+    qu'elle dit du monde. Les deux appels sont volontairement indépendants —
+    l'extracteur ne voit pas le routage — parce que c'est l'indépendance qui
+    rend l'invariant structurel au lieu d'être une consigne à marteler."""
     return json.loads(get_brain().build_classify_params(
-        entry["content"], day_context, CLAUDE_MODEL, str(PROMPTS_DIR), _TODAY))
+        entry["content"], day_context, CLAUDE_MODEL, str(PROMPTS_DIR), _TODAY, half))
 
 
 def _parse_classify_text(text: str, content_len: int, stop_reason: str | None) -> dict:
@@ -206,9 +213,15 @@ def _batch_classify(
     caller then classifies just that one synchronously. Raises on infrastructure
     failure (submit/poll) so the caller can fall back to the fully-sync path."""
     from anthropic.types.messages.batch_create_params import Request
+    # SYN-171 — DEUX requêtes par capture. Le batch reste rentable : ce qui
+    # coûte, c'est le nombre de jetons, pas le nombre de requêtes, et les deux
+    # moitiés réunies sont plus courtes que le prompt unique (17 233 caractères
+    # contre 20 510 — l'échafaudage est le seul duplicata).
     requests = [
-        Request(custom_id=f"e{e['id']}", params=_classify_params(e, conn, day_context))
+        Request(custom_id=f"e{e['id']}#{half}",
+                params=_classify_params(e, conn, day_context, half))
         for e in entries
+        for half in ("note", "graph")
     ]
     batch = client.messages.batches.create(requests=requests)
     if verbose:
@@ -221,24 +234,44 @@ def _batch_classify(
         waited += poll_seconds
         batch = client.messages.batches.retrieve(batch.id)
 
-    by_custom = {f"e{e['id']}": e for e in entries}
-    out: dict = {}
+    by_custom = {f"e{e['id']}#{h}": (e, h) for e in entries for h in ("note", "graph")}
+    # Les moitiés reviennent dans un ordre quelconque et indépendamment : on les
+    # rassemble avant de fusionner. Une capture dont UNE moitié manque n'est pas
+    # à moitié classée — c'est une capture non classée, que l'appelant rejouera
+    # en synchrone. Écrire un demi-résultat perdrait la note ou tout le graphe
+    # sans que rien ne le signale.
+    halves: dict = {e["id"]: {} for e in entries}
     for res in client.messages.batches.results(batch.id):
-        entry = by_custom.get(res.custom_id)
-        if entry is None:
+        pair = by_custom.get(res.custom_id)
+        if pair is None:
             continue
+        entry, half = pair
         r = res.result
         if getattr(r, "type", None) != "succeeded":
-            out[entry["id"]] = None  # caller retries this one synchronously
             continue
         try:
             msg = r.message
-            out[entry["id"]] = _parse_classify_text(
+            halves[entry["id"]][half] = _parse_classify_text(
                 msg.content[0].text, len(entry["content"]), msg.stop_reason)
         except Exception as exc:  # noqa: BLE001 — content error for this entry
-            out[entry["id"]] = None
             if verbose:
                 print(f"    [batch] {res.custom_id} parse error: {exc}")
+
+    import synapse_core
+
+    out: dict = {}
+    for e in entries:
+        got = halves[e["id"]]
+        if "note" in got and "graph" in got:
+            # Fusion faite par le core, jamais réécrite ici : deux copies d'une
+            # règle de fusion dérivent, et la dérive serait silencieuse.
+            out[e["id"]] = json.loads(synapse_core.merge_classify_halves(
+                json.dumps(got["note"]), json.dumps(got["graph"])))
+        else:
+            out[e["id"]] = None  # caller retries this one synchronously
+            if verbose and got:
+                manque = "graph" if "note" in got else "note"
+                print(f"    [batch] e{e['id']} : moitié {manque} manquante → rejeu synchrone")
     return out
 
 

@@ -39,29 +39,30 @@ from scripts.parity.baseline import SETS, SNAP_DIR  # noqa: E402
 from scripts.parity.paths import path_of  # noqa: E402
 from scripts.parity.schema import CLASSIFY_SCHEMA  # noqa: E402
 
-# Les deux moitiés du prompt (`note.md` et `graph.md`), fournies par
-# SYNAPSE_SPLIT_PROMPTS_DIR.
-#
-# Elles vivent volontairement HORS du repo tant que l'expérience n'est pas
-# tranchée : les prompts de production sont dans synapse-core, et y déposer une
-# variante non validée ferait deux sources de vérité — exactement ce que SYN-111
-# a fermé. Le jour où le découpage est adopté, elles rejoignent synapse-core avec
-# le reste et cette variable disparaît.
-SPLIT_DIR = Path(os.environ.get("SYNAPSE_SPLIT_PROMPTS_DIR", ""))
+# Les deux moitiés du classifieur. Depuis leur adoption (SYN-171, 2026-08-21)
+# elles sont des prompts de PRODUCTION comme les autres : versionnées dans
+# synapse-core, lues à l'exécution par le core. Le harnais lit les mêmes
+# fichiers — il ne teste pas une variante, il teste ce qui tourne.
+SPLIT_DIR = Path(
+    os.environ.get("SYNAPSE_SPLIT_PROMPTS_DIR",
+                   str(context.CORE_CLASSIFIER.parent)))
+_HALVES = {"note.md": "classifier-note.md", "graph.md": "classifier-graph.md"}
 
 
-def _require_split_dir() -> Path:
-    if not SPLIT_DIR.name or not (SPLIT_DIR / "note.md").is_file():
+def _half_path(prompt_file: str) -> Path:
+    p = SPLIT_DIR / _HALVES.get(prompt_file, prompt_file)
+    if not p.is_file():
         raise SystemExit(
+            f"moitié introuvable : {p}\n"
             "SYNAPSE_SPLIT_PROMPTS_DIR doit pointer vers un dossier contenant "
-            "note.md et graph.md (les deux moitiés du classifieur). Elles ne sont "
-            "pas versionnées ici : voir SYN-171."
+            "classifier-note.md et classifier-graph.md."
         )
-    return SPLIT_DIR
+    return p
 
 # Découpe du schéma racine par appartenance, pas par recopie : les deux sous-schémas
 # se dérivent de CLASSIFY_SCHEMA, donc ils ne peuvent pas dériver de lui.
-_NOTE_FIELDS = ("language", "atomic_note", "atomic_note_kind", "event_date",
+_NOTE_FIELDS = ("language", "atomic_note", "atomic_note_kind", "atomic_note_owner",
+                "event_date",
                 "event_recurring", "is_ephemeral", "classification_confidence", "summary")
 _GRAPH_FIELDS = ("language", "entities", "relations", "project_entries")
 
@@ -82,7 +83,7 @@ def _system(prompt_file: str) -> list[str]:
     """Prompt de la moitié + l'échafaudage, dans l'ordre où le core l'assemble.
     L'échafaudage est le MÊME pour les deux appels : c'est ce qui rend le surcoût
     d'entrée additif et non multiplicatif (mesuré : ~+10 %, pas ×2)."""
-    prompt = context.load_prompt(_require_split_dir() / prompt_file)
+    prompt = context.load_prompt(_half_path(prompt_file))
     return [prompt, context.static_types_block(), context.static_owner_block()]
 
 
@@ -101,7 +102,14 @@ def classify_split(model: str, text: str, schema: bool, temperature: float) -> t
     graph = context.parse_classify(b.text, b.stop_reason)
     diag = {"note_parsed": note is not None, "graph_parsed": graph is not None,
             "latency_s": round(a.latency_s + b.latency_s, 2),
-            "prompt_tokens": max(a.prompt_tokens or 0, b.prompt_tokens or 0)}
+            "prompt_tokens": max(a.prompt_tokens or 0, b.prompt_tokens or 0),
+            # Le coût se compte sur la SOMME des deux appels, jamais sur le max :
+            # le max sert à vérifier qu'un prompt est bien passé (piège num_ctx),
+            # il sous-estime la facture d'un facteur ~2 sur un run découpé.
+            "input_tokens": (a.prompt_tokens or 0) + (b.prompt_tokens or 0),
+            "uncached_tokens": (a.extra.get("uncached_input_tokens") or 0)
+                               + (b.extra.get("uncached_input_tokens") or 0),
+            "output_tokens": (a.output_tokens or 0) + (b.output_tokens or 0)}
     if note is None and graph is None:
         return None, diag
     merged: dict = {}
@@ -113,6 +121,26 @@ def classify_split(model: str, text: str, schema: bool, temperature: float) -> t
         merged[k] = (graph or {}).get(k) or []
     merged.setdefault("language", (graph or {}).get("language"))
     return merged, diag
+
+
+# $/Mtok (entrée, lecture de cache, sortie). Une mesure dont on ignore le prix
+# finit par se relancer sans qu'on sache ce qu'elle coûte : c'est ce qui est
+# arrivé le 2026-08-21, 22 baselines Haiku plus tard.
+_TARIFS = {"claude-haiku-4-5-20251001": (1.00, 0.10, 5.00)}
+
+
+def _cout(model: str, cases: dict) -> str:
+    tarif = _TARIFS.get(model)
+    if not tarif:
+        return ""
+    entree, cache, sortie = tarif
+    nc = sum(c.get("uncached_tokens") or 0 for c in cases.values())
+    lu = sum((c.get("input_tokens") or 0) - (c.get("uncached_tokens") or 0)
+             for c in cases.values())
+    out = sum(c.get("output_tokens") or 0 for c in cases.values())
+    usd = (nc * entree + lu * cache + out * sortie) / 1e6
+    return (f"coût     : ~{usd:.2f} $  "
+            f"({nc/1000:.0f}k entrée · {lu/1000:.0f}k relus du cache · {out/1000:.0f}k sortie)")
 
 
 def cmd_run(args) -> int:
@@ -147,6 +175,9 @@ def cmd_run(args) -> int:
     if demi:
         print(f"\n⚠ {demi} cas où une seule des deux moitiés a répondu — c'est le coût "
               f"propre au découpage, il ne doit pas se lire comme une erreur de jugement.")
+    ligne = _cout(args.model.split(":", 1)[-1], out["cases"])
+    if ligne:
+        print(f"\n{ligne}")
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     path = SNAP_DIR / f"{args.label}.json"
     path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
