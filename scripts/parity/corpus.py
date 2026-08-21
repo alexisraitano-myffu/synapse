@@ -56,11 +56,22 @@ GATE_CASES = [
     # classifieur. Reste vérifiable, et ça suffit : deux mots d'appréciation ne
     # font pas une prise de position (critère b), donc pas de note — et surtout
     # pas d'entité inventée pour le domaine.
+    # Arbitré le 2026-08-21 : l'assertion `note=False` est RETIRÉE, pas inversée. Quand
+    # l'auteur commente lui-même un lien (« super intéressant »), il veut son commentaire
+    # conservé — mais `resources` n'a aucune colonne pour l'accueillir (id, type, source,
+    # title, summary machine, tags, url, content…). Tant que SYN-182 n'a pas tranché entre
+    # une colonne `user_note` et une note reliée, asserter une cible reviendrait à figer
+    # un choix qui n'est pas pris.
     dict(id="g-type-resource",
          text="https://example.com/article super intéressant sur la mémoire",
-         note=False),
+         why="Cible indécise (SYN-182) : le commentaire de l'auteur doit survivre, "
+             "reste à savoir où il vit."),
+    # Arbitré le 2026-08-21 : un harnais n'est pas un consommable. L'acheter suppose un
+    # choix, un prix, parfois un essayage — c'est une tâche, pas une course qui expire.
+    # L'ancienne assertion venait d'une classe fermée trop large (« consommable OU pièce
+    # d'équipement »), qui rangeait le durable avec le pain.
     dict(id="g-type-ephemeral", text="Acheter un harnais",
-         note=False, ephemeral=True),
+         note=True, kind="task", ephemeral=False),
 
     # — Fait contre relation : l'anti-redite de juin 2026 —
     dict(id="g-relation", text="Audric est le cousin d'Alexis",
@@ -110,7 +121,8 @@ HARD_CASES = [
 
     # EPHEMERAL trivial : ni destinataire, ni date, ni enjeu — intention seule
     dict(id="p1", text="Acheter du pain", note=False, ephemeral=True),
-    dict(id="p2", text="Acheter un harnais", note=False, ephemeral=True),
+    # Même arbitrage que g-type-ephemeral (2026-08-21) : équipement durable = tâche.
+    dict(id="p2", text="Acheter un harnais", note=True, kind="task", ephemeral=False),
     dict(id="p3", text="Comprar pan", note=False, ephemeral=True),
 
     # NOTE réflexive : pensée durable — kind note, JAMAIS éphémère
@@ -144,8 +156,11 @@ HARD_CASES = [
     # mais mineure — une intention à 48 h de trop, jamais une perte. Asserté ici
     # pour que la dérive reste comptée au lieu d'être oubliée ; volontairement PAS
     # dans le gate, où un cas instable rendrait l'étage 1 capricieux.
+    # Jumeau de g-type-resource : assertion `note` retirée le 2026-08-21, cible indécise
+    # (SYN-182). `ephemeral=False` tient toujours : un lien ne porte aucun verbe d'action.
     dict(id="u1", text="https://example.com/article super intéressant sur la mémoire",
-         note=False, ephemeral=False),
+         ephemeral=False,
+         why="Le commentaire de l'auteur doit survivre ; où il vit reste à trancher."),
 
     # EPISODIC : action déjà vécue, routinière → pas de note (+ progrès projet)
     # Les deux côtés de la frontière épisode, arbitrée le 20/08 : ce n'est pas
@@ -188,14 +203,41 @@ ATOMICITY_CASES = [
 ADVERSARIAL_CASES = [
     # — La négation. Absente du prompt. Un routage par signaux booléens
     #   produirait une tâche fantôme : `action-à-faire` reste vrai.
+    # Corrigé le 2026-08-21 : l'assertion était plus large que sa propre justification.
+    # Ce qui est interdit, c'est la TÂCHE, pas la note — le prompt prescrit depuis
+    # l'arbitrage épisode qu'une décision, y compris celle de renoncer, mérite d'être
+    # retenue. Haiku émet la note ; c'est l'attente qui avait tort, pas le modèle.
     dict(id="x-negation", text="Je ne vais finalement pas appeler le dentiste",
-         note=False,
-         why="Aucune tâche ne doit naître d'une action annulée."),
+         note=True, kind="note",
+         why="Aucune TÂCHE ne doit naître d'une action annulée ; la décision, elle, se garde."),
 
     # — L'acteur. Il y a une action à faire, mais elle n'est pas celle de l'auteur.
+    #   Ce cas n'avait AUCUNE assertion jusqu'au 2026-08-21 : la moitié « jamais
+    #   comme celle de l'auteur » était invérifiable parce qu'aucun champ ne
+    #   pouvait la dire. SYN-182 ajoute `atomic_note_owner`, donc la promesse du
+    #   prompt devient mesurable — c'est tout l'intérêt de la colonne.
     dict(id="x-reported-speech",
          text="Marie m'a dit qu'elle devait appeler le dentiste",
+         note=True, kind="task", owner="Marie",
          why="Tâche de Marie, pas de l'auteur : rattachée à la fiche de Marie."),
+
+    # — Le miroir du précédent. Sans lui, un modèle qui remplirait `owner` à
+    #   chaque fois qu'un nom traîne dans la capture passerait le cas ci-dessus
+    #   pour de mauvaises raisons. Ici Vincent est le DESTINATAIRE, pas l'acteur.
+    dict(id="x-owner-is-author",
+         text="Répondre à l'e-mail de Vincent",
+         note=True, kind="task", owner=None,
+         why="Nommer quelqu'un ne donne pas l'action : Vincent la reçoit, l'auteur l'exécute."),
+
+    # — La date passée qui revient. Mesuré le 2026-08-21 : la table de routage
+    #   l'envoie en `episode` parce que c'est passé, et l'épisode était écrit avec
+    #   event_date=NULL et event_recurring=0 (`routing.rs`, `durable` excluait
+    #   l'épisode). L'anniversaire de rencontre était donc détruit À L'INSERTION,
+    #   avant qu'aucune règle de récurrence n'ait son mot à dire.
+    dict(id="x-past-recurring-date",
+         text="Notre rencontre avec Marie, c'était le 18 avril",
+         note=True,
+         why="Un épisode A une date. Si elle revient chaque année, elle doit survivre."),
 
     # — Temps mêlés. Mesuré le 2026-08-19 : Haiku garde la tâche future et PERD
     #   l'appel déjà passé. Arbitrage : la timeline doit survivre.

@@ -103,6 +103,10 @@ CLASSIFY_SCHEMA = {
         # pour une note non vide), donc l'exiger ne coûte rien et ferme la porte
         # au null qui, autorisé, dégradait une tâche en note.
         "atomic_note_kind": {"type": "string", "enum": ["note", "task", "event", "episode"]},
+        # SYN-182 — null = l'auteur, un nom = l'action appartient à quelqu'un
+        # d'autre (discours rapporté). Le prompt promettait « jamais comme celle
+        # de l'auteur » depuis SYN-85 sans qu'aucun champ ne puisse le dire.
+        "atomic_note_owner": {"type": ["string", "null"]},
         "event_date": {"type": ["string", "null"]},
         "event_recurring": {"type": "boolean"},
         "is_ephemeral": {"type": "boolean"},
@@ -120,8 +124,9 @@ CLASSIFY_SCHEMA = {
     # absences se lisaient ensuite comme des erreurs de jugement. Un schéma qui
     # n'exige pas la forme complète mesure autre chose que ce qu'on croit.
     "required": [
-        "language", "atomic_note", "atomic_note_kind", "event_date",
-        "event_recurring", "is_ephemeral", "classification_confidence",
-        "project_entries", "entities", "relations", "summary",
+        "language", "atomic_note", "atomic_note_kind", "atomic_note_owner",
+        "event_date", "event_recurring", "is_ephemeral",
+        "classification_confidence", "project_entries", "entities", "relations",
+        "summary",
     ],
 }

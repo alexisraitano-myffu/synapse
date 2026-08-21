@@ -109,6 +109,19 @@ def _quality_notes(case: dict, parsed: dict) -> list[str]:
             out.append(f"kind attendu={case['kind']} obtenu={got}")
     if "ephemeral" in case and bool(parsed.get("is_ephemeral")) != case["ephemeral"]:
         out.append(f"ephemeral attendu={case['ephemeral']}")
+    # SYN-182 — le propriétaire de l'action. `None` = l'auteur ; un nom veut dire
+    # que la capture rapportait l'action de quelqu'un d'autre. Chaîne vide et
+    # "null" textuel valent None : c'est ce que produisent les petits modèles
+    # quand on leur demande un champ nullable.
+    if "owner" in case:
+        raw = parsed.get("atomic_note_owner")
+        got = raw.strip() if isinstance(raw, str) else None
+        if not got or got.lower() in ("null", "none"):
+            got = None
+        if got != case["owner"]:
+            out.append(f"owner attendu={case['owner']!r} obtenu={got!r}")
+    if "recurring" in case and bool(parsed.get("event_recurring")) != case["recurring"]:
+        out.append(f"recurring attendu={case['recurring']}")
     if case.get("rel"):
         rels = parsed.get("relations") or []
         if not any(case["rel"] in str(r.get("predicate", "")).lower() for r in rels):

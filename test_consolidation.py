@@ -111,15 +111,37 @@ def test_should_consolidate_scheduled_fires_once(monkeypatch, tmp_path):
 def test_classify_params_shape_with_working_memory(isolated_db):
     # SYN-111: the params are built by the core (prompt-as-data + live DB
     # blocks, always read from the core's own connection).
-    params = _classify_params({"id": 1, "content": "Coucou"}, conn=None, day_context="CTX")
-    assert params["model"] and params["max_tokens"] == 4096
-    assert params["messages"][0]["content"] == "Coucou"
-    sysblocks = params["system"]
-    # stable rules + working-memory block, both cached; user content carried separately.
-    assert sysblocks[0]["cache_control"] == {"type": "ephemeral"}
-    assert any(b.get("text") == "CTX" and b.get("cache_control") for b in sysblocks)
-    # uncached live blocks (vocab + projects) follow the cached prefix.
-    assert any("ACTIVE ENTITY TYPES" in b.get("text", "") for b in sysblocks)
+    # SYN-171: one call per half, so the shape is asserted per half.
+    for half in ("note", "graph"):
+        params = _classify_params({"id": 1, "content": "Coucou"}, conn=None,
+                                  day_context="CTX", half=half)
+        assert params["model"] and params["max_tokens"] == 4096
+        assert params["messages"][0]["content"] == "Coucou"
+        sysblocks = params["system"]
+        # stable rules + working-memory block, both cached; user content carried separately.
+        assert sysblocks[0]["cache_control"] == {"type": "ephemeral"}
+        assert any(b.get("text") == "CTX" and b.get("cache_control") for b in sysblocks)
+
+    # SYN-171 — le vocabulaire vivant et la liste des projets ne pilotent que des
+    # champs que la moitié GRAPHE écrit (`entities[].type`,
+    # `project_entries[].project_canonical`). Les envoyer à la moitié note
+    # dépenserait de l'entrée pour des champs absents de son schéma : une moitié
+    # ne lit que ce qu'elle peut écrire, c'est tout l'intérêt du découpage.
+    graph = _classify_params({"id": 1, "content": "Coucou"}, conn=None, half="graph")
+    note = _classify_params({"id": 1, "content": "Coucou"}, conn=None, half="note")
+    assert any("ACTIVE ENTITY TYPES" in b.get("text", "") for b in graph["system"])
+    assert not any("ACTIVE ENTITY TYPES" in b.get("text", "") for b in note["system"])
+
+    # Et les deux moitiés réunies coûtent MOINS d'entrée que l'appel unique
+    # d'avant : elles ne dupliquent que l'échafaudage, jamais les règles. Si un
+    # jour ça s'inverse, c'est que le découpage a recommencé à se répéter — et
+    # c'est précisément ce qu'il existe pour éviter.
+    from config import BASE_DIR
+    prompts = BASE_DIR / "prompts"
+    moities = sum(len((prompts / f).read_text(encoding="utf-8"))
+                  for f in ("classifier-note.md", "classifier-graph.md"))
+    unique = len((prompts / "classifier.md").read_text(encoding="utf-8"))
+    assert moities < unique, f"{moities} o de moitiés contre {unique} o d'appel unique"
 
 
 def test_parse_classify_text_strips_fence_and_guards_truncation():
@@ -158,11 +180,20 @@ class _Client:
 
 
 def test_batch_classify_maps_success_and_falls_back_on_error():
+    # SYN-171 — deux requêtes par capture, `custom_id = e{id}#{half}`.
     entries = [{"id": 1, "content": "A"}, {"id": 2, "content": "B"}]
     client = _Client([
-        _Res("e1", "succeeded", _Msg('{"input_type":"fact"}')),
-        _Res("e2", "errored", None),                       # → None, caller retries sync
+        _Res("e1#note", "succeeded", _Msg('{"atomic_note":"A","language":"fr"}')),
+        _Res("e1#graph", "succeeded", _Msg('{"entities":[{"canonical_name":"Marie"}]}')),
+        _Res("e2#note", "succeeded", _Msg('{"atomic_note":"B"}')),
+        _Res("e2#graph", "errored", None),                 # → None, caller retries sync
     ])
     out = _batch_classify(entries, client, conn=None, day_context=None)
-    assert out[1] == {"input_type": "fact"}
+    # Les deux moitiés reviennent fusionnées par le core, chacune avec ses champs.
+    assert out[1]["atomic_note"] == "A"
+    assert out[1]["entities"] == [{"canonical_name": "Marie"}]
+    assert out[1]["relations"] == [] and out[1]["project_entries"] == []
+    # Une capture à qui il manque UNE moitié n'est pas à moitié classée : c'est
+    # une capture non classée. Écrire un demi-résultat perdrait tout le graphe
+    # sans que rien ne le signale — le rejeu synchrone est la seule sortie sûre.
     assert out[2] is None

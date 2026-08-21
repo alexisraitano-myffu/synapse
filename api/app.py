@@ -1366,7 +1366,9 @@ def atomic_notes_list(
             clauses.append("entities_mentioned LIKE ?")
             params.append(f'%"{entity}"%')
         if kind:
-            if kind not in ("note", "task", "event"):
+            # SYN-182 — 'episode' was born in 2026-08 and never added here, so the
+            # Notes view could not filter on a kind the classifier emits daily.
+            if kind not in ("note", "task", "event", "episode"):
                 raise HTTPException(status_code=400, detail="invalid kind filter")
             clauses.append("kind = ?")
             params.append(kind)
@@ -1383,7 +1385,13 @@ def atomic_notes_list(
         rows = cursor_to_dicts(conn.execute(
             f"SELECT id, title, content, summary, entities_mentioned, memory_strength, "
             f"       provenance_capture_id, created_at, updated_at, "
-            f"       kind, event_date, event_recurring, archived_at, review_status "
+            # SYN-182 — review_reason says WHICH question « À valider » is asking
+            # (perte_possible / existence_douteuse / recurrence_inferee); owner is
+            # NULL for the author and carries a name when the action was reported
+            # as someone else's. Mirror of snapshot.rs::pending_tasks — the two
+            # must move together.
+            f"       kind, event_date, event_recurring, archived_at, review_status, "
+            f"       review_reason, owner "
             f"FROM atomic_notes {where} ORDER BY created_at DESC LIMIT ?",
             tuple(params),
         ))
