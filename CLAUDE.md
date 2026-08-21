@@ -126,6 +126,19 @@ decided on its own, from the field that carries it (SYN-171, 2026-08-20: the `in
 removed; it steered nothing and only gave the model a fifth way to be wrong). What the classifier
 emits, and what each field triggers:
 
+> **Classification = TWO calls since SYN-171 (2026-08-21).** `classifier-note.md` decides the routing
+> and writes the prose (`atomic_note`, `kind`, `owner`, dates, confidence); `classifier-graph.md`
+> extracts the graph (`entities`, `facts`, `relations`, `project_entries`). They are deliberately
+> **independent** — the graph call has no `atomic_note` field, so it *cannot* absorb the note: the
+> invariant is structural instead of repeated four times in one prompt. The **core** merges them
+> (`merge_classify_halves`), never the host — two copies of a merge rule drift silently, and each
+> half owns its own keys so a bad merge loses fields without raising. Measured: routing identical
+> 61/61 vs the single call. The Batch API path submits **two requests per capture**
+> (`e{id}#note`, `e{id}#graph`); a capture missing one half is **not half-classified** — it returns
+> `None` and the caller retries it synchronously, because writing a half-result would silently drop
+> the whole graph. `_classify_params(entry, conn, day_context, half)` takes the half explicitly.
+> The live vocab + project blocks go **only** to the graph half: a half only reads what it can write.
+
 - **`entities[]` + their `facts[]` + `relations[]`** → the 6-step graph pipeline below.
 - **`atomic_note` + `atomic_note_kind`** → one `atomic_notes` row, `memory_strength=1.0`, vectorized.
   `note` = a durable thought · `task` = something to do · `event` = a dated occurrence ·
@@ -270,8 +283,14 @@ installable via le tag/release **`python-legacy`**.
   goes through the core's HTTP client (key + fuel-proxy resolution stays in
   `anthropic_client.py`); the Batch API path builds params via `Brain.build_classify_params`
   and parses via the core. **The classifier prompt is DATA**: versioned in the synapse-core
-  repo (`prompts/classifier.md`), deployed to `~/.synapse/prompts/` (override:
+  repo (`prompts/classifier-note.md` + `classifier-graph.md` since SYN-171; `classifier.md` is the
+  superseded single-call fallback), deployed to `~/.synapse/prompts/` (override:
   `SYNAPSE_PROMPTS_DIR`), `{today}` substituted at runtime — edit + restart, no rebuild.
+  ⚠️ **"Deployed" means per surface, and this Mac is only one of them.** A prompt (and the core
+  that reads it) is duplicated onto: `~/.synapse/prompts/` here, the **Mac mini prod** (which also
+  needs the wheel *and* this repo's Python), the **Android app's assets** (which carries its own
+  `.so` — the phone classifies on-device and never asks this backend), iOS, and the bundled backend
+  inside the desktop `.dmg`/Windows build. Editing `synapse-core` ships to **none** of them.
 - **Embeddings**: `embed_text` uses the core's Embedder (one ~235 MB model per process,
   shared with the core's internal embeds — bit-identical vectors). fastembed and dateparser
   left the Python runtime; model files are data in `~/.synapse/models/…` (`SYNAPSE_MODEL_DIR`).
